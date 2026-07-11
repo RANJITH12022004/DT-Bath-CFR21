@@ -1,0 +1,21 @@
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.git.corrupt/
+System Volume Information/
+logs/
+*.log
+uart_communications.log
+.esp_pi_log_boot_id
+*.bak
+*.bak.*
+*.pre-restore
+old backup/
+backups/
+export/
+db/*.db
+db/*.db.*
+reports/*.pdf
+assets/imiage print binary

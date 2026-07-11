@@ -1,0 +1,20 @@
+[Unit]
+Description=RAISE Lab Tablet Hardness Tester Kiosk
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment=PYTHONUNBUFFERED=1
+Environment=APP_ROOT=/opt/kiosk
+WorkingDirectory=/opt/kiosk
+ExecStartPre=/opt/kiosk/scripts/kiosk_pre_start.sh
+ExecStart=/opt/kiosk/venv/bin/python3 /opt/kiosk/bridge.py
+ExecStartPost=-/opt/kiosk/scripts/kiosk_auto_export.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/kiosk_bridge.log
+StandardError=append:/var/log/kiosk_bridge.log
+
+[Install]
+WantedBy=multi-user.target

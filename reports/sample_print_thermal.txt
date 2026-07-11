@@ -1,0 +1,145 @@
+================================
+
+RAISE LAB EQUIPMENT
+
+
+FRIABILITY TEST REPORT
+
+
+Company: RAM
+
+Model No: THYY
+
+Serial No: THY
+
+Location: dd
+
+Instrument ID: qq
+
+Last Val: 18-05-2026
+
+Next Val Due: 18-05-2027
+
+TEST INFORMATION
+
+Test No: 0999
+
+Product: Sample Tablet
+
+Batch: B-SAMPLE-001
+
+Operator: Test Operator
+
+Test Type: Friability
+
+Test Method: COUNT
+
+Drops/Min: --
+
+Drop Height: --
+
+Total Taps: N/A
+
+Test Date: --
+
+Test Time: --
+
+Test Start Date: --
+
+Test Start Time: --
+
+Completed Date: --
+
+Completed Time: --
+
+Test Status: Completed
+
+
+Test Duration: 00:04:00
+
+
+TEST DATA: No test data recorded
+
+
+================================
+
+TEST SUMMARY
+
+--------------------------------
+
+Sample Weight (g): --
+
+Total No. of Drops: --
+
+Initial Volume V0 (ml): --
+
+Diff Last Two Vol (ml): --
+
+
+================================
+
+TEST RESULT
+
+--------------------------------
+
+Final Volume Vf (ml): --
+
+Initial Density W/V0: -- g/mL
+
+Tapped Density W/Vf: -- g/mL
+
+Compressibility Index: -- %
+
+Hausner Ratio V0/Vf: --
+
+
+
+================================
+
+STATISTICS
+
+--------------------------------
+
+Friability (%): 0.5
+
+Initial weight (g): 6.5
+
+Final weight (g): 6.47
+
+Rotations completed: 100
+
+
+********************************
+
+
+
+APPROVAL
+
+Operated by: Test Operator
+
+Employee ID: EMP001
+
+Approval Result: --
+
+Approved By: Admin (admin)
+
+Approved At: --
+
+Approval Remarks: Sample print v
+
+erification
+
+================================
+
+
+Printed Date: 17-06-2026
+Printed Time: 11:53:55
+
+
+
+
+
+
+
+
+

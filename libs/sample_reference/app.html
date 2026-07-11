@@ -1,0 +1,1857 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Raise Lab Equipment - Tablet Hardness Tester</title>
+    <link rel="stylesheet" href="base.css">
+    <link rel="stylesheet" href="layout.css">
+    <link rel="stylesheet" href="components.css">
+    <script src="./libs/tailwind.min.js"></script>
+</head>
+
+<body>
+    <!-- Login Screen -->
+    <div class="screen active" id="page-login">
+        <div class="centered-content">
+            <img alt="RAISE Logo" class="login-logo" src="./assets/rle_logo.png" />
+            <h2 class="welcome-text">Tablet Hardness Tester:</h2>
+            <div class="login-form-box">
+                <input class="login-input" placeholder="User/Employee ID:" type="text" id="login-uid"
+                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)" />
+                <input class="login-input" placeholder="Password:" type="password" id="login-pwd"
+                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)" />
+                <button type="button" class="login-btn" id="login-btn" onclick="login()">
+                    <span>LOGIN</span>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                        <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                </button>
+                <div class="login-footer-info" id="login-footer-info" style="display: none;">
+                    Model: <span id="login-footer-model-no"></span> | Serial: <span id="login-footer-serial-no"></span>
+                </div>
+                <span class="login-footer-link" style="cursor: default;">https://www.raiselabequip.com</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container" style="display: none;">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="user-profile" onclick="goToPage('user-profile')" style="cursor: pointer;">
+                <div class="user-avatar">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" style="color: var(--icon-profile);">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="12" cy="7" r="4"></circle>
+                    </svg>
+                    <span>Profile</span>
+                </div>
+            </div>
+
+            <nav class="nav-menu">
+                <button class="nav-item active" data-page="home">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                        <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                    </svg>
+                    <span>Home</span>
+                </button>
+
+                <button class="nav-item" data-page="validate">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                    </svg>
+                    <span>Validate</span>
+                </button>
+
+                <button class="nav-item" data-page="reports">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                    <span>Reports</span>
+                </button>
+
+                <button class="nav-item" data-page="settings">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                        </path>
+                    </svg>
+                    <span>Settings</span>
+                </button>
+            </nav>
+
+            <button class="nav-item logout-btn" onclick="logout()">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                    <polyline points="16 17 21 12 16 7"></polyline>
+                    <line x1="21" y1="12" x2="9" y2="12"></line>
+                </svg>
+                <span>Logout</span>
+            </button>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="app-header">
+                <div class="header-left">
+                    <img id="header-logo" src="./assets/rle_logo.png" alt="Raise Lab Equipment"
+                        class="company-logo" onclick="goToPage('home')" style="cursor: pointer;">
+
+                    <div id="header-back-btn" class="header-back-btn" onclick="goBack()"
+                        style="display: none; cursor: pointer;">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="19" y1="12" x2="5" y2="12"></line>
+                            <polyline points="12 19 5 12 12 5"></polyline>
+                        </svg>
+                    </div>
+
+                </div>
+                <h1 class="page-title">Tablet Hardness Tester</h1>
+                <div class="header-right">
+                    <div class="datetime">
+                        <span id="current-time">2:55:49 PM</span>
+                        <span id="current-date">04/10/2024</span>
+                    </div>
+
+                </div>
+            </header>
+
+            <!-- Page Content Container -->
+            <div class="page-content">
+                <!-- Home Page -->
+                <div class="page active" id="page-home">
+                    <div class="test-options">
+                        <div class="test-card" onclick="startQuickTest()" style="cursor: pointer;">
+                            <div class="test-icon">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                                </svg>
+                            </div>
+                            <h2>Quick Test</h2>
+                            <p>Perform a quick hardness test without recipe</p>
+                        </div>
+
+                        <div class="test-card" onclick="startRecipeTest()" style="cursor: pointer;">
+                            <div class="test-icon">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                </svg>
+                            </div>
+                            <h2>Load Recipe</h2>
+                            <p>Test with saved recipe and tolerance checks</p>
+                        </div>
+
+                        <div class="test-card" onclick="manageRecipes()" style="cursor: pointer;">
+                            <div class="test-icon">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                </svg>
+                            </div>
+                            <h2>Manage Recipe</h2>
+                            <p>Create, edit, or delete test recipes</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manage Recipes Page -->
+                <div class="page" id="page-manage-recipes">
+                    <div class="manage-recipes-container">
+                        <button class="btn-create-recipe" onclick="startRecipeCreation()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            Create New Recipe
+                        </button>
+
+                        <div class="recipe-list-container">
+                            <p class="empty-state-message">No recipes created yet.</p>
+                        </div>
+
+                        <!-- Recipe Actions Modal (Edit / Delete / Load) -->
+                        <div id="recipe-actions-modal-overlay" class="modal-overlay" style="display: none;">
+                            <div class="role-modal">
+                                <h3 id="recipe-actions-modal-title">Recipe</h3>
+                                <div class="role-modal-buttons">
+                                    <button type="button" class="btn-role-select btn-role-admin" id="recipe-action-edit-btn" onclick="confirmRecipeAction('edit')">Edit</button>
+                                    <button type="button" class="btn-role-select btn-role-supervisor" id="recipe-action-delete-btn" onclick="confirmRecipeAction('delete')">Delete</button>
+                                    <button type="button" class="btn-role-select btn-role-user" id="recipe-action-load-btn" onclick="confirmRecipeAction('load')">Load</button>
+                                    <button type="button" class="btn-role-select btn-role-cancel" onclick="closeRecipeActionsModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tablet Shape Selection Page -->
+                <div class="page" id="page-shape-selection">
+                    <div class="shape-selection-container">
+                        <h2 class="section-title">Choose shape of the tablet</h2>
+
+                        <div class="shape-options">
+                            <button class="shape-card" id="shape-oblong" onclick="selectShape('oblong')">
+                                <div class="shape-visual">
+                                    <svg width="120" height="80" viewBox="0 0 120 80">
+                                        <rect x="15" y="27" width="90" height="30" rx="15" fill="#E0E0E0" />
+                                        <line x1="60" y1="27" x2="60" y2="57" stroke="#999" stroke-width="1.5"
+                                            stroke-dasharray="2,2" />
+                                    </svg>
+                                </div>
+                                <span class="shape-label">Oblong</span>
+                            </button>
+
+                            <div class="divider-vertical"></div>
+
+                            <button class="shape-card active" id="shape-round" onclick="selectShape('round')">
+                                <div class="shape-visual">
+                                    <svg width="120" height="80" viewBox="0 0 120 80">
+                                        <circle cx="60" cy="40" r="30" fill="#E0E0E0" />
+                                        <line x1="60" y1="10" x2="60" y2="70" stroke="#999" stroke-width="1" />
+                                    </svg>
+                                </div>
+                                <span class="shape-label">Round</span>
+                            </button>
+                        </div>
+
+                        <button class="btn btn-primary" onclick="proceedToTest()">Next</button>
+                    </div>
+                </div>
+
+                <!-- Quick Test Setup Page -->
+                <div class="page" id="page-quick-test">
+                    <div class="form-container">
+                        <div class="quick-test-form-header">
+                            <h2 class="section-title">New Recipe</h2>
+                        </div>
+
+                        <div id="form-step-1" class="form-grid">
+                            <div class="form-group">
+                                <label>Product Name</label>
+                                <input type="text" id="recipe-product-name" class="input-field"
+                                    placeholder="Enter product name">
+                            </div>
+
+                            <div class="form-group" id="batch-number-group">
+                                <label>Batch Number</label>
+                                <div class="input-with-icon">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M20 7h-3a2 2 0 0 1-2-2V2"></path>
+                                        <path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2Z"></path>
+                                    </svg>
+                                    <input type="text" id="recipe-batch-number" class="input-field"
+                                        placeholder="Enter batch number">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Sample Size (Max 100)</label>
+                                <div class="input-with-icon">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <line x1="4" y1="9" x2="20" y2="9"></line>
+                                        <line x1="4" y1="15" x2="20" y2="15"></line>
+                                        <line x1="10" y1="3" x2="8" y2="21"></line>
+                                        <line x1="16" y1="3" x2="14" y2="21"></line>
+                                    </svg>
+                                    <input type="number" id="sample-size" class="input-field" value="" min="1" max="100" placeholder="Enter"
+                                        oninput="syncParameterSamplesMax()">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Unit</label>
+                                <select id="unit-selector" class="input-field" onchange="toggleUnitInput()">
+                                    <option value="Newton (N)">Newton (N)</option>
+                                    <option value="KGF">KGF</option>
+                                    <option value="Strong Cobb (SC)">Strong Cobb (SC)</option>
+                                    <option value="User Defined">User Defined</option>
+                                </select>
+                                <input type="text" id="custom-unit-input" class="input-field"
+                                    style="display: none; margin-top: 6px;" placeholder="Enter custom unit">
+                                <div id="conversion-factor-display" class="conversion-factor-display" style="display: none; margin-top: 8px; padding: 8px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; border: 1px solid rgba(59, 130, 246, 0.3);">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <div>
+                                            <span style="color: #A0AEC0; font-size: 12px;">Unit:</span>
+                                            <span id="display-unit-name" style="color: white; font-weight: 600; margin-left: 4px;"></span>
+                                        </div>
+                                        <div>
+                                            <span style="color: #A0AEC0; font-size: 12px;">Conversion Factor:</span>
+                                            <span id="display-conversion-factor" style="color: #60A5FA; font-weight: 600; margin-left: 4px;"></span>
+                                        </div>
+                                        <button type="button" onclick="showConversionFactorModal()" style="background: #3B82F6; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Distance Unit</label>
+                                <select id="distance-unit-selector" class="input-field">
+                                    <option value="mm">mm</option>
+                                    <option value="inch">inch</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Weight Unit</label>
+                                <select id="weight-unit-selector" class="input-field">
+                                    <option value="gm">gm</option>
+                                    <option value="mg">mg</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group full-width">
+                                <label>Parameters to Measure (samples per parameter)</label>
+                                <div class="parameters-grid">
+                                    <!-- Thickness -->
+                                    <div class="parameter-item" id="param-group-thickness">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="param-thickness" onchange="handleParameterCheckboxChange('Thickness', this)">
+                                            <span>Thickness</span>
+                                        </label>
+                                        <div class="param-samples-row">
+                                            <label class="param-samples-label">Samples:</label>
+                                            <input type="number" id="param-samples-thickness" class="input-field param-samples param-samples-clickable" value="" min="1" max="100" readonly placeholder="Enter" onclick="openParamConfigModal('Thickness')">
+                                        </div>
+                                        <span class="param-error" id="thickness-error" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Diameter (Round) / Length (Oblong) -->
+                                    <div class="parameter-item" id="param-group-diameter">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="param-diameter" onchange="handleParameterCheckboxChange((document.getElementById('param-diameter-label-span')||{}).textContent||'Diameter', this)">
+                                            <span id="param-diameter-label-span">Diameter</span>
+                                        </label>
+                                        <div class="param-samples-row">
+                                            <label class="param-samples-label">Samples:</label>
+                                            <input type="number" id="param-samples-diameter" class="input-field param-samples param-samples-clickable" value="" min="1" max="100" readonly placeholder="Enter" onclick="openParamConfigModal('Diameter')">
+                                        </div>
+                                        <span class="param-error" id="diameter-error" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Width (Oblong only) -->
+                                    <div class="parameter-item" id="param-group-width" style="display: none;">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="param-width" onchange="handleParameterCheckboxChange('Width', this)">
+                                            <span>Width</span>
+                                        </label>
+                                        <div class="param-samples-row">
+                                            <label class="param-samples-label">Samples:</label>
+                                            <input type="number" id="param-samples-width" class="input-field param-samples param-samples-clickable" value="" min="1" max="100" readonly placeholder="Enter" onclick="openParamConfigModal('Width')">
+                                        </div>
+                                        <span class="param-error" id="width-error" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Length (legacy - not used for oblong) -->
+                                    <div class="parameter-item" id="param-group-length" style="display: none;">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="param-length" onchange="handleParameterCheckboxChange('Length', this)">
+                                            <span>Length</span>
+                                        </label>
+                                        <div class="param-samples-row">
+                                            <label class="param-samples-label">Samples:</label>
+                                            <input type="number" id="param-samples-length" class="input-field param-samples param-samples-clickable" value="" min="1" max="100" readonly placeholder="Enter" onclick="openParamConfigModal('Length')">
+                                        </div>
+                                        <span class="param-error" id="length-error" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Hardness -->
+                                    <div class="parameter-item" id="param-group-hardness">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="param-hardness" onchange="handleParameterCheckboxChange('Hardness', this)">
+                                            <span>Hardness</span>
+                                        </label>
+                                        <div class="param-samples-row">
+                                            <label class="param-samples-label">Samples:</label>
+                                            <input type="number" id="param-samples-hardness" class="input-field param-samples param-samples-clickable" value="" min="1" max="100" readonly placeholder="Enter" onclick="openParamConfigModal('Hardness')">
+                                        </div>
+                                        <span class="param-error" id="hardness-error" style="display:none;"></span>
+                                    </div>
+
+                                    <!-- Weight -->
+                                    <div class="parameter-item" id="param-group-weight">
+                                        <label class="checkbox-label">
+                                            <input type="checkbox" id="param-weight" onchange="handleParameterCheckboxChange('Weight', this)">
+                                            <span>Weight</span>
+                                        </label>
+                                        <div class="param-samples-row">
+                                            <label class="param-samples-label">Samples:</label>
+                                            <input type="number" id="param-samples-weight" class="input-field param-samples param-samples-clickable" value="" min="1" max="100" readonly placeholder="Enter" onclick="openParamConfigModal('Weight')">
+                                        </div>
+                                        <span class="param-error" id="weight-error" style="display:none;"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="button-group">
+                                <button class="btn btn-secondary" onclick="goToPage('home')">Back</button>
+                                <button class="btn btn-primary" onclick="nextFormStep()">Save</button>
+                            </div>
+                        </div>
+
+                        <div id="form-step-2" class="form-grid" style="display: none;">
+                            <input type="hidden" id="recipe-delay" value="">
+                            <div class="button-group">
+                                <button class="btn btn-secondary" onclick="prevFormStep()">Back</button>
+                                <button id="form-step-2-save-btn" class="btn btn-success" onclick="handleSaveRecipeFromStep2()" style="display:none;">Save</button>
+                                <button id="form-step-2-start-btn" class="btn btn-success" onclick="handleStartTest()">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                                    </svg>
+                                    Start
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Param Tolerance Page (full-page) -->
+                <div class="page" id="page-param-tolerance">
+                    <div class="param-tolerance-page">
+                        <h2 id="param-tolerance-page-title" class="param-tolerance-title">Tolerance for Thickness</h2>
+                        <div class="param-tolerance-body">
+                            <div class="tolerance-layout tolerance-layout-page">
+                                <!-- Left Column: Negative Tolerance -->
+                                <div class="tolerance-column tolerance-negative">
+                                    <div class="tolerance-button tolerance-minus-btn">
+                                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round">
+                                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                                        </svg>
+                                    </div>
+                                    <div class="tolerance-fields-group">
+                                        <div class="tolerance-field-item">
+                                            <label class="tolerance-field-label">-T1</label>
+                                            <input type="text" id="param-tolerance-lower-t1" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value" oninput="validateToleranceInputField(this)">
+                                        </div>
+                                        <div class="tolerance-field-item">
+                                            <label class="tolerance-field-label">-T2</label>
+                                            <input type="text" id="param-tolerance-lower-t2" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value" oninput="validateToleranceInputField(this)">
+                                        </div>
+                                        <div class="tolerance-field-item" style="display: none;">
+                                            <input type="text" id="param-tolerance-lower-t2-second" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value">
+                                        </div>
+                                        <div class="tolerance-field-item" style="display: none;">
+                                            <input type="text" id="param-tolerance-lower-t1-second" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Center Column: Nominal Value -->
+                                <div class="tolerance-column tolerance-nominal">
+                                    <div class="nominal-icon">
+                                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="3" y="8" width="18" height="12" rx="2"></rect>
+                                            <line x1="7" y1="8" x2="7" y2="20"></line>
+                                            <line x1="17" y1="8" x2="17" y2="20"></line>
+                                            <line x1="3" y1="12" x2="21" y2="12"></line>
+                                            <line x1="3" y1="16" x2="21" y2="16"></line>
+                                        </svg>
+                                    </div>
+                                    <label class="nominal-label" id="nominal-label-text">Nominal Hardness</label>
+                                    <input type="text" id="param-tolerance-nominal" class="tolerance-input-field tolerance-nominal-input" inputmode="decimal" placeholder="Enter value" oninput="validateToleranceInputField(this)">
+                                    <div class="plausibility-section">
+                                        <label class="plausibility-label">Plausibility</label>
+                                        <div class="plausibility-buttons">
+                                            <button type="button" class="plausibility-btn" id="plausibility-absolute" onclick="selectPlausibility('absolute')">Absolute</button>
+                                            <button type="button" class="plausibility-btn" id="plausibility-percentage" onclick="selectPlausibility('percentage')">Percentage</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Right Column: Positive Tolerance -->
+                                <div class="tolerance-column tolerance-positive">
+                                    <div class="tolerance-button tolerance-plus-btn">
+                                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round">
+                                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                                        </svg>
+                                    </div>
+                                    <div class="tolerance-fields-group">
+                                        <div class="tolerance-field-item">
+                                            <label class="tolerance-field-label">+T1</label>
+                                            <input type="text" id="param-tolerance-upper-t1" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value" oninput="validateToleranceInputField(this)">
+                                        </div>
+                                        <div class="tolerance-field-item">
+                                            <label class="tolerance-field-label">+T2</label>
+                                            <input type="text" id="param-tolerance-upper-t2" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value" oninput="validateToleranceInputField(this)">
+                                        </div>
+                                        <div class="tolerance-field-item" style="display: none;">
+                                            <input type="text" id="param-tolerance-upper-t1-second" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value">
+                                        </div>
+                                        <div class="tolerance-field-item" style="display: none;">
+                                            <input type="text" id="param-tolerance-upper-t2-second" class="tolerance-input-field" inputmode="decimal" placeholder="Enter value">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <p id="param-tolerance-error" class="tolerance-error-msg" style="display: none; color: #E53E3E; font-size: 14px; margin: 0 0 12px; text-align: center;"></p>
+                        <div class="param-tolerance-actions">
+                            <button class="btn tolerance-btn-cancel" onclick="cancelParamTolerance()">Cancel</button>
+                            <button class="btn tolerance-btn-next" onclick="confirmParamTolerance()">Save & Continue</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Validation & Calibration - Main Selection -->
+                <div class="page" id="page-validate">
+                    <div class="validation-main-container">
+                        <h2 class="section-title">Validation & Calibration</h2>
+                        <p class="section-subtitle">Choose validation or calibration procedure</p>
+                        <div class="validation-settings-grid">
+                            <button class="settings-card settings-validate" onclick="selectOperation('validate')">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                                    </svg>
+                                </div>
+                                <h3>Validate</h3>
+                                <p>Standard Apparatus Validation</p>
+                            </button>
+                            <button class="settings-card settings-calibrate" onclick="selectOperation('calibrate')">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                                    </svg>
+                                </div>
+                                <h3>Calibrate</h3>
+                                <p>Calibration Procedure</p>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Validation Type Selection -->
+                <div class="page" id="page-validate-type-select">
+                    <div class="validation-type-page">
+                        <button class="btn-back-inline" onclick="goToPage('validate')">Back</button>
+                        <h2 class="section-title">Select Validation Type</h2>
+                        <p class="section-subtitle">Choose the validation procedure to run</p>
+                        <div class="validation-type-grid">
+                            <label class="validation-type-settings-card val-distance">
+                                <input type="radio" name="val-type" value="distance" checked>
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                        <polyline points="12 5 19 12 12 19"></polyline>
+                                    </svg>
+                                </div>
+                                <h3>Distance Validation</h3>
+                                <p>Validate distance measurement</p>
+                            </label>
+                            <label class="validation-type-settings-card val-load">
+                                <input type="radio" name="val-type" value="load">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                    </svg>
+                                </div>
+                                <h3>Load Validation</h3>
+                                <p>Validate load cell with known weight</p>
+                            </label>
+                        </div>
+                        <button class="btn btn-primary validation-start-btn" onclick="startValidationFromType()">Start Validation</button>
+                    </div>
+                </div>
+
+                <!-- Load Validation Test Screen -->
+                <div class="page" id="page-load-validation">
+                    <div class="validation-test-page">
+                        <button class="btn-back-inline" onclick="stopValidationAndBack()">Stop</button>
+                        <h2 class="section-title">Load Validation</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-card">
+                                <div class="validation-card-label">Expected Weight (g)</div>
+                                <input type="text" id="load-validation-expected-weight" class="input-field" placeholder="e.g. 5000 for 5 kg" inputmode="decimal"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Current Load</div>
+                                <div class="validation-card-value-row">
+                                    <span class="validation-card-value" id="load-validation-value">--</span>
+                                    <span class="validation-card-unit">kg</span>
+                                </div>
+                            </div>
+                            <div class="validation-stats-card">
+                                <span>Min: <strong id="load-validation-min">--</strong> kg</span>
+                                <span>Max: <strong id="load-validation-max">--</strong> kg</span>
+                            </div>
+                            <div id="load-validation-status-card" class="validation-status-card" style="display:none;">
+                                <p id="load-validation-status-text"></p>
+                            </div>
+                            <button id="load-validation-complete-btn" class="btn btn-primary validation-action-btn" onclick="completeLoadValidation()" disabled>Complete & Save</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Distance Validation Test Screen -->
+                <div class="page" id="page-distance-validation">
+                    <div class="validation-test-page">
+                        <button class="btn-back-inline" onclick="goToPage('validate-type-select')">Back</button>
+                        <h2 class="section-title">Distance Validation</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-card">
+                                <div class="validation-card-label">Gauge Block Value (mm)</div>
+                                <input type="text" id="distance-validation-gauge-input" class="input-field" placeholder="e.g. 10" inputmode="decimal"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="validation-status-card">
+                                <p id="distance-validation-status-text"></p>
+                            </div>
+                            <div class="validation-actions-row">
+                                <button id="distance-validation-primary-btn" class="btn btn-primary validation-action-btn" onclick="startDistanceValidationTest()">Set Backoff</button>
+                            </div>
+                            <div id="distance-validation-measured-row" class="validation-card" style="display: none;">
+                                <div class="validation-card-label">Measured Value</div>
+                                <div class="validation-card-value-row">
+                                    <span class="validation-card-value" id="distance-validation-measured-value">--</span>
+                                    <span class="validation-card-unit">mm</span>
+                                </div>
+                            </div>
+                            <div id="distance-validation-passfail-row" class="validation-actions-row" style="display: none;">
+                                <button class="btn btn-primary validation-action-btn" onclick="completeDistanceValidationPass()">Pass</button>
+                                <button class="btn btn-secondary validation-action-btn" onclick="completeDistanceValidationFail()">Fail</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Distance Validation Result Screen -->
+                <div class="page" id="page-distance-validation-result">
+                    <div class="validation-test-page">
+                        <button class="btn-back-inline" onclick="goToPage('validate-type-select')">Back</button>
+                        <h2 class="section-title">Distance Validation Result</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-card">
+                                <div class="validation-card-label">Gauge Value</div>
+                                <div class="validation-card-value-row">
+                                    <span class="validation-card-value" id="distance-validation-result-gauge">--</span>
+                                    <span class="validation-card-unit">mm</span>
+                                </div>
+                            </div>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Measured Value</div>
+                                <div class="validation-card-value-row">
+                                    <span class="validation-card-value" id="distance-validation-result-measured">--</span>
+                                    <span class="validation-card-unit">mm</span>
+                                </div>
+                            </div>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Difference</div>
+                                <div class="validation-card-value-row">
+                                    <span class="validation-card-value" id="distance-validation-result-difference">--</span>
+                                    <span class="validation-card-unit">mm</span>
+                                </div>
+                            </div>
+                            <div class="validation-actions-row">
+                                <button class="btn btn-primary validation-action-btn" onclick="completeDistanceValidation()">Complete & Save</button>
+                                <button class="btn btn-secondary validation-action-btn" onclick="goToPage('validate-type-select')">Back</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Calibration Type Selection -->
+                <div class="page" id="page-calibration-type-select">
+                    <div class="validation-type-page">
+                        <button class="btn-back-inline" onclick="goToPage('validate')">Back</button>
+                        <h2 class="section-title">Select Calibration Type</h2>
+                        <p class="section-subtitle">Choose the calibration procedure to run</p>
+                        <div class="validation-type-grid calibration-grid">
+                            <label class="validation-type-settings-card cal-load">
+                                <input type="radio" name="cal-type" value="load" checked>
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                    </svg>
+                                </div>
+                                <h3>Load Calibration</h3>
+                                <p>Calibrate load cell with known weight</p>
+                            </label>
+                            <label class="validation-type-settings-card cal-span">
+                                <input type="radio" name="cal-type" value="distance-zero">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                        <polyline points="12 5 19 12 12 19"></polyline>
+                                    </svg>
+                                </div>
+                                <h3>Distance Calibration</h3>
+                                <p>Calibrate distance zero (10 mm gauge block)</p>
+                            </label>
+                        </div>
+                        <button class="btn btn-primary validation-start-btn" onclick="startCalibrationFromType()">Start Calibration</button>
+                    </div>
+                </div>
+
+                <!-- Load Calibration Screen -->
+                <div class="page" id="page-load-calibration">
+                    <div class="validation-test-page calibration-page">
+                        <button class="btn-back-inline" onclick="goToPage('calibration-type-select')">Back</button>
+                        <h2 class="section-title">Load Calibration</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-instructions-card">
+                                <p>1. Set up load cell arrangement per manual.</p>
+                                <p>2. Place calibration plate on load cell.</p>
+                                <p>3. Perform tare process with empty plate.</p>
+                                <p>4. Place 5 kg calibration weight on the plate.</p>
+                                <p>5. Press Start Calibration to complete.</p>
+                            </div>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Status</div>
+                                <span class="validation-card-value" id="load-calibration-status">Ready</span>
+                            </div>
+                            <button class="btn btn-primary validation-action-btn" id="load-calibration-start-btn" onclick="startLoadCalibration()">Start Calibration</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Distance Calibration Screen: C,DZ -> wait T,HOME,OK -> C,DS -> reports -->
+                <div class="page" id="page-distance-zero-calibration">
+                    <div class="validation-test-page calibration-page">
+                        <button class="btn-back-inline" onclick="goToPage('validate')">Back</button>
+                        <h2 class="section-title">Distance Calibration</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-instructions-card">
+                                <p>1. Press "Distance Zero"</p>
+                                <p>2. Wait for machine to zero and home</p>
+                                <p>3. Place 10 mm gauge block</p>
+                                <p>4. Press "Calibrate"</p>
+                            </div>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Status</div>
+                                <span class="validation-card-value" id="distance-zero-calibration-status">Ready</span>
+                            </div>
+                            <button class="btn btn-primary validation-action-btn" id="distance-zero-calibration-btn" onclick="startDistanceZeroCalibration()">Distance Zero</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reports Page -->
+                <div class="page" id="page-reports">
+                    <div class="reports-container reports-page-layout">
+                        <div class="reports-filter-buttons">
+                            <button class="reports-filter-btn reports-filter-test" onclick="filterReports('test')">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                    <polyline points="10 9 9 9 8 9"></polyline>
+                                </svg>
+                                <span>Test Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-validation" onclick="filterReports('validation')">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                                </svg>
+                                <span>Validation Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-calibration" onclick="filterReports('calibration')">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                                </svg>
+                                <span>Calibration Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-export" onclick="exportFilteredReports()">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="7 10 12 15 17 10"></polyline>
+                                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                                </svg>
+                                <span>Export Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-recipes" onclick="viewRecipe()">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                </svg>
+                                <span>View Recipe</span>
+                            </button>
+                        </div>
+                        <table class="reports-table">
+                            <thead>
+                                <tr>
+                                    <th>SL No</th>
+                                    <th>Report Name</th>
+                                    <th>Creation Time</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="reports-table-body">
+                                <!-- Populated by loadReports() -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- View Recipe Page (Product + View only) -->
+                <div class="page" id="page-view-recipes">
+                    <div class="reports-container reports-page-layout">
+                        <h2 class="view-recipes-title">View Recipe</h2>
+                        <table class="reports-table view-recipes-table">
+                            <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th class="view-col">View</th>
+                                </tr>
+                            </thead>
+                            <tbody id="view-recipes-table-body">
+                                <!-- Populated by loadViewRecipes() -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recipe Print Preview Page (A4 layout) -->
+                <div class="page" id="page-recipe-print-preview">
+                    <div class="reports-container" style="overflow-y: auto;">
+                        <div class="report-preview-container recipe-print-container" id="recipe-print-content">
+                            <h1>RAISE LAB EQUIPMENT</h1>
+                            <h2>Tablet Hardness Tester - Recipe</h2>
+                            <h2 id="recipe-print-company-name">COMPANY NAME</h2>
+                            <table class="report-ident-table">
+                                <tr>
+                                    <th>Model No</th>
+                                    <td id="recipe-print-model-no"></td>
+                                    <th>Serial No</th>
+                                    <td id="recipe-print-serial-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Location</th>
+                                    <td id="recipe-print-location"></td>
+                                    <th>Instrument No</th>
+                                    <td id="recipe-print-instrument-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Last Validation Date</th>
+                                    <td id="recipe-print-previous-val"></td>
+                                    <th>Next Validation Due</th>
+                                    <td id="recipe-print-next-validation"></td>
+                                </tr>
+                            </table>
+                            <h3 id="recipe-print-product">Product Name</h3>
+                            <table>
+                                <tr><th style="width: 30%;">Batch Number</th><td id="recipe-print-batch"></td></tr>
+                                <tr><th>Shape</th><td id="recipe-print-shape"></td></tr>
+                                <tr><th>Thickness</th><td id="recipe-print-thickness"></td></tr>
+                                <tr id="recipe-print-diameter-row"><th id="recipe-print-diameter-th">Diameter</th><td id="recipe-print-diameter"></td></tr>
+                                <tr><th>Width</th><td id="recipe-print-width"></td></tr>
+                                <tr id="recipe-print-length-row"><th>Length</th><td id="recipe-print-length"></td></tr>
+                                <tr><th>Hardness</th><td id="recipe-print-hardness"></td></tr>
+                                <tr><th>Weight</th><td id="recipe-print-weight"></td></tr>
+                                <tr><th>Unit</th><td id="recipe-print-unit"></td></tr>
+                                <tr><th>Sample Size</th><td id="recipe-print-samples"></td></tr>
+                            </table>
+                            <h3 style="margin-top: 1rem;">Tolerance</h3>
+                            <table class="recipe-print-tolerance-table">
+                                <thead>
+                                    <tr>
+                                        <th></th>
+                                        <th>T2-</th>
+                                        <th>T1-</th>
+                                        <th>NOMINAL</th>
+                                        <th>T1+</th>
+                                        <th>T2+</th>
+                                        <th>UNIT</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recipe-print-tolerance-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="report-preview-actions">
+                            <button class="btn-print" onclick="handlePrintRecipeA4()">Print A4</button>
+                            <button class="btn-print btn-print-thermal" onclick="handlePrintRecipeThermal()">Print Thermal</button>
+                            <button class="btn-close" onclick="goToPage('view-recipes')">Close</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Report Preview Page -->
+                <div class="page" id="page-report-preview">
+                    <div class="reports-container" style="overflow-y: auto;">
+                        <div class="report-preview-container report-print-template" id="report-content">
+                            <h1>RAISE LAB EQUIPMENT</h1>
+                            <h2>TABLET HARDNESS TESTER</h2>
+                            <h2 id="report-company-name">COMPANY NAME</h2>
+
+                            <!-- General Identification (dt sample order: Model/Serial, Location/Instrument, Last/Next validation) -->
+                            <table class="report-ident-table">
+                                <tr>
+                                    <th>Model No</th>
+                                    <td id="report-model-no"></td>
+                                    <th>Serial No</th>
+                                    <td id="report-serial-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Location</th>
+                                    <td id="report-location"></td>
+                                    <th>Instrument No</th>
+                                    <td id="report-instrument-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Last Validation Date</th>
+                                    <td id="report-previous-val"></td>
+                                    <th>Next Validation Due</th>
+                                    <td id="report-next-validation"></td>
+                                </tr>
+                            </table>
+
+                            <!-- Validation/Calibration Details (shown only for validation/calibration reports) -->
+                            <div id="report-validation-calibration-section" style="display: none;">
+                                <h3 id="report-validation-calibration-title">VALIDATION / CALIBRATION DETAILS</h3>
+                                <table class="report-ident-table" id="report-validation-calibration-table">
+                                    <tbody id="report-validation-calibration-body">
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Test Information (shown only for test reports) -->
+                            <div id="report-test-sections">
+                            <h3>TEST INFORMATION</h3>
+                            <table class="report-info-table">
+                                <tr>
+                                    <th>PRODUCT NAME</th>
+                                    <td id="report-product-name"></td>
+                                    <th>BATCH NUMBER</th>
+                                    <td id="report-batch-number"></td>
+                                </tr>
+                                <tr>
+                                    <th>MODE</th>
+                                    <td id="report-mode"></td>
+                                    <th>SHAPE</th>
+                                    <td id="report-shape"></td>
+                                </tr>
+                                <tr>
+                                    <th>HARDNESS UNIT</th>
+                                    <td id="report-hardness-unit"></td>
+                                    <th>DISTANCE UNIT</th>
+                                    <td id="report-distance-unit"></td>
+                                    <th>WEIGHT UNIT</th>
+                                    <td id="report-weight-unit"></td>
+                                </tr>
+                                <tr>
+                                    <th>REPORT/TEST START</th>
+                                    <td id="report-test-start" colspan="1"></td>
+                                    <th>GENERATED</th>
+                                    <td id="report-generated"></td>
+                                </tr>
+                                <tr>
+                                    <th>TEST DURATION</th>
+                                    <td id="report-test-duration"></td>
+                                    <th>TEST STATUS</th>
+                                    <td id="report-test-status"></td>
+                                </tr>
+                            </table>
+
+                            <table class="report-settings-table" id="report-settings-table">
+                                <thead>
+                                    <tr>
+                                        <th></th>
+                                        <th>T2-</th>
+                                        <th>T1-</th>
+                                        <th>NOMINAL</th>
+                                        <th>T1+</th>
+                                        <th>T2+</th>
+                                        <th>UNIT</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="report-settings-body">
+                                </tbody>
+                            </table>
+
+                            <!-- Test Data -->
+                            <h3>TEST DATA</h3>
+                            <table class="report-test-data-table" id="report-test-data-table">
+                                <thead>
+                                    <tr id="report-test-data-header">
+                                        <th>S.NO</th>
+                                        <th>WEIGHT</th>
+                                        <th>THICKNESS</th>
+                                        <th>WIDTH</th>
+                                        <th>LENGTH</th>
+                                        <th>HARDNESS</th>
+                                        <th>RESULT</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="report-test-data-body">
+                                </tbody>
+                            </table>
+
+                            <!-- Statistics -->
+                            <h3>STATISTICS</h3>
+                            <table class="report-statistics-table" id="report-statistics-table">
+                                <thead>
+                                    <tr id="report-statistics-header">
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="report-statistics-body">
+                                </tbody>
+                            </table>
+                            </div>
+
+                            <!-- Remarks -->
+                            <h3>REMARKS</h3>
+                            <div class="report-remarks-box" id="report-remarks-box"></div>
+
+                            <!-- Operated By, Employee ID & Approved By (dt sample style: two pairs per row) -->
+                            <table class="report-approval-table">
+                                <tr>
+                                    <th>Operated By</th>
+                                    <td id="report-operated-by"></td>
+                                    <th>Employee ID</th>
+                                    <td id="report-employee-id"></td>
+                                </tr>
+                                <tr>
+                                    <th>Approved By</th>
+                                    <td id="report-approved-by" colspan="3"></td>
+                                </tr>
+                            </table>
+                        </div>
+                        <div class="report-preview-actions">
+                            <button class="btn-print" onclick="handlePrintReport()">Print A4</button>
+                            <button class="btn-print btn-print-thermal" onclick="handlePrintThermal()">Print Thermal</button>
+                            <button class="btn-export" onclick="handleExportReport()">Export to USB</button>
+                            <button class="btn-action" id="btn-preview-recipe" onclick="handlePreviewRecipe()">Preview Recipe</button>
+                            <button class="btn-close" onclick="goToPage('reports')">Close</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings Page -->
+                <div class="page" id="page-settings">
+                    <div class="settings-grid-container">
+                        <!-- Edit Date and Time -->
+                        <button class="settings-card settings-datetime" onclick="goToPage('datetime')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <polyline points="12 6 12 12 16 14"></polyline>
+                                </svg>
+                            </div>
+                            <h3>Edit Date and Time</h3>
+                        </button>
+
+                        <!-- Manage Recipes -->
+                        <button class="settings-card settings-recipes" onclick="manageRecipes()">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                </svg>
+                            </div>
+                            <h3>Manage Recipe</h3>
+                        </button>
+
+                        <!-- Validation and Calibration -->
+                        <button class="settings-card settings-validation" onclick="goToPage('validate')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                                </svg>
+                            </div>
+                            <h3>Validation & Calibration</h3>
+                        </button>
+
+                        <!-- Factory Settings -->
+                        <button class="settings-card settings-factory" onclick="goToPage('factory-settings')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path
+                                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                                    </path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </div>
+                            <h3>Factory Settings</h3>
+                        </button>
+
+                        <!-- Factory support -->
+                        <button type="button" class="settings-card settings-factory-support" onclick="goToPage('factory-support')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M3 18v-6a9 9 0 0 1 18 0v6"></path>
+                                    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path>
+                                </svg>
+                            </div>
+                            <h3>Factory support</h3>
+                        </button>
+
+                        <!-- Factory Reset -->
+                        <button class="settings-card settings-reset" onclick="showFactoryResetConfirm()">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="1 4 1 10 7 10"></polyline>
+                                    <polyline points="23 20 23 14 17 14"></polyline>
+                                    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15">
+                                    </path>
+                                </svg>
+                            </div>
+                            <h3>Factory Reset</h3>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Date & Time Page -->
+                <div class="page" id="page-datetime">
+                    <div class="datetime-setup-container">
+                        <div class="datetime-grid">
+                            <!-- Date Card -->
+                            <div class="datetime-card">
+                                <div class="datetime-label">Date</div>
+                                <div class="datetime-date-row">
+                                    <input type="text" id="edit-date" class="datetime-display-box" placeholder="DD-MM-YYYY"
+                                        style="background: transparent; border: none; color: #ffffff; font-size: inherit; font-family: inherit; text-align: center; flex: 1; outline: none;">
+                                    <button type="button" class="date-picker-icon-btn datetime-picker-btn" onclick="openDatePickerForEditDate()" title="Open calendar" aria-label="Open calendar">
+                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                            <line x1="16" y1="2" x2="16" y2="6"></line>
+                                            <line x1="8" y1="2" x2="8" y2="6"></line>
+                                            <line x1="3" y1="10" x2="21" y2="10"></line>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <input type="date" id="edit-date-picker-hidden" style="position:absolute;visibility:hidden;width:1px;height:1px;left:0;top:0;clip:rect(0,0,0,0);" tabindex="-1">
+                            </div>
+
+                            <!-- Time Card (24-hour format only) -->
+                            <div class="datetime-card">
+                                <div class="datetime-label">Time</div>
+                                <input type="text" id="edit-time" class="datetime-display-box" placeholder="HH:MM (24h)"
+                                    style="background: transparent; border: none; color: #ffffff; font-size: inherit; font-family: inherit; text-align: center; width: 100%; outline: none;">
+                            </div>
+                        </div>
+
+                        <button class="btn-apply-datetime" onclick="applyDateTime()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            Apply Date & Time
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Factory Settings Page -->
+                <div class="page" id="page-factory-settings">
+                    <div class="page-content">
+                        <div class="form-container">
+                            <h2 class="section-title">Factory Settings</h2>
+                            
+                            <div class="form-grid">
+                                <!-- Row 1: Company Name and Location (Required) -->
+                                <div class="form-group">
+                                    <label>Company Name <span style="color: #ef4444;">*</span></label>
+                                    <input type="text" id="factory-company-name" class="input-field"
+                                        placeholder="Enter company name"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group">
+                                    <label>Company Location <span style="color: #ef4444;">*</span></label>
+                                    <input type="text" id="factory-company-location" class="input-field"
+                                        placeholder="City / Site"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+
+                                <!-- Row 2: Serial Number and Model Number -->
+                                <div class="form-group">
+                                    <label>Serial Number</label>
+                                    <input type="text" id="factory-serial-no" class="input-field"
+                                        placeholder="Unique device serial"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group">
+                                    <label>Model Number</label>
+                                    <input type="text" id="factory-model-no" class="input-field"
+                                        placeholder="Product model"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+
+                                <!-- Row 3: Instrument ID and Installation Date -->
+                                <div class="form-group">
+                                    <label>Instrument ID</label>
+                                    <input type="text" id="factory-instrument-id" class="input-field"
+                                        placeholder="Internal unique ID"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group">
+                                    <label>Installation Date</label>
+                                    <div class="date-input-wrapper">
+                                        <input type="date" id="factory-installation-date" class="input-field">
+                                        <button type="button" class="date-picker-icon-btn" onclick="openDatePicker('factory-installation-date')" title="Open calendar" aria-label="Open calendar">
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                                <line x1="16" y1="2" x2="16" y2="6"></line>
+                                                <line x1="8" y1="2" x2="8" y2="6"></line>
+                                                <line x1="3" y1="10" x2="21" y2="10"></line>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Row 4: Firmware Version and Installed By -->
+                                <div class="form-group">
+                                    <label>Firmware Version</label>
+                                    <input type="text" id="factory-firmware" class="input-field" value="RD-RDT v1.0.0" readonly>
+                                </div>
+                                <div class="form-group">
+                                    <label>Installed By</label>
+                                    <input type="text" id="factory-installed-by" class="input-field"
+                                        placeholder="Technician name"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+
+                                <!-- Row 5: Load Cell Range and Limits -->
+                                <div class="form-group">
+                                    <label>Load Cell Range (N)</label>
+                                    <select id="factory-load-cell-range" class="input-field">
+                                        <option value="300">300 N</option>
+                                        <option value="500" selected>500 N</option>
+                                        <option value="800">800 N</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Max Recipes</label>
+                                    <input type="number" id="factory-max-recipes" class="input-field" min="1" max="999" placeholder="150" value="150">
+                                </div>
+                                <div class="form-group">
+                                    <label>Max Users</label>
+                                    <input type="number" id="factory-max-users" class="input-field" min="1" max="999" placeholder="10" value="10">
+                                </div>
+                                <div class="form-group">
+                                    <label>Max Admins</label>
+                                    <input type="number" id="factory-max-admins" class="input-field" min="1" max="99" placeholder="2" value="2">
+                                </div>
+                                <div class="form-group">
+                                    <label>Max Supervisors</label>
+                                    <input type="number" id="factory-max-supervisors" class="input-field" min="1" max="99" placeholder="3" value="3">
+                                </div>
+                            </div>
+
+                            <!-- Action Buttons -->
+                            <div class="button-group">
+                                <button class="btn btn-secondary" onclick="goToPage('settings')">Cancel</button>
+                                <button id="btn-save-factory-settings" class="btn btn-success" onclick="saveFactorySettings()">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                                        <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                                        <polyline points="7 3 7 8 15 8"></polyline>
+                                    </svg>
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Factory support -->
+                <div class="page" id="page-factory-support">
+                    <div class="page-content">
+                        <div class="form-container">
+                            <h2 class="section-title">Factory support</h2>
+                            <p class="factory-support-login-instructions">
+                                Connect this device to the LAN, then sign in using the factory support credentials.
+                            </p>
+
+                            <p id="factory-support-loading-msg" class="factory-support-loading-msg" style="display: none;" aria-live="polite">
+                                Please wait while this device prepares network information…
+                            </p>
+
+                            <div class="form-grid factory-support-form-grid">
+                                <div class="form-group">
+                                    <label>ID</label>
+                                    <input type="text" id="factory-support-user" class="input-field" autocomplete="username"
+                                        placeholder="ID"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group">
+                                    <label>Password</label>
+                                    <input type="password" id="factory-support-password" class="input-field" autocomplete="current-password"
+                                        placeholder="Password"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                            </div>
+
+                            <div class="button-group" style="margin-top: 8px;">
+                                <button type="button" id="factory-support-btn-back" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
+                                <button type="button" id="factory-support-btn-submit" class="btn btn-success" onclick="submitFactorySupportLogin()">Sign in</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Factory support: IP result (after sign-in) -->
+                <div class="page" id="page-factory-support-result">
+                    <div class="page-content factory-support-result-page">
+                        <h2 class="section-title factory-support-result-title">Network address</h2>
+                        <p class="factory-support-result-instructions">
+                            Use this address on the same LAN to reach this device.
+                        </p>
+                        <div id="factory-support-result-ip" class="factory-support-ip-hero"></div>
+                        <div class="button-group" style="margin-top: 32px;">
+                            <button type="button" class="btn btn-secondary" onclick="goToPage('factory-support')">Back</button>
+                            <button type="button" class="btn btn-success" onclick="goToPage('settings')">Done</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- User Profile Page (Main Dashboard) -->
+                <div class="page" id="page-user-profile">
+                    <div class="profile-dashboard-container">
+                        <!-- Left Column: Profile Info + Edit Form -->
+                        <div class="profile-dashboard-left">
+                            <div class="current-user-header">
+                                <div class="user-avatar-large">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                        <circle cx="12" cy="7" r="4"></circle>
+                                    </svg>
+                                </div>
+                                <div class="user-info-text">
+                                    <h2 id="profile-name-display">qwer</h2>
+                                    <span id="profile-role-display" class="role-badge">Admin</span>
+                                </div>
+                            </div>
+
+                            <div class="profile-edit-form">
+                                <div class="form-group full-width">
+                                    <label>Edit Full Name</label>
+                                    <input type="text" id="profile-fullname" class="input-field" value="qwer">
+                                </div>
+
+                                <div class="form-group full-width">
+                                    <label>Edit Password</label>
+                                    <input type="password" id="profile-password" class="input-field"
+                                        placeholder="Enter new password">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right Column: Actions -->
+                        <div class="profile-actions">
+                            <button class="btn btn-blue btn-block" onclick="saveUserProfile()">Save</button>
+                            <button class="btn btn-orange btn-block" onclick="goToPage('manage-members')">Manage Members</button>
+                            <button class="btn btn-blue btn-block" onclick="goToPage('add-member')">Add Members</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manage Members Page -->
+                <div class="page" id="page-manage-members">
+                    <div class="manage-members-container">
+                        <table class="member-table">
+                            <thead>
+                                <tr>
+                                    <th>Full Name</th>
+                                    <th>Username</th>
+                                    <th>Role</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="members-list-body">
+                                <!-- Populated by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Change Role Modal Overlay -->
+                    <div id="role-modal-overlay" class="modal-overlay" style="display: none;">
+                        <div class="role-modal">
+                            <h3 id="role-modal-title">Change Role for qwer</h3>
+                            <p id="role-modal-current">Current Role: Admin</p>
+
+                            <div class="role-modal-buttons">
+                                <button class="btn-role-select btn-role-admin"
+                                    onclick="confirmRoleChange('Admin')">Admin</button>
+                                <button class="btn-role-select btn-role-supervisor"
+                                    onclick="confirmRoleChange('Supervisor')">Supervisor</button>
+                                <button class="btn-role-select btn-role-user"
+                                    onclick="confirmRoleChange('User')">User</button>
+                                <button class="btn-role-select btn-role-cancel"
+                                    onclick="closeRoleModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Add Member Page -->
+                <div class="page" id="page-add-member">
+                    <div class="add-member-container">
+                        <div class="add-member-main">
+                            <div class="add-member-grid">
+                                <div class="form-group add-member-field">
+                                    <label>Full Name</label>
+                                    <input type="text" id="add-fullname" class="input-field add-member-input" placeholder="Enter full name"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group add-member-field">
+                                    <label>User ID / Employee ID</label>
+                                    <input type="text" id="add-userid" class="input-field add-member-input"
+                                        placeholder="Enter User ID / Employee ID"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group add-member-field">
+                                    <label>Password</label>
+                                    <input type="password" id="add-password" class="input-field add-member-input"
+                                        placeholder="Enter password"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                                <div class="form-group add-member-field">
+                                    <label>Confirm Password</label>
+                                    <input type="password" id="add-confirm-password" class="input-field add-member-input"
+                                        placeholder="Confirm password"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
+                            </div>
+
+                            <div class="role-selection-container">
+                                <label>Role</label>
+                                <div class="role-options">
+                                    <button class="role-btn active" onclick="selectRole('User')">User</button>
+                                    <button class="role-btn" onclick="selectRole('Supervisor')">Supervisor</button>
+                                    <button class="role-btn" onclick="selectRole('Admin')">Admin</button>
+                                </div>
+                                <input type="hidden" id="selected-role" value="User">
+                            </div>
+
+                            <div class="add-member-actions">
+                                <button class="btn btn-success add-member-save-btn" onclick="saveNewMember()">Save</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manage Recipes Page -->
+                <div class="page" id="page-manage-recipes">
+                    <div class="recipes-container">
+                        <div class="recipes-header">
+                            <h2>Saved Recipes</h2>
+                            <button class="btn btn-primary" onclick="goToPage('quick-test')">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                                </svg>
+                                Create New Recipe
+                            </button>
+                        </div>
+                        <div class="recipe-list-container">
+                            <!-- Recipe cards will be dynamically generated here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Test Run Page (Load Recipe Template View) -->
+                <div class="page" id="page-test-run">
+                    <div class="test-run-container">
+                        <!-- Header / Top Bar -->
+                        <div class="test-run-header">
+                            <div class="test-run-info-row">
+                                <span class="info-label">Product:</span>
+                                <span class="info-value" id="run-product-name">--</span>
+                                <span class="info-separator">|</span>
+                                <span class="info-label">Batch:</span>
+                                <span class="info-value" id="run-batch-no">--</span>
+                                <span class="info-separator">|</span>
+                                <span class="info-label">Shape:</span>
+                                <span class="info-value run-shape-inline">
+                                    <svg id="run-shape-icon-round" class="run-shape-svg-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <circle cx="12" cy="12" r="8"></circle>
+                                    </svg>
+                                    <svg id="run-shape-icon-oblong" class="run-shape-svg-inline" style="display: none;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect x="4" y="6" width="16" height="12" rx="6"></rect>
+                                    </svg>
+                                    <span id="run-shape-val">--</span>
+                                </span>
+                            </div>
+
+                            <div class="test-run-controls">
+                                <!-- Dynamic Start/Abort Button -->
+                                <button id="btn-test-start-abort" class="btn-ctrl start header-btn"
+                                    onclick="toggleTestRunState()">
+                                    <div class="ctrl-icon">▶</div>
+                                    <span>START</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="test-run-body">
+                            <!-- Main metrics row (Thickness, Diameter, Width, Hardness) -->
+                            <div class="run-metrics-main">
+                                <div class="metric-card card-thickness">
+                                    <div class="metric-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="4" y="7" width="16" height="10" rx="5"></rect>
+                                            <line x1="8" y1="5" x2="8" y2="19"></line>
+                                            <polyline points="6 7 8 5 10 7"></polyline>
+                                            <polyline points="6 17 8 19 10 17"></polyline>
+                                        </svg>
+                                    </div>
+                                    <div class="metric-text">
+                                        <div class="metric-label">Thickness</div>
+                                        <div class="metric-value">
+                                            <span id="run-thickness-val">--</span>
+                                            <span id="run-thickness-unit" class="metric-unit">mm</span>
+                                        </div>
+                                        <span id="run-thickness-status" class="run-param-status">--</span>
+                                    </div>
+                                </div>
+
+                                <div class="metric-card card-width run-card-oblong-only" style="display: none;">
+                                    <div class="metric-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="5" y="7" width="14" height="10" rx="5"></rect>
+                                            <line x1="5" y1="19" x2="19" y2="19"></line>
+                                            <polyline points="7 17 5 19 7 21"></polyline>
+                                            <polyline points="17 17 19 19 17 21"></polyline>
+                                        </svg>
+                                    </div>
+                                    <div class="metric-text">
+                                        <div class="metric-label">Width</div>
+                                        <div class="metric-value">
+                                            <span id="run-width-val">--</span>
+                                            <span id="run-width-unit" class="metric-unit">mm</span>
+                                        </div>
+                                        <span id="run-width-status" class="run-param-status">--</span>
+                                    </div>
+                                </div>
+
+                                <div class="metric-card card-weight">
+                                    <div class="metric-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
+                                            <line x1="3" y1="6" x2="21" y2="6"></line>
+                                            <path d="M16 10a4 4 0 0 1-8 0"></path>
+                                        </svg>
+                                    </div>
+                                    <div class="metric-text">
+                                        <div class="metric-label">Weight</div>
+                                        <div class="metric-value">
+                                            <span id="run-weight-val">--</span>
+                                            <span id="run-weight-unit" class="metric-unit">gm</span>
+                                        </div>
+                                        <span id="run-weight-status" class="run-param-status">--</span>
+                                    </div>
+                                </div>
+
+                                <div class="metric-card card-lengthdia">
+                                    <div class="metric-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="6"></circle>
+                                            <line x1="8" y1="12" x2="16" y2="12"></line>
+                                            <polyline points="9 10 8 12 9 14"></polyline>
+                                            <polyline points="15 10 16 12 15 14"></polyline>
+                                        </svg>
+                                    </div>
+                                    <div class="metric-text">
+                                        <div class="metric-label" id="run-dia-length-label">Diameter</div>
+                                        <div class="metric-value">
+                                            <span id="run-lengthdia-val">--</span>
+                                            <span id="run-lengthdia-unit" class="metric-unit">mm</span>
+                                        </div>
+                                        <span id="run-lengthdia-status" class="run-param-status">--</span>
+                                    </div>
+                                </div>
+
+                                <div class="metric-card card-hardness">
+                                    <div class="metric-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M4 8h3v8H4c-1 0-2-1-2-2v-4c0-1 1-2 2-2z"></path>
+                                            <path d="M20 8h-3v8h3c1 0 2-1 2-2v-4c0-1-1-2-2-2z"></path>
+                                            <rect x="9" y="9" width="6" height="6" rx="2"></rect>
+                                            <line x1="12" y1="4" x2="12" y2="8"></line>
+                                            <polyline points="10 6 12 4 14 6"></polyline>
+                                        </svg>
+                                    </div>
+                                    <div class="metric-text">
+                                        <div class="metric-label">Hardness</div>
+                                        <div class="metric-value">
+                                            <span id="run-hardness-target">--</span>
+                                        </div>
+                                        <span id="run-hardness-status" class="run-param-status">--</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Summary strip (Total Samples + Unit) -->
+                            <div class="run-summary-strip">
+                                <div class="summary-item card-samples">
+                                    <span class="summary-label">Total Samples</span>
+                                    <span class="summary-value big-number" id="run-sample-count">00</span>
+                                    <span class="summary-subtext">Units</span>
+                                </div>
+                                <div class="summary-item card-unit">
+                                    <span class="summary-label">Measurement Unit</span>
+                                    <span class="summary-value unit-main"><span id="run-unit-short">N</span></span>
+                                    <span class="summary-subtext" id="run-unit-full">Newton</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Validation Modal -->
+    <div id="validation-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 class="calibration-modal-title">Calibration Instructions</h2>
+
+            <div class="calibration-steps-box">
+                <p>1. You Need Calibrate Weight</p>
+                <p>2. Calibrate And Validation Plate</p>
+                <p>3. Open Calibration And Validation Window</p>
+                <p>4. Carefully Take Loadcell Out Without Removing Connection</p>
+                <p>5. Put Calibration/Validation Plate Above the Loadcell</p>
+                <p>6. Put Any Calibrated Weight Above Loadcell On Plate And Press Ok To Proceed</p>
+            </div>
+
+            <div class="validation-question-container">
+                <p class="validation-question-text">Do You Want To Proceed For Calibration?</p>
+
+                <div class="validation-buttons">
+                    <button class="btn-validation-no" onclick="closeValidationModal()">NO</button>
+                    <button class="btn-validation-yes" onclick="proceedWithCalibration()">YES</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Procedure Modal (Calibration/Validation instructions) -->
+    <div id="procedure-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 id="procedure-modal-title" class="calibration-modal-title">Procedure</h2>
+            <div id="procedure-modal-steps" class="calibration-steps-box"></div>
+            <div class="validation-question-container">
+                <p class="validation-question-text">Do you want to proceed?</p>
+                <div class="validation-buttons">
+                    <button class="btn-validation-no" onclick="closeProcedureModal()">NO</button>
+                    <button class="btn-validation-yes" onclick="confirmProcedureModal()">YES</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Calibration Due Date Modal -->
+    <div id="calibration-due-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 class="calibration-modal-title">Set Next Calibration Due Date</h2>
+            <p class="validation-question-text" style="margin-bottom: 20px;">Select when the next calibration is due:</p>
+            <div class="validation-buttons">
+                <button class="btn-validation-yes" onclick="confirmCalibrationDue(3)">3 Months</button>
+                <button class="btn-validation-yes" onclick="confirmCalibrationDue(6)">6 Months</button>
+                <button class="btn-validation-yes" onclick="confirmCalibrationDue(12)">12 Months</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sample Failure CONTINUE/END Modal -->
+    <div id="sample-failure-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 class="calibration-modal-title">Sample Failed Tolerance</h2>
+            <p class="validation-question-text" style="margin-bottom: 20px;">Test failed. Do you want to continue the test or abort?</p>
+            <div class="validation-buttons">
+                <button class="btn-validation-yes" onclick="confirmSampleFailureContinue()">Continue</button>
+                <button class="btn-validation-no" onclick="confirmSampleFailureEnd()">Abort</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Back Off Distance Modal (before Auto/Manual) -->
+    <div id="backoff-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content backoff-modal-content">
+            <h2 id="backoff-modal-title" class="calibration-modal-title">Back Off Distance (mm)</h2>
+            <p class="validation-question-text" style="margin-bottom: 16px;">Enter back off distance for the test:</p>
+            <input type="number" id="backoff-modal-input" class="input-field" min="2" max="40" step="0.01" style="width: 120px; margin: 0 auto 24px; text-align: center; font-size: 1.5rem;"
+                placeholder="">
+            <div class="backoff-mode-buttons">
+                <button class="backoff-mode-btn" onclick="confirmBackoffAndMode('auto')">Auto</button>
+                <button class="backoff-mode-btn" onclick="confirmBackoffAndMode('manual')">Manual</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delay Modal (Auto Mode: 2-30 seconds) -->
+    <div id="delay-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 class="calibration-modal-title">Delay (seconds)</h2>
+            <p class="validation-question-text" style="margin-bottom: 12px;">Set delay between parameter tests (2-30 seconds):</p>
+            <input type="number" id="delay-modal-input" class="input-field" value="5" min="2" max="30" style="width: 80px; margin: 0 auto 20px; text-align: center; font-size: 1.25rem;">
+            <div class="validation-buttons">
+                <button class="btn-validation-no" onclick="closeDelayModal()">Cancel</button>
+                <button class="btn-validation-yes" onclick="confirmDelayModal()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Calibration Step 2 Modal -->
+    <div id="calibration-step2-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 class="calibration-modal-title">Calibration & Validation</h2>
+
+            <div class="calibration-steps-box">
+                <p>1. Calibrate 5kg Weight</p>
+                <p>2. You Need Any Calibrated Weight Below "50 grams"</p>
+                <p>3. Open Calibration And Validation Window</p>
+                <p>4. Carefully Take Loadcell Out Without Removing Connections</p>
+                <p>5. Put Calibration And Validation Plate Above it And Press OK</p>
+                <p>6. Add There Now Put "5 kg" Weight Above it And Press "OK"</p>
+            </div>
+
+            <div class="validation-question-container">
+                <p class="validation-question-text">Put The Weight Above The Plate And Press "OK"</p>
+
+                <div class="validation-buttons">
+                    <button class="btn-validation-no" onclick="closeCalibrationStep2()">CANCEL</button>
+                    <button class="btn-validation-yes" onclick="finishCalibration()">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+
+    <!-- Param Samples Modal -->
+    <div id="param-samples-modal" class="modal-overlay param-config-modal" style="display: none;">
+        <div class="param-config-modal-content">
+            <h3 id="param-samples-modal-title" class="param-config-modal-title">Samples for Thickness</h3>
+            <div class="param-config-modal-body">
+                <label>Number of samples</label>
+                <input type="number" id="param-samples-modal-input" class="input-field" value="" min="1" max="100" placeholder="Enter">
+            </div>
+            <div class="param-config-modal-buttons">
+                <button class="btn btn-secondary" onclick="closeParamSamplesModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmParamSamples()">Next</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Number Modal for Load Recipe -->
+    <div id="batch-number-modal" class="modal-overlay param-config-modal" style="display: none;">
+        <div class="param-config-modal-content">
+            <h3 class="param-config-modal-title">Enter Batch Number</h3>
+            <div class="param-config-modal-body">
+                <label>Batch Number</label>
+                <input type="text" id="load-recipe-batch-input" class="input-field" placeholder="Enter batch number">
+            </div>
+            <div class="param-config-modal-buttons">
+                <button class="btn btn-secondary" onclick="closeBatchNumberModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmBatchNumberAndLoad()">Load</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Weight Entry Modal (manual input during test) -->
+    <div id="weight-entry-modal" class="modal-overlay param-config-modal" style="display: none;">
+        <div class="param-config-modal-content">
+            <h3 class="param-config-modal-title">Enter Measured Weight</h3>
+            <div class="param-config-modal-body">
+                <p id="weight-entry-modal-prompt" class="validation-question-text">Enter the measured value of the tablet in the weighing scale (gm):</p>
+                <input type="text" id="weight-entry-modal-input" class="input-field" inputmode="decimal"
+                    placeholder="Enter weight">
+            </div>
+            <div class="param-config-modal-buttons">
+                <button class="btn btn-secondary" onclick="onWeightEntryCancelClick()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmWeightEntryModal()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Conversion Factor Modal -->
+    <div id="conversion-factor-modal" class="modal-overlay param-config-modal" style="display: none;">
+        <div class="param-config-modal-content">
+            <h3 class="param-config-modal-title">User Defined Unit</h3>
+            <div class="param-config-modal-body">
+                <label>Unit Name</label>
+                <input type="text" id="custom-unit-name-input" class="input-field" placeholder="Enter unit name">
+                
+                <label style="margin-top: 16px;">Conversion Factor to N</label>
+                <p style="color: #A0AEC0; font-size: 12px; margin-top: 4px; margin-bottom: 12px;">
+                    How many units of your custom unit equal 1 N?
+                </p>
+                <div style="position: relative; display: flex; align-items: center;">
+                    <input type="text" id="conversion-factor-input" class="input-field" inputmode="decimal" placeholder="Enter conversion factor" style="padding-right: 30px;">
+                    <span style="position: absolute; right: 12px; color: #A0AEC0; font-weight: 600; pointer-events: none;">N</span>
+                </div>
+            </div>
+            <div class="param-config-modal-buttons">
+                <button class="btn btn-secondary" onclick="closeConversionFactorModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmConversionFactor()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generic Modal -->
+    <div id="generic-modal-overlay" class="modal-overlay"
+        style="display: none; align-items: center; justify-content: center; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; backdrop-filter: blur(4px);">
+        <div class="modal-content"
+            style="background: #2D3748; padding: 2rem; border-radius: 12px; text-align: center; max-width: 400px; width: 90%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #4A5568;">
+            <h3 id="generic-modal-title" style="color: white; margin-bottom: 1rem; font-size: 1.25rem;">Success</h3>
+            <p id="generic-modal-message" style="color: #A0AEC0; margin-bottom: 2rem;">Operation completed successfully.
+            </p>
+            <div class="modal-buttons" style="display: flex; gap: 1rem; justify-content: center;">
+                <button class="btn btn-secondary btn-modal-cancel" onclick="closeGenericModal()"
+                    style="display: none; flex: 1; padding: 0.75rem; font-size: 1rem; background: #4A5568; color: white; border: none; border-radius: 6px; cursor: pointer;">Cancel</button>
+                <button class="btn btn-primary btn-modal-ok" onclick="closeGenericModal()"
+                    style="flex: 1; padding: 0.75rem; font-size: 1rem;">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <style>@keyframes loading-spin{to{transform:rotate(360deg);}}</style>
+    <div id="loading-modal" class="modal-overlay" style="display: none; align-items: center; justify-content: center; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; backdrop-filter: blur(4px);">
+        <div class="modal-content" style="background: #2D3748; padding: 2rem; border-radius: 12px; text-align: center; max-width: 320px; width: 90%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #4A5568;">
+            <div style="margin-bottom: 1rem; color: #60a5fa;">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation: loading-spin 1s linear infinite;">
+                    <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="12"></circle>
+                </svg>
+            </div>
+            <p id="loading-modal-message" style="color: #E2E8F0; margin: 0; font-size: 1rem;">Loading...</p>
+        </div>
+    </div>
+
+    <!-- Keyboard Container -->
+    <div id="keyboard-root"></div>
+
+    <script src="keyboard.js"></script>
+    <script src="rbac.js"></script>
+    <script src="validation.js"></script>
+    <script src="script.js"></script>
+</body>
+
+</html>

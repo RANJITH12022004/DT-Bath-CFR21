@@ -1,0 +1,49 @@
+/* Desktop client embed — recipe management only (logged-in user session via Bearer) */
+body.desktop-embed-recipes .sidebar,
+body.desktop-embed-recipes .user-profile,
+body.desktop-embed-recipes .nav-menu,
+body.desktop-embed-recipes .logout-btn,
+body.desktop-embed-recipes #page-login {
+  display: none !important;
+}
+
+body.desktop-embed-recipes .app-container {
+  display: flex !important;
+}
+
+body.desktop-embed-recipes .main-content {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+
+body.desktop-embed-recipes .app-header .company-logo {
+  pointer-events: none;
+  cursor: default;
+}
+
+body.desktop-embed-recipes .page {
+  display: none !important;
+}
+
+body.desktop-embed-recipes #page-manage-recipes.active,
+body.desktop-embed-recipes #page-create-recipe-step1.active,
+body.desktop-embed-recipes #page-create-recipe-step2.active,
+body.desktop-embed-recipes #page-create-recipe-step3.active,
+body.desktop-embed-recipes #page-disable-recipes.active,
+body.desktop-embed-recipes #page-view-recipes.active,
+body.desktop-embed-recipes #page-recipe-print-preview.active,
+body.desktop-embed-recipes #page-approval-verify.active {
+  display: block !important;
+}
+
+body.desktop-embed-recipes .desktop-embed-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  background: #1e3a5f;
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}

@@ -1,0 +1,19 @@
+{
+  "companyName": "MSN LABS",
+  "companyLocation": "QC BLOCK-C",
+  "serialNo": "2606401",
+  "modelNo": "RFT-2B",
+  "instrumentId": ".",
+  "installationDate": "",
+  "firmware": "RD-TDT v1.0.0",
+  "installedBy": "qqq",
+  "maxRecipes": 150,
+  "maxUsers": 10,
+  "maxAdmins": 2,
+  "maxSupervisors": 3,
+  "biometricEnabled": true,
+  "passwordResetPeriodDays": 30,
+  "autoLogoutMinutes": 0,
+  "lastValidationDate": "10-07-2026",
+  "nextValidationDate": "10-07-2027"
+}

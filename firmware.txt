@@ -1,0 +1,134 @@
+# ESP Command Spec (firmware.txt)
+
+This file describes the serial ASCII command protocol between the Raspberry Pi (Tap Density app backend) and the ESP adaptor.
+Firmware team should implement the command parsing and reply formats exactly as specified.
+
+## Transport / framing
+- **Pi -> ESP commands** are ASCII strings terminated by:
+  - `*` (command terminator)
+  - newline (`\n`)
+- **ESP -> Pi replies** are ASCII lines terminated by newline (`\n`)
+- Replies are newline-delimited; do not merge multiple reply lines into one line.
+
+## Command set
+
+### 1) Adaptor check (USP adapter detection)
+
+**Command (Pi -> ESP):**
+
+```text
+usp,chk*
+```
+
+**Expected single-line reply (ESP -> Pi):**
+- `usp1,ok` if USP1 adapter/attachment is detected and ready
+- `usp2,ok` if USP2 adapter/attachment is detected and ready
+- `adapt,error` (or equivalent `adapt,error...`) if adaptor check fails
+
+**Notes**
+- The Pi sends this once before starting any test run.
+- The Pi will block starting the test until it receives a valid `usp1,ok` or `usp2,ok`.
+
+### 2) Tap execution (run taps using selected speed and tap-count)
+
+#### Command format (Pi -> ESP)
+
+```text
+spd1,<N>*
+spd2,<N>*
+```
+
+- `spd1` means use **speed 1**.
+- `spd2` means use **speed 2**.
+- `<N>` is the total number of taps to perform.
+
+#### Expected replies (ESP -> Pi)
+
+The ESP replies with newline-delimited lines:
+
+1. **First line**
+   ```text
+   ok
+   ```
+2. **Then stream progress lines**
+   ```text
+   1
+   2
+   3
+   ...
+   N
+   ```
+   Each tap completion count must be on its own line.
+3. After `N` progress line,
+"complete."
+
+   - No extra required line is expected.
+   - If you want to add a final summary line (e.g., `done`), the Pi can ignore it after it has received progress up to `N`.
+
+#### Error behavior (ESP -> Pi)
+- If the command is invalid or cannot start, respond with a single error line, for example:
+  ```text
+  error
+  ```
+
+## Examples (command / reply transcripts)
+
+### A) Adaptor check succeeds (USP1)
+
+**Pi -> ESP**
+```text
+usp,chk*
+```
+
+**ESP -> Pi**
+```text
+usp1,ok
+```
+
+### B) Adaptor check fails
+
+**Pi -> ESP**
+```text
+usp,chk*
+```
+
+**ESP -> Pi**
+```text
+adapt,error
+```
+
+### C) Tap run at speed 1, N=200
+
+**Pi -> ESP**
+```text
+spd1,200*
+```
+
+**ESP -> Pi**
+```text
+ok
+1
+2
+3
+...
+199
+200
+complete.
+```
+
+### D) Tap run at speed 2, N=50
+
+**Pi -> ESP**
+
+spd2,50*
+
+**ESP -> Pi**
+ok
+1
+2
+3
+...
+49
+50
+complete
+

@@ -1,0 +1,250 @@
+[
+  {
+    "name": "Validation - USP 1 & USP 2 - Pass",
+    "type": "validation",
+    "validationSubtype": "combined",
+    "validationRuns": [
+      {
+        "validationSubtype": "distance",
+        "usp": "USP 1",
+        "tapsMin": 300,
+        "dropHeight": 14,
+        "expectedTapCount": 300,
+        "expectedTolerance": 15,
+        "expectedTapCountMin": 285,
+        "expectedTapCountMax": 315,
+        "actualTapCount": 302,
+        "validationDurationSec": 60,
+        "status": "Pass",
+        "completedAt": "2026-05-18T11:53:07.691Z"
+      },
+      {
+        "validationSubtype": "load",
+        "usp": "USP 2",
+        "tapsMin": 250,
+        "dropHeight": 3,
+        "expectedTapCount": 250,
+        "expectedTolerance": 15,
+        "expectedTapCountMin": 235,
+        "expectedTapCountMax": 265,
+        "actualTapCount": 250,
+        "validationDurationSec": 60,
+        "status": "Pass",
+        "completedAt": "2026-05-18T11:54:26.236Z"
+      }
+    ],
+    "status": "Pass",
+    "usp": "USP 1 & USP 2",
+    "tapsMin": 300,
+    "dropHeight": 14,
+    "expectedTapCount": 300,
+    "expectedTolerance": 15,
+    "expectedTapCountMin": 285,
+    "expectedTapCountMax": 315,
+    "actualTapCount": 250,
+    "createdAt": "2026-05-18T11:54:26.238Z",
+    "completedAt": "2026-05-18T11:54:26.238Z",
+    "operatedByUsername": "rahul",
+    "operatorName": "rahul",
+    "employeeId": "Rahul",
+    "testData": {
+      "validationRuns": [
+        {
+          "validationSubtype": "distance",
+          "usp": "USP 1",
+          "tapsMin": 300,
+          "dropHeight": 14,
+          "expectedTapCount": 300,
+          "expectedTolerance": 15,
+          "expectedTapCountMin": 285,
+          "expectedTapCountMax": 315,
+          "actualTapCount": 302,
+          "validationDurationSec": 60,
+          "status": "Pass",
+          "completedAt": "2026-05-18T11:53:07.691Z"
+        },
+        {
+          "validationSubtype": "load",
+          "usp": "USP 2",
+          "tapsMin": 250,
+          "dropHeight": 3,
+          "expectedTapCount": 250,
+          "expectedTolerance": 15,
+          "expectedTapCountMin": 235,
+          "expectedTapCountMax": 265,
+          "actualTapCount": 250,
+          "validationDurationSec": 60,
+          "status": "Pass",
+          "completedAt": "2026-05-18T11:54:26.236Z"
+        }
+      ],
+      "usp": "USP 1 & USP 2",
+      "status": "Pass",
+      "operatorName": "rahul",
+      "employeeId": "Rahul",
+      "operatedByUsername": "rahul",
+      "createdAt": "2026-05-18T11:54:26.238Z",
+      "completedAt": "2026-05-18T11:54:26.238Z"
+    },
+    "factorySettings": {
+      "companyName": "RAM",
+      "modelNo": "THYY",
+      "serialNo": "THY",
+      "companyLocation": "dd",
+      "instrumentId": "qq",
+      "lastValidationDate": "N/A",
+      "nextValidationDate": "N/A"
+    },
+    "reportApprovalStatus": "approved",
+    "id": 1,
+    "approvalPassFail": "PASS",
+    "approvalRemarks": "gyvyh",
+    "approvedBy": "Factory (factory)",
+    "approvedByUsername": "rlerlt",
+    "approvedAt": "2026-05-18T17:24:47"
+  },
+  {
+    "name": "Test Report - TEST",
+    "type": "test",
+    "recipe": {
+      "id": null,
+      "name": "TEST",
+      "productName": "TEST",
+      "batchNumber": "dfyvh",
+      "unit": null
+    },
+    "testData": {
+      "recipe": {
+        "productName": "TEST",
+        "batchNumber": "dfyvh",
+        "speed": 300,
+        "dropHeight": 14,
+        "stepCount": 3,
+        "sampleVolumeMl": 100,
+        "usp": "Custom",
+        "uspMode": "CUSTOM",
+        "steps": [
+          {
+            "speed": 300,
+            "dropHeight": 14,
+            "tapCount": 10
+          },
+          {
+            "speed": 300,
+            "dropHeight": 14,
+            "tapCount": 200
+          },
+          {
+            "speed": 300,
+            "dropHeight": 14,
+            "tapCount": 1000
+          }
+        ],
+        "customTotalTaps": 1210
+      },
+      "productName": "TEST",
+      "batchNumber": "dfyvh",
+      "status": "aborted",
+      "completedSteps": 2,
+      "steps": [
+        {
+          "speed": 300,
+          "dropHeight": 14,
+          "tapCount": 10
+        },
+        {
+          "speed": 300,
+          "dropHeight": 14,
+          "tapCount": 200
+        },
+        {
+          "speed": 300,
+          "dropHeight": 14,
+          "tapCount": 1000
+        }
+      ],
+      "stepCount": 2,
+      "stepResults": [
+        {
+          "stepIndex": 0,
+          "volumeMl": 20,
+          "volumeDeltaMl": 0,
+          "bulkDensity": "10",
+          "tapDensity": "10",
+          "resultText": "--"
+        },
+        {
+          "stepIndex": 1,
+          "volumeMl": 20,
+          "volumeDeltaMl": 0,
+          "bulkDensity": "10",
+          "tapDensity": "10",
+          "resultText": "--"
+        }
+      ],
+      "sampleVolumeMl": 100,
+      "initialWeightG": 200,
+      "usp": "Custom",
+      "testStartTime": "2026-05-18T12:02:59.130Z",
+      "testEndTime": "2026-05-18T12:05:20.118Z",
+      "durationSeconds": 140,
+      "createdAt": "2026-05-18T12:02:59.130Z",
+      "completedAt": "2026-05-18T12:05:20.121Z",
+      "statistics": {
+        "Bulk density (g/mL)": {
+          "mean": 10,
+          "min": 10,
+          "max": 10
+        },
+        "Tap density (g/mL)": {
+          "mean": 10,
+          "min": 10,
+          "max": 10
+        },
+        "Compressibility index (%)": {
+          "value": 0
+        },
+        "Hausner ratio": {
+          "value": 1
+        }
+      },
+      "operatedByUsername": "rlerlt",
+      "operatorName": "Factory",
+      "employeeId": "RLERLT"
+    },
+    "createdAt": "2026-05-18T12:02:59.130Z",
+    "completedAt": "2026-05-18T12:05:20.121Z",
+    "statistics": {
+      "Bulk density (g/mL)": {
+        "mean": 10,
+        "min": 10,
+        "max": 10
+      },
+      "Tap density (g/mL)": {
+        "mean": 10,
+        "min": 10,
+        "max": 10
+      },
+      "Compressibility index (%)": {
+        "value": 0
+      },
+      "Hausner ratio": {
+        "value": 1
+      }
+    },
+    "operatedByUsername": "rlerlt",
+    "operatorName": "Factory",
+    "employeeId": "RLERLT",
+    "factorySettings": {
+      "companyName": "RAM",
+      "modelNo": "THYY",
+      "serialNo": "THY",
+      "companyLocation": "dd",
+      "instrumentId": "qq",
+      "lastValidationDate": "18-05-2026",
+      "nextValidationDate": "18-08-2026"
+    },
+    "reportApprovalStatus": "aborted",
+    "id": 2
+  }
+]

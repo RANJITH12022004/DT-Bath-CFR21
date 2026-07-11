@@ -1,0 +1,2003 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <!-- Fixed for 1024x600 7-inch display -->
+    <meta name="viewport"
+        content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Friability Tester</title>
+    <link rel="stylesheet" href="styles.css?v=25">
+</head>
+
+<body>
+    <!-- Login Screen -->
+    <div class="screen active" id="page-login">
+        <div class="centered-content">
+            <img alt="RAISE Logo" class="login-logo" src="./assets/rle_logo.png" />
+            <h2 class="welcome-text">Friability Tester</h2>
+            <div class="login-form-box">
+                <input class="login-input" placeholder="User/Employee ID:" type="text" id="login-uid"
+                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)" />
+                <input class="login-input" placeholder="Password:" type="password" id="login-pwd"
+                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)" />
+                <button type="button" class="login-btn" id="login-btn" onclick="login()">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                        <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                    <span>Login</span>
+                </button>
+
+                <!-- Or divider -->
+                <div class="login-divider" id="login-divider">
+                    <span class="login-divider-line"></span>
+                    <span class="login-divider-text">or</span>
+                    <span class="login-divider-line"></span>
+                </div>
+
+                <!-- Fingerprint biometrics -->
+                <button type="button" id="login-biometric-btn" class="login-biometric-btn" onclick="loginBiometric()">
+                    <div class="biometric-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18.9 7a8 8 0 0 0-5.3-3.8A8 8 0 0 0 4 12"></path>
+                            <path d="M12 20a8 8 0 0 0 8-8 4.5 4.5 0 0 0-1-2.8"></path>
+                            <path d="M9.1 4.6A8 8 0 0 0 4.5 9.4"></path>
+                            <path d="M12 12a4 4 0 0 0-4 4"></path>
+                            <path d="M16 12a4 4 0 0 1-4 4"></path>
+                            <path d="M12 16v4"></path>
+                            <path d="M12 8a4 4 0 0 1 4 4"></path>
+                            <path d="M8 12a4 4 0 0 1 4-4"></path>
+                        </svg>
+                    </div>
+                    <span>Use Biometrics</span>
+                </button>
+
+                <div class="login-footer-info" id="login-footer-info">
+                    Model: <span id="login-footer-model-no"></span> | Serial: <span id="login-footer-serial-no"></span>
+                </div>
+                <span class="login-footer-link" style="cursor: default;">https://www.raiselabequip.com</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generic App Message Modal (global, works on login + app) -->
+    <div id="app-modal-overlay" class="modal-overlay" style="display: none;">
+        <div class="role-modal">
+            <h3 id="app-modal-title">Message</h3>
+            <p id="app-modal-message"></p>
+            <div class="role-modal-buttons" id="app-modal-buttons">
+                <button type="button" class="btn-role-select btn-role-user" onclick="closeAppModal()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Procedure Modal (Validation instructions) -->
+    <div id="procedure-modal" class="validation-modal-overlay" style="display: none;">
+        <div class="validation-modal-content">
+            <h2 id="procedure-modal-title" class="calibration-modal-title">Procedure</h2>
+            <div id="procedure-modal-steps" class="calibration-steps-box"></div>
+            <div class="validation-question-container">
+                <p class="validation-question-text">Do you want to proceed?</p>
+                <div class="validation-buttons">
+                    <button class="btn-validation-no" onclick="closeProcedureModal()">NO</button>
+                    <button class="btn-validation-yes" onclick="confirmProcedureModal()">YES</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="biometric-progress-overlay" class="modal-overlay" style="display: none;">
+        <div class="role-modal biometric-progress-modal">
+            <div class="bio-enroll-steps" id="bio-enroll-steps" style="display: none;">
+                <div class="bio-enroll-step" data-step="1"><span class="bio-step-num">1</span><span class="bio-step-label">First scan</span></div>
+                <div class="bio-enroll-step-line" aria-hidden="true"></div>
+                <div class="bio-enroll-step" data-step="2"><span class="bio-step-num">2</span><span class="bio-step-label">Second scan</span></div>
+            </div>
+            <div class="bio-finger-stage" id="bio-finger-stage" style="display: none;">
+                <div class="bio-finger-scanner" aria-hidden="true"></div>
+                <div class="bio-finger-icon" id="bio-finger-icon" aria-hidden="true">
+                    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18.9 7a8 8 0 0 0-5.3-3.8A8 8 0 0 0 4 12"></path>
+                        <path d="M12 20a8 8 0 0 0 8-8 4.5 4.5 0 0 0-1-2.8"></path>
+                        <path d="M9.1 4.6A8 8 0 0 0 4.5 9.4"></path>
+                        <path d="M12 12a4 4 0 0 0-4 4"></path>
+                    </svg>
+                </div>
+            </div>
+            <h3 id="biometric-progress-title">Register Fingerprint</h3>
+            <p id="biometric-progress-message" class="section-subtitle">Place finger now.</p>
+            <p id="biometric-progress-hint" class="bio-enroll-hint"></p>
+            <div id="biometric-progress-spinner" class="biometric-progress-spinner" aria-hidden="true" style="display: none;"></div>
+            <div class="role-modal-buttons">
+                <button type="button" id="biometric-progress-retry-btn" class="btn-role-select btn-role-user" style="display: none;" onclick="retryBiometricProgress()">Try again</button>
+                <button type="button" class="btn-role-select btn-role-cancel" onclick="cancelBiometricProgress()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generic loading overlay (export progress, long-running ops) -->
+    <div id="app-loading-overlay" class="modal-overlay" style="display: none;">
+        <div class="role-modal app-loading-modal">
+            <h3 id="app-loading-title">Working...</h3>
+            <p id="app-loading-message" class="section-subtitle">Please wait.</p>
+            <div id="app-loading-spinner" class="biometric-progress-spinner" aria-hidden="true"></div>
+            <div id="app-loading-progress-wrap" class="app-loading-progress-wrap" style="display:none;">
+                <div class="app-loading-progress-track">
+                    <div id="app-loading-progress-bar" class="app-loading-progress-bar" style="width:0%;"></div>
+                </div>
+                <div class="app-loading-progress-pct" id="app-loading-progress-pct">0%</div>
+            </div>
+            <p id="app-loading-detail" class="app-loading-detail" style="opacity:0.85; font-size:0.85rem; margin-top:6px;"></p>
+            <div class="role-modal-buttons" id="app-loading-buttons">
+                <button type="button" id="app-loading-cancel-btn" class="btn-role-select btn-role-cancel" onclick="cancelLoadingOverlay()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Test / validation completion: Pass-Fail + remarks → approve → report preview -->
+    <div id="test-run-completion-overlay" class="modal-overlay" style="display: none;">
+        <div class="role-modal" style="max-width: 420px;">
+            <h3>Test complete</h3>
+            <p class="section-subtitle" style="margin-bottom: 0.75rem;">After the test, enter Pass or Fail and remarks here. Reviewer or Admin verification applies when you submit to approve and open the report.</p>
+            <div id="test-run-completion-passfail-single" class="form-group test-run-completion-passfail-group" style="margin: 0.75rem 0;">
+                <span class="test-run-completion-passfail-label">Outcome</span>
+                <div class="test-run-completion-passfail-cards" role="radiogroup" aria-label="Pass or Fail">
+                    <label class="test-run-completion-card-wrap">
+                        <input type="radio" name="test-run-completion-pass-fail" value="PASS" checked class="test-run-completion-pf-input">
+                        <span class="test-run-completion-card">Pass</span>
+                    </label>
+                    <label class="test-run-completion-card-wrap">
+                        <input type="radio" name="test-run-completion-pass-fail" value="FAIL" class="test-run-completion-pf-input">
+                        <span class="test-run-completion-card">Fail</span>
+                    </label>
+                </div>
+            </div>
+            <div id="test-run-completion-passfail-dual" style="display: none;">
+                <div class="form-group test-run-completion-passfail-group" style="margin: 0.75rem 0;">
+                    <span class="test-run-completion-passfail-label">Drum 1</span>
+                    <div class="test-run-completion-passfail-cards" role="radiogroup" aria-label="Drum 1 Pass or Fail">
+                        <label class="test-run-completion-card-wrap">
+                            <input type="radio" name="test-run-completion-drum1-pass-fail" value="PASS" checked class="test-run-completion-pf-input">
+                            <span class="test-run-completion-card">Pass</span>
+                        </label>
+                        <label class="test-run-completion-card-wrap">
+                            <input type="radio" name="test-run-completion-drum1-pass-fail" value="FAIL" class="test-run-completion-pf-input">
+                            <span class="test-run-completion-card">Fail</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group test-run-completion-passfail-group" style="margin: 0.75rem 0;">
+                    <span class="test-run-completion-passfail-label">Drum 2</span>
+                    <div class="test-run-completion-passfail-cards" role="radiogroup" aria-label="Drum 2 Pass or Fail">
+                        <label class="test-run-completion-card-wrap">
+                            <input type="radio" name="test-run-completion-drum2-pass-fail" value="PASS" checked class="test-run-completion-pf-input">
+                            <span class="test-run-completion-card">Pass</span>
+                        </label>
+                        <label class="test-run-completion-card-wrap">
+                            <input type="radio" name="test-run-completion-drum2-pass-fail" value="FAIL" class="test-run-completion-pf-input">
+                            <span class="test-run-completion-card">Fail</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="test-run-completion-remarks">Remarks</label>
+                <textarea id="test-run-completion-remarks" class="input-field" rows="3" placeholder="Remarks"></textarea>
+            </div>
+            <p id="test-run-completion-error" class="section-subtitle" style="display: none; color: #f66; margin-top: 0.5rem;"></p>
+            <div class="role-modal-buttons" style="margin-top: 14px; flex-direction: column; gap: 8px;">
+                <button type="button" class="btn-role-select btn-role-user" onclick="confirmTestRunCompletionApproval()">Submit and open report</button>
+                <button type="button" class="btn-role-select btn-role-cancel" onclick="skipTestRunCompletionToReport()">View report without approval</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- USB pendrive picker (shown when multiple external pendrives are detected) -->
+    <div id="usb-picker-overlay" class="modal-overlay" style="display: none;">
+        <div class="role-modal usb-picker-modal">
+            <h3>Choose Pendrive</h3>
+            <p class="section-subtitle">Multiple external pendrives are connected. Pick one to export to.</p>
+            <div id="usb-picker-list" class="usb-picker-list"></div>
+            <div class="role-modal-buttons">
+                <button type="button" class="btn-role-select btn-role-cancel" onclick="cancelUsbPicker()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container" style="display: none;">
+        <aside class="sidebar">
+            <div class="user-profile" onclick="goToPage('user-profile')" style="cursor: pointer;">
+                <div class="user-avatar">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" style="color: var(--icon-profile, #60a5fa);">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="12" cy="7" r="4"></circle>
+                    </svg>
+                    <span>Profiles</span>
+                </div>
+            </div>
+            <nav class="nav-menu">
+                <button type="button" class="nav-item active" data-page="home" data-rbac-nav="dashboard">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                        <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                    </svg>
+                    <span>Home</span>
+                </button>
+                <button type="button" class="nav-item" data-page="validate" data-rbac-nav="validation-test">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                    </svg>
+                    <span>Validate</span>
+                </button>
+                <button type="button" class="nav-item" data-page="reports" data-rbac-nav="reports-view">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                    <span>Reports</span>
+                </button>
+                <button type="button" class="nav-item" data-page="settings" data-rbac-nav="settings">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                        </path>
+                    </svg>
+                    <span>Settings</span>
+                </button>
+                <button type="button" class="nav-item logout-btn" onclick="logout()" title="Logout">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                    <span>Logout</span>
+                </button>
+            </nav>
+        </aside>
+
+        <main class="main-content">
+            <header class="app-header">
+                <div class="header-left">
+                    <img id="header-logo" src="./assets/rle_logo.png" alt="Raise Lab Equipment" class="company-logo"
+                        onclick="goToPage('home')" style="cursor: pointer;">
+                    <div id="header-back-btn" class="header-back-btn" onclick="goBack()"
+                        style="display: none; cursor: pointer;" title="Back">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="19" y1="12" x2="5" y2="12"></line>
+                            <polyline points="12 19 5 12 12 5"></polyline>
+                        </svg>
+                    </div>
+                </div>
+                <h1 class="page-title" id="header-title">Friability Tester</h1>
+                <div class="header-right">
+                    <div class="datetime">
+                        <span id="current-time">--:--:--</span>
+                        <span id="current-date">--/--/----</span>
+                    </div>
+                </div>
+            </header>
+
+            <div class="page-content">
+                <!-- Home Page -->
+                <div class="page active" id="page-home">
+                    <div class="test-options">
+                        <div class="test-card" onclick="startQuickTest()" style="cursor: pointer;">
+                            <div class="test-icon">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                                </svg>
+                            </div>
+                            <h2>Quick Test</h2>
+                            <p>Perform a quick friability test without saving a recipe</p>
+                        </div>
+
+                        <div class="test-card" onclick="startRecipeTest()" style="cursor: pointer;">
+                            <div class="test-icon">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                </svg>
+                            </div>
+                            <h2>Load Recipe</h2>
+                            <p>Test with saved recipe and tolerance checks</p>
+                        </div>
+
+                        <div class="test-card" onclick="manageRecipes()" style="cursor: pointer;">
+                            <div class="test-icon">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                </svg>
+                            </div>
+                            <h2>Manage Recipe</h2>
+                            <p>Create, edit, or delete friability test recipes</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="page" id="page-approval-verify">
+                    <div class="add-member-container approval-verify-page">
+                        <h2 id="approval-verify-title" class="section-title">Admin verification required</h2>
+                        <p id="approval-verify-subtitle" class="section-subtitle">Enter Admin credentials to continue.</p>
+                        <div class="add-member-form form-grid">
+                            <div class="form-group full-width">
+                                <label for="approval-verify-username">Admin username</label>
+                                <input type="text" id="approval-verify-username" class="input-field" placeholder="Enter Admin username"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group full-width">
+                                <label for="approval-verify-password">Password</label>
+                                <input type="password" id="approval-verify-password" class="input-field" placeholder="Enter password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <p id="approval-verify-error" class="approval-verify-error" style="display: none;"></p>
+                        </div>
+                        <div class="add-member-actions members-actions-row">
+                            <button type="button" class="btn btn-primary" onclick="submitApprovalVerifyModal()">Verify & Continue</button>
+                            <button type="button" class="btn btn-secondary" onclick="submitApprovalVerifyBiometricModal()">Use Fingerprint</button>
+                            <button type="button" class="btn btn-secondary" onclick="cancelApprovalVerifyModal()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Test -->
+                <div class="page" id="page-quick-test">
+                    <div class="validation-type-page create-recipe-step1-page quick-test-page">
+                        <div class="create-recipe-options">
+                            <div class="create-recipe-section">
+                                <h3 class="create-recipe-section-title">Procedure</h3>
+                                <div class="validation-type-grid create-recipe-grid procedure-cards-grid">
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="usp">
+                                        <input type="radio" name="quick-usp-mode" value="USP" checked onchange="applyQuickRecipeModeToFields()">
+                                        <h3>USP</h3>
+                                        <p>25 RPM, 4 min, 100 count</p>
+                                    </label>
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="custom">
+                                        <input type="radio" name="quick-usp-mode" value="CUSTOM" onchange="applyQuickRecipeModeToFields()">
+                                        <h3>Custom</h3>
+                                        <p>Speed 20–70, user time and count</p>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="create-recipe-section" id="quick-custom-completion-wrap" style="display: none;">
+                                <h3 class="create-recipe-section-title">Custom Completion</h3>
+                                <div class="validation-type-grid create-recipe-grid procedure-cards-grid">
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="count">
+                                        <input type="radio" name="quick-recipe-custom-completion" value="COUNT" checked onchange="applyQuickRecipeModeToFields()">
+                                        <h3>Count</h3>
+                                        <p>Complete by rotation count</p>
+                                    </label>
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="time">
+                                        <input type="radio" name="quick-recipe-custom-completion" value="TIME" onchange="applyQuickRecipeModeToFields()">
+                                        <h3>Time</h3>
+                                        <p>Complete by elapsed time</p>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="create-recipe-section">
+                                <h3 class="create-recipe-section-title">Drum Selection</h3>
+                                <div class="validation-type-grid create-recipe-grid procedure-cards-grid">
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="one-drum">
+                                        <input type="radio" name="quick-recipe-drum-count" value="1">
+                                        <h3>1 Drum</h3>
+                                        <p>Single drum test mode</p>
+                                    </label>
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="two-drums">
+                                        <input type="radio" name="quick-recipe-drum-count" value="2" checked>
+                                        <h3>2 Drums</h3>
+                                        <p>Dual drum test mode</p>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="create-recipe-form-fields form-grid create-recipe-form-grid">
+                            <div class="form-group full-width">
+                                <label>Recipe Name</label>
+                                <input type="text" id="quick-product-name" class="input-field" placeholder="">
+                            </div>
+                            <div class="form-group">
+                                <label>Batch Number</label>
+                                <input type="text" id="quick-batch-number" class="input-field" placeholder="">
+                            </div>
+                            <div class="form-group">
+                                <label>Speed (RPM)</label>
+                                <input type="number" id="quick-recipe-speed" class="input-field" min="20" max="70" placeholder="">
+                            </div>
+                            <div class="form-group">
+                                <label>Time (MM:SS)</label>
+                                <input type="text" id="quick-recipe-time" class="input-field" inputmode="numeric" placeholder="MM:SS">
+                            </div>
+                            <div class="form-group">
+                                <label>Rotation Count</label>
+                                <input type="number" id="quick-recipe-tablet-count" class="input-field" min="1" max="10000" placeholder="">
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary validation-start-btn" onclick="startQuickTestRunFromParams()">
+                            Start Test
+                        </button>
+                    </div>
+                </div>
+
+                            <!-- Password Expired Reset -->
+                <div class="page" id="page-password-expired-reset">
+                    <div class="add-member-container">
+                        <h2 class="section-title" id="password-reset-page-title">Reset Expired Password</h2>
+                        <p class="section-subtitle" id="password-reset-page-subtitle">Your password has expired. Set a new password to continue.</p>
+                        <div class="add-member-form form-grid">
+                            <div class="form-group full-width">
+                                <label>User ID</label>
+                                <input type="text" id="expired-reset-username" class="input-field" readonly>
+                            </div>
+                            <div class="form-group full-width">
+                                <label>Current Password</label>
+                                <input type="password" id="expired-reset-old-password" class="input-field"
+                                    placeholder="Enter current password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group full-width">
+                                <label>New Password</label>
+                                <input type="password" id="expired-reset-new-password" class="input-field"
+                                    placeholder="Enter new password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group full-width">
+                                <label>Confirm New Password</label>
+                                <input type="password" id="expired-reset-confirm-password" class="input-field"
+                                    placeholder="Confirm new password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                        </div>
+                        <div class="add-member-actions members-actions-row">
+                            <button class="btn btn-primary" onclick="submitPasswordResetFromLoginPage()">Update Password</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Create Recipe Step 1 (layout matches Quick Test) -->
+                <div class="page" id="page-create-recipe-step1">
+                    <div class="validation-type-page create-recipe-step1-page">
+                        <div class="create-recipe-options">
+                            <div class="create-recipe-section">
+                                <h3 class="create-recipe-section-title">Procedure</h3>
+                                <div class="validation-type-grid create-recipe-grid procedure-cards-grid">
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="usp">
+                                        <input type="radio" name="create-usp-mode" value="USP" checked onchange="applyRecipeModeToFields()">
+                                        <h3>USP</h3>
+                                        <p>25 RPM, 4 min, 100 count</p>
+                                    </label>
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="custom">
+                                        <input type="radio" name="create-usp-mode" value="CUSTOM" onchange="applyRecipeModeToFields()">
+                                        <h3>Custom</h3>
+                                        <p>Speed 20–70, user time and count</p>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="create-recipe-section" id="create-custom-completion-wrap" style="display: none;">
+                                <h3 class="create-recipe-section-title">Custom Completion</h3>
+                                <div class="validation-type-grid create-recipe-grid procedure-cards-grid">
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="count">
+                                        <input type="radio" name="recipe-custom-completion" value="COUNT" checked onchange="applyRecipeModeToFields()">
+                                        <h3>Count</h3>
+                                        <p>Complete by rotation count</p>
+                                    </label>
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="time">
+                                        <input type="radio" name="recipe-custom-completion" value="TIME" onchange="applyRecipeModeToFields()">
+                                        <h3>Time</h3>
+                                        <p>Complete by elapsed time</p>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="create-recipe-section">
+                                <h3 class="create-recipe-section-title">Drum Selection</h3>
+                                <div class="validation-type-grid create-recipe-grid procedure-cards-grid">
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="one-drum">
+                                        <input type="radio" name="recipe-drum-count" value="1">
+                                        <h3>1 Drum</h3>
+                                        <p>Single drum test mode</p>
+                                    </label>
+                                    <label class="validation-type-settings-card create-recipe-card" data-procedure="two-drums">
+                                        <input type="radio" name="recipe-drum-count" value="2" checked>
+                                        <h3>2 Drums</h3>
+                                        <p>Dual drum test mode</p>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="create-recipe-form-fields form-grid create-recipe-form-grid">
+                            <div class="form-group full-width">
+                                <label>Recipe Name</label>
+                                <input type="text" id="recipe-product-name" class="input-field" placeholder="">
+                            </div>
+                            <div class="form-group">
+                                <label>Speed (RPM)</label>
+                                <input type="number" id="recipe-speed" class="input-field" min="20" max="70" placeholder="">
+                            </div>
+                            <div class="form-group">
+                                <label>Time (MM:SS)</label>
+                                <input type="text" id="recipe-time" class="input-field" inputmode="numeric" placeholder="MM:SS">
+                            </div>
+                            <div class="form-group">
+                                <label>Rotation Count</label>
+                                <input type="number" id="recipe-tablet-count" class="input-field" min="1" max="10000" placeholder="">
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary validation-start-btn" onclick="saveRecipeFromParams()">
+                            Save Recipe
+                        </button>
+                    </div>
+                </div>
+
+               <!-- Create Recipe Step 2 – Steps and taps (same layout as Quick Test) -->
+                            <!-- Manage / Load Recipes -->
+                <div class="page" id="page-manage-recipes">
+                    <div class="manage-recipes-container">
+                        <div id="manage-recipes-main">
+                        <button class="btn-create-recipe" onclick="startRecipeCreation()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            Create New Recipe
+                        </button>
+                        <div class="recipe-list-container">
+                            <p class="empty-state-message" id="manage-recipes-message">No recipes created yet.</p>
+                            <table class="manage-recipes-table" style="display: none;">
+                                <thead>
+                                    <tr>
+                                        <th>Product Name</th>
+                                        <th>Test Mode</th>
+                                        <th>RPM</th>
+                                        <th>Approval</th>
+                                        <th class="actions-col">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="manage-recipes-table-body"></tbody>
+                            </table>
+                        </div>
+                        </div>
+
+                        <!-- Recipe Actions Modal (Edit / Disable / Load) -->
+                        <div id="recipe-actions-modal-overlay" class="modal-overlay" style="display: none;">
+                            <div class="role-modal">
+                                <h3 id="recipe-actions-modal-title">Recipe</h3>
+                                <div class="role-modal-buttons">
+                                    <button type="button" class="btn-role-select btn-role-qa"
+                                        id="recipe-action-approve-btn" style="display: none;"
+                                        onclick="confirmRecipeAction('approve')">Approve</button>
+                                    <button type="button" class="btn-role-select btn-role-admin"
+                                        id="recipe-action-edit-btn" onclick="confirmRecipeAction('edit')">Edit</button>
+                                    <button type="button" class="btn-role-select btn-role-supervisor"
+                                        id="recipe-action-disable-btn"
+                                        onclick="confirmRecipeAction('disable')">Disable</button>
+                                    <button type="button" class="btn-role-select btn-role-user"
+                                        id="recipe-action-load-btn" onclick="confirmRecipeAction('load')">Load</button>
+                                    <button type="button" class="btn-role-select btn-role-cancel"
+                                        onclick="closeRecipeActionsModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="recipe-approve-overlay" class="modal-overlay" style="display: none;">
+                            <div class="role-modal">
+                                <h3>Approve recipe</h3>
+                                <div class="form-group full-width">
+                                    <label for="recipe-approve-remarks">Remarks (optional)</label>
+                                    <textarea id="recipe-approve-remarks" class="input-field" rows="3" placeholder="Approval remarks"></textarea>
+                                </div>
+                                <div class="role-modal-buttons">
+                                    <button type="button" class="btn-role-select btn-role-user" onclick="submitRecipeApprove()">Submit</button>
+                                    <button type="button" class="btn-role-select btn-role-cancel" onclick="closeRecipeApproveModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="recipe-disable-overlay" class="modal-overlay" style="display: none;">
+                            <div class="role-modal">
+                                <h3>Disable recipe</h3>
+                                <p class="section-subtitle">Recipe management approval is required to disable this recipe.</p>
+                                <div class="form-group full-width">
+                                    <label for="recipe-disable-remarks">Remarks (optional)</label>
+                                    <textarea id="recipe-disable-remarks" class="input-field" rows="3" placeholder="Disable remarks"></textarea>
+                                </div>
+                                <div class="role-modal-buttons">
+                                    <button type="button" class="btn-role-select btn-role-supervisor" onclick="submitRecipeDisable()">Submit</button>
+                                    <button type="button" class="btn-role-select btn-role-cancel" onclick="closeRecipeDisableModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Batch Number Modal (for Load Recipe) -->
+                        <div id="batch-number-modal" class="modal-overlay param-config-modal" style="display: none;">
+                            <div class="role-modal">
+                                <h3 class="param-config-modal-title">Enter Batch Number</h3>
+                                <div class="form-group">
+                                    <label>Batch Number</label>
+                                    <input type="text" id="load-recipe-batch-input" class="input-field" placeholder="Enter batch number">
+                                </div>
+                                <div class="role-modal-buttons">
+                                    <button type="button" class="btn-role-select btn-role-cancel" onclick="closeBatchNumberModal()">Cancel</button>
+                                    <button type="button" class="btn-role-select btn-role-user" onclick="confirmBatchNumberAndLoad()">Load</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="page" id="page-test-run">
+                    <div class="test-run-page">
+
+                        <!-- TOP BAR: recipe info -->
+                        <div class="tr-header">
+                            <div class="tr-header-block">
+                                <span class="tr-label">Product</span>
+                                <span class="tr-value" id="tr-product-name">--</span>
+                            </div>
+                            <div class="tr-header-block">
+                                <span class="tr-label">Batch</span>
+                                <span class="tr-value" id="tr-batch-number">--</span>
+                            </div>
+                            <div class="tr-header-block">
+                                <span class="tr-label">Speed</span>
+                                <span class="tr-value" id="tr-speed">-- RPM</span>
+                            </div>
+                            <div class="tr-header-block">
+                                <span class="tr-label">Target</span>
+                                <span class="tr-value" id="tr-target-rot">-- Rotations</span>
+                            </div>
+                            <div class="tr-header-block">
+                                <span class="tr-label">Mode</span>
+                                <span class="tr-value" id="tr-mode">--</span>
+                            </div>
+                            <div class="tr-header-block" id="tr-header-iw1-block">
+                                <span class="tr-label">Initial Weight D1 (gms)</span>
+                                <span class="tr-value" id="tr-initial-weight1">--</span>
+                            </div>
+                            <div class="tr-header-block" id="tr-header-iw2-block">
+                                <span class="tr-label">Initial Weight D2 (gms)</span>
+                                <span class="tr-value" id="tr-initial-weight2">--</span>
+                            </div>
+                        </div>
+
+                        <!-- MAIN AREA: two drums + center controls -->
+                        <div class="tr-drums-row" id="tr-drums-row">
+
+                            <!-- DRUM 1 -->
+                            <div class="tr-drum-wrapper" id="tr-drum-wrapper-1">
+                                <div class="tr-drum-shell" id="tr-drum1">
+                                    <div class="tr-drum-inner" id="tr-drum1-inner">
+                                        <svg class="tr-drum-tech-svg" viewBox="0 0 220 220" aria-hidden="true">
+                                            <defs>
+                                                <radialGradient id="drum-face-grad-1" cx="45%" cy="35%" r="70%">
+                                                    <stop offset="0%" stop-color="#d5dbe3"/>
+                                                    <stop offset="65%" stop-color="#b4bdc9"/>
+                                                    <stop offset="100%" stop-color="#97a2b1"/>
+                                                </radialGradient>
+                                                <pattern id="knurl-1" width="6" height="6" patternUnits="userSpaceOnUse">
+                                                    <path d="M0,6 L6,0 M-3,3 L3,-3 M3,9 L9,3" stroke="#5b626b" stroke-width="0.9" fill="none"/>
+                                                </pattern>
+                                                <radialGradient id="center-cap-grad-1" cx="50%" cy="45%" r="70%">
+                                                    <stop offset="0%" stop-color="#d8dde3"/>
+                                                    <stop offset="100%" stop-color="#a6afbb"/>
+                                                </radialGradient>
+                                                <linearGradient id="drum-baffle-grad-1" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                    <stop offset="0%" stop-color="#4a5159"/>
+                                                    <stop offset="45%" stop-color="#8f98a3"/>
+                                                    <stop offset="100%" stop-color="#3d444c"/>
+                                                </linearGradient>
+                                            </defs>
+                                            <circle cx="110" cy="110" r="94" fill="url(#drum-face-grad-1)"/>
+                                            <circle class="drum-line" cx="110" cy="110" r="102"/>
+                                            <circle class="drum-line" cx="110" cy="110" r="94"/>
+                                            <circle class="drum-bolt" cx="110" cy="12" r="4"/>
+                                            <circle class="drum-bolt" cx="195" cy="61" r="4"/>
+                                            <circle class="drum-bolt" cx="195" cy="159" r="4"/>
+                                            <circle class="drum-bolt" cx="110" cy="208" r="4"/>
+                                            <circle class="drum-bolt" cx="25" cy="159" r="4"/>
+                                            <circle class="drum-bolt" cx="25" cy="61" r="4"/>
+                                            <g class="drum-hub-outer" aria-hidden="true">
+                                                <circle cx="110" cy="110" r="30" fill="#c9d0d9" stroke="#2f343b" stroke-width="1.6"/>
+                                                <circle cx="110" cy="110" r="30" fill="none" stroke="url(#knurl-1)" stroke-width="2.2"/>
+                                            </g>
+                                            <g class="drum-baffle" aria-hidden="true" transform="translate(220,0) scale(-1,1)">
+                                                <path fill="url(#drum-baffle-grad-1)" stroke="#1e2329" stroke-width="1" stroke-linejoin="round" d="M 16.92 96.92 A 94 94 0 0 0 35.93 52.13 Q 68 76 87.02 90.72 A 30 30 0 0 1 82.81 97.32 A 52.73 52.73 0 0 0 16.92 96.92 Z"/>
+                                            </g>
+                                            <g aria-hidden="true">
+                                                <circle cx="110" cy="110" r="24" fill="#d0d5dd" stroke="#2f343b" stroke-width="1.5"/>
+                                                <circle cx="110" cy="110" r="24" fill="none" stroke="url(#knurl-1)" stroke-width="2"/>
+                                                <circle cx="110" cy="110" r="18" fill="#d7dce2" stroke="#2f343b" stroke-width="1.4"/>
+                                                <circle cx="110" cy="110" r="13.5" fill="url(#center-cap-grad-1)" stroke="#2f343b" stroke-width="1.2"/>
+                                            </g>
+                                        </svg>
+                                    </div>
+                                </div>
+                                <div class="tr-drum-label">Drum 1</div>
+                                <div class="tr-drum-status" id="tr-status1">Idle</div>
+                            </div>
+
+                            <!-- CENTER CONTROLS -->
+                            <div class="tr-controls">
+                                <div class="tr-center-timer" id="tr-timer">00:00</div>
+                                <button type="button" class="tr-btn tr-btn-start" id="tr-start-btn" onclick="trHandleStartButton()">Initialize</button>
+                                <button type="button" class="tr-btn tr-btn-pause" id="tr-pause-btn" onclick="trPauseTest()" style="display:none;">Pause</button>
+                                <button type="button" class="tr-btn tr-btn-resume" id="tr-resume-btn" onclick="trResumeTest()" style="display:none;">Resume</button>
+                                <button type="button" class="tr-btn tr-btn-dispense" id="tr-dispense-btn" onclick="trDispenseTest()" style="display:none;">Dispense</button>
+                                <button type="button" class="tr-btn tr-btn-stop" id="tr-stop-btn" onclick="trStopTest()">Abort</button>
+                                <div class="tr-progress-wrap">
+                                    <div class="tr-progress-label" id="tr-progress-label">Progress</div>
+                                    <div class="tr-progress-bg">
+                                        <div class="tr-progress-fill" id="tr-progress-fill" style="width:0%"></div>
+                                    </div>
+                                    <div class="tr-progress-text" id="tr-progress-text">0 / --</div>
+                                </div>
+                            </div>
+
+                            <!-- DRUM 2 -->
+                            <div class="tr-drum-wrapper" id="tr-drum-wrapper-2">
+                                <div class="tr-drum-shell" id="tr-drum2">
+                                    <div class="tr-drum-inner" id="tr-drum2-inner">
+                                        <svg class="tr-drum-tech-svg" viewBox="0 0 220 220" aria-hidden="true">
+                                            <defs>
+                                                <radialGradient id="drum-face-grad-2" cx="45%" cy="35%" r="70%">
+                                                    <stop offset="0%" stop-color="#d5dbe3"/>
+                                                    <stop offset="65%" stop-color="#b4bdc9"/>
+                                                    <stop offset="100%" stop-color="#97a2b1"/>
+                                                </radialGradient>
+                                                <pattern id="knurl-2" width="6" height="6" patternUnits="userSpaceOnUse">
+                                                    <path d="M0,6 L6,0 M-3,3 L3,-3 M3,9 L9,3" stroke="#5b626b" stroke-width="0.9" fill="none"/>
+                                                </pattern>
+                                                <radialGradient id="center-cap-grad-2" cx="50%" cy="45%" r="70%">
+                                                    <stop offset="0%" stop-color="#d8dde3"/>
+                                                    <stop offset="100%" stop-color="#a6afbb"/>
+                                                </radialGradient>
+                                                <linearGradient id="drum-baffle-grad-2" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                    <stop offset="0%" stop-color="#4a5159"/>
+                                                    <stop offset="45%" stop-color="#8f98a3"/>
+                                                    <stop offset="100%" stop-color="#3d444c"/>
+                                                </linearGradient>
+                                            </defs>
+                                            <circle cx="110" cy="110" r="94" fill="url(#drum-face-grad-2)"/>
+                                            <circle class="drum-line" cx="110" cy="110" r="102"/>
+                                            <circle class="drum-line" cx="110" cy="110" r="94"/>
+                                            <circle class="drum-bolt" cx="110" cy="12" r="4"/>
+                                            <circle class="drum-bolt" cx="195" cy="61" r="4"/>
+                                            <circle class="drum-bolt" cx="195" cy="159" r="4"/>
+                                            <circle class="drum-bolt" cx="110" cy="208" r="4"/>
+                                            <circle class="drum-bolt" cx="25" cy="159" r="4"/>
+                                            <circle class="drum-bolt" cx="25" cy="61" r="4"/>
+                                            <g class="drum-hub-outer" aria-hidden="true">
+                                                <circle cx="110" cy="110" r="30" fill="#c9d0d9" stroke="#2f343b" stroke-width="1.6"/>
+                                                <circle cx="110" cy="110" r="30" fill="none" stroke="url(#knurl-2)" stroke-width="2.2"/>
+                                            </g>
+                                            <g class="drum-baffle" aria-hidden="true" transform="translate(220,0) scale(-1,1)">
+                                                <path fill="url(#drum-baffle-grad-2)" stroke="#1e2329" stroke-width="1" stroke-linejoin="round" d="M 16.92 96.92 A 94 94 0 0 0 35.93 52.13 Q 68 76 87.02 90.72 A 30 30 0 0 1 82.81 97.32 A 52.73 52.73 0 0 0 16.92 96.92 Z"/>
+                                            </g>
+                                            <g aria-hidden="true">
+                                                <circle cx="110" cy="110" r="24" fill="#d0d5dd" stroke="#2f343b" stroke-width="1.5"/>
+                                                <circle cx="110" cy="110" r="24" fill="none" stroke="url(#knurl-2)" stroke-width="2"/>
+                                                <circle cx="110" cy="110" r="18" fill="#d7dce2" stroke="#2f343b" stroke-width="1.4"/>
+                                                <circle cx="110" cy="110" r="13.5" fill="url(#center-cap-grad-2)" stroke="#2f343b" stroke-width="1.2"/>
+                                            </g>
+                                        </svg>
+                                    </div>
+                                </div>
+                                <div class="tr-drum-label">Drum 2</div>
+                                <div class="tr-drum-status" id="tr-status2">Idle</div>
+                            </div>
+
+                        </div>
+
+                        <!-- FOOTER -->
+                        <div class="tr-footer">
+                            <div class="tr-footer-note" id="tr-footer-note">Press Initialize to prepare the drums.</div>
+                        </div>
+
+                    </div>
+                </div>
+
+    
+
+                <!-- Disabled Recipes Page -->
+                <div class="page" id="page-disable-recipes">
+                    <div class="manage-recipes-container disable-recipes-page">
+                        <h2 class="section-title">Disabled Recipes</h2>
+                        <p class="section-subtitle">Friability recipes removed from active use (requires recipe management approval to disable).</p>
+                        <div class="recipe-list-container">
+                            <p class="empty-state-message" id="disable-recipes-message">No disabled recipes.</p>
+                            <table class="manage-recipes-table disable-recipes-table" style="display: none;">
+                                <thead>
+                                    <tr>
+                                        <th>Product Name</th>
+                                        <th>Test Mode</th>
+                                        <th>RPM</th>
+                                        <th>Disabled By</th>
+                                        <th>Disabled At</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="disable-recipes-table-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="validation-actions-row">
+                            <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reports Page -->
+                <div class="page" id="page-reports">
+                    <div class="reports-container reports-page-layout">
+                        <div class="reports-filter-buttons">
+                            <button class="reports-filter-btn reports-filter-test" onclick="filterReports('test')">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                    <polyline points="10 9 9 9 8 9"></polyline>
+                                </svg>
+                                <span>Test Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-validation"
+                                onclick="filterReports('validation')">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                                </svg>
+                                <span>Validation Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-audit" onclick="filterReports('audit')">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                    <path d="M16 13H8"></path>
+                                    <path d="M16 17H8"></path>
+                                    <path d="M10 9H8"></path>
+                                </svg>
+                                <span>Audit Trails</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-export" onclick="exportFilteredReports()">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="7 10 12 15 17 10"></polyline>
+                                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                                </svg>
+                                <span>Export Reports</span>
+                            </button>
+                            <button class="reports-filter-btn reports-filter-recipes" onclick="viewRecipe()">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                </svg>
+                                <span>View Recipe</span>
+                            </button>
+                        </div>
+                        <div id="audit-filters-bar" class="audit-filters-bar" style="display: none;">
+                            <label>User</label>
+                            <select id="audit-filter-user">
+                                <option value="">All</option>
+                            </select>
+                            <label>Role</label>
+                            <select id="audit-filter-role">
+                                <option value="">All</option>
+                                <option value="Admin">Admin</option>
+                                <option value="Supervisor">Reviewer</option>
+                                <option value="QA">QA</option>
+                                <option value="User">User</option>
+                                <option value="--">--</option>
+                            </select>
+                            <label>Action</label>
+                            <select id="audit-filter-action">
+                                <option value="">All</option>
+                            </select>
+                            <label>From</label>
+                            <input type="date" id="audit-filter-from-date">
+                            <input type="time" id="audit-filter-from-time">
+                            <label>To</label>
+                            <input type="date" id="audit-filter-to-date">
+                            <input type="time" id="audit-filter-to-time">
+                            <button type="button" class="btn btn-primary audit-filter-apply" onclick="applyAuditFiltersAndRefresh()">Apply</button>
+                            <button type="button" class="btn btn-secondary audit-filter-export" onclick="exportAuditTrails()">Export Audit Trails</button>
+                        </div>
+                        <table class="reports-table">
+                            <thead>
+                                <tr id="reports-thead-row">
+                                    <th>SL No</th>
+                                    <th>Report Name</th>
+                                    <th>Creation Time</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="reports-table-body">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Export Selection Page -->
+                <div class="page" id="page-export">
+                    <div class="validation-main-container">
+                        <p class="section-subtitle">Select what you want to export</p>
+                        <div class="validation-settings-grid" style="max-width: 600px;">
+                            <button class="settings-card settings-datetime" onclick="exportFromSelection('reports')" style="width: 100%;">
+                                <div class="settings-icon">
+                                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"></path>
+                                        <polyline points="14 2 14 7 19 7"></polyline>
+                                        <line x1="9" y1="12" x2="15" y2="12"></line>
+                                        <line x1="9" y1="16" x2="15" y2="16"></line>
+                                    </svg>
+                                </div>
+                                <h3>Reports</h3>
+                                <p>Export currently filtered report list</p>
+                            </button>
+                            <button id="export-audit-trails-card" class="settings-card settings-recipes" onclick="exportFromSelection('audit')" style="width: 100%;">
+                                <div class="settings-icon">
+                                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                                        <line x1="7" y1="9" x2="17" y2="9"></line>
+                                        <line x1="7" y1="13" x2="17" y2="13"></line>
+                                        <line x1="7" y1="17" x2="13" y2="17"></line>
+                                    </svg>
+                                </div>
+                                <h3>Audit Trails</h3>
+                                <p>Export filtered audit trail entries</p>
+                            </button>
+                        </div>
+                        <div class="validation-actions-row" style="margin-top: 32px;">
+                            <button type="button" class="btn btn-secondary" onclick="goToPage('reports')">Back to Reports</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Report Preview Page -->
+                <div class="page" id="page-report-preview">
+                    <div class="reports-container">
+                        <div id="report-pending-lock-banner" class="report-pending-lock-banner" style="display: none;"><strong>Awaiting approval.</strong> Complete Pass/Fail and sign on this screen to approve the report. You cannot leave or log out until approved. If power is interrupted, the report will be saved as Aborted (power interruption).</div>
+                        <div class="report-preview-container report-print-template" id="report-content">
+                            <pre id="report-a4-text-preview" class="report-a4-text-preview" style="display: none;"></pre>
+                            <div id="report-legacy-preview">
+                            <h1>RAISE LAB EQUIPMENT</h1>
+                            <h2>FRIABILITY TESTER - TEST REPORT</h2>
+                            <h2 id="report-company-name">COMPANY NAME</h2>
+                            <table class="report-ident-table">
+                                <tr>
+                                    <th>Model No</th>
+                                    <td id="report-model-no"></td>
+                                    <th>Serial No</th>
+                                    <td id="report-serial-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Location</th>
+                                    <td id="report-location"></td>
+                                    <th>Instrument No</th>
+                                    <td id="report-instrument-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Last Validation Date</th>
+                                    <td id="report-previous-val"></td>
+                                    <th>Next Validation Due</th>
+                                    <td id="report-next-validation"></td>
+                                </tr>
+                            </table>
+                            <!-- Validation details (shown only for validation reports) -->
+                            <div id="report-validation-calibration-section" style="display: none;">
+                                <h3 id="report-validation-calibration-title">VALIDATION DETAILS</h3>
+                                <table class="report-ident-table" id="report-validation-calibration-table">
+                                    <tbody id="report-validation-calibration-body"></tbody>
+                                </table>
+                            </div>
+                            <div id="report-test-sections">
+                                <h3>TEST INFORMATION</h3>
+                                <table class="report-info-table">
+                                    <tr>
+                                        <th>PRODUCT NAME</th>
+                                        <td id="report-product-name" colspan="3"></td>
+                                    </tr>
+                                    <tr>
+                                        <th>BATCH NO</th>
+                                        <td id="report-batch-number" colspan="3"></td>
+                                    </tr>
+                                    <tr>
+                                        <th>REPORT/TEST START</th>
+                                        <td id="report-test-start"></td>
+                                        <th>GENERATED</th>
+                                        <td id="report-generated"></td>
+                                    </tr>
+                                    <tr>
+                                        <th>TEST DURATION</th>
+                                        <td id="report-test-duration"></td>
+                                        <th>TEST STATUS</th>
+                                        <td id="report-test-status"></td>
+                                    </tr>
+                                </table>
+                                <h3>TEST DATA</h3>
+                                <table class="report-test-data-table" id="report-test-data-table">
+                                    <thead>
+                                        <tr id="report-test-data-header">
+                                            <th>S.NO</th>
+                                            <th>INITIAL WEIGHT (W1 gms)</th>
+                                            <th>FINAL WEIGHT (W2 gms)</th>
+                                            <th>DIFFERENCE (W2-W1 gms)</th>
+                                            <th>FRIABILITY %</th>
+                                            <th>TREND</th>
+                                            <th>RESULT</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="report-test-data-body"></tbody>
+                                </table>
+                            </div>
+                            <h3>REMARKS</h3>
+                            <div class="report-remarks-box" id="report-remarks-box"></div>
+                            <table class="report-approval-table">
+                                <tr>
+                                    <th>Operated By</th>
+                                    <td id="report-operated-by"></td>
+                                    <th>Employee ID</th>
+                                    <td id="report-employee-id"></td>
+                                </tr>
+                                <tr>
+                                    <th>Approved By</th>
+                                    <td id="report-approved-by"></td>
+                                    <th id="report-drum1-pass-fail-label">Drum 1 Pass / Fail</th>
+                                    <td id="report-drum1-pass-fail"></td>
+                                </tr>
+                                <tr id="report-drum2-pass-fail-row">
+                                    <th>Drum 2 Pass / Fail</th>
+                                    <td id="report-drum2-pass-fail"></td>
+                                    <th></th>
+                                    <td></td>
+                                </tr>
+                            </table>
+                            </div>
+                            <div id="report-approve-panel" class="report-approve-panel" style="display: none;">
+                                <h3 id="report-approve-panel-title">Test report approval</h3>
+                                <p class="section-subtitle">Reviewer or Admin: select Pass or Fail and add approval remarks.</p>
+                                <p id="report-approve-operator-hint" class="report-approve-operator-hint" style="display: none;">You cannot approve your own report. Ask a Reviewer or Admin to sign below.</p>
+                                <div id="report-approve-passfail-single" class="form-group report-approve-passfail-group">
+                                    <span class="report-approve-passfail-label">Outcome</span>
+                                    <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Pass or Fail">
+                                        <label class="report-approve-card-wrap">
+                                            <input type="radio" name="report-approve-pass-fail" value="PASS" checked class="report-approve-pf-input">
+                                            <span class="report-approve-card">Pass</span>
+                                        </label>
+                                        <label class="report-approve-card-wrap">
+                                            <input type="radio" name="report-approve-pass-fail" value="FAIL" class="report-approve-pf-input">
+                                            <span class="report-approve-card">Fail</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div id="report-approve-passfail-dual" style="display: none;">
+                                    <div class="form-group report-approve-passfail-group">
+                                        <span class="report-approve-passfail-label">Drum 1</span>
+                                        <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Drum 1 Pass or Fail">
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-drum1-pass-fail" value="PASS" checked class="report-approve-pf-input">
+                                                <span class="report-approve-card">Pass</span>
+                                            </label>
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-drum1-pass-fail" value="FAIL" class="report-approve-pf-input">
+                                                <span class="report-approve-card">Fail</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="form-group report-approve-passfail-group">
+                                        <span class="report-approve-passfail-label">Drum 2</span>
+                                        <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Drum 2 Pass or Fail">
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-drum2-pass-fail" value="PASS" checked class="report-approve-pf-input">
+                                                <span class="report-approve-card">Pass</span>
+                                            </label>
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-drum2-pass-fail" value="FAIL" class="report-approve-pf-input">
+                                                <span class="report-approve-card">Fail</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="form-group full-width">
+                                    <label for="report-approve-remarks-input">Approval remarks</label>
+                                    <textarea id="report-approve-remarks-input" class="input-field" rows="3" placeholder="Approval remarks"></textarea>
+                                </div>
+                                <h4 class="report-approve-signature-heading">Electronic signature (Reviewer / Admin)</h4>
+                                <div id="report-approve-credentials-block" class="report-approve-credentials-block">
+                                    <div class="report-approve-signature-fields form-grid">
+                                        <div class="form-group full-width">
+                                            <label for="report-approve-verifier-username">Verifier User ID</label>
+                                            <input type="text" id="report-approve-verifier-username" class="input-field report-approve-verifier-field" placeholder="Reviewer or Admin User ID" autocomplete="off">
+                                        </div>
+                                        <div class="form-group full-width">
+                                            <label for="report-approve-verifier-password">Verifier password</label>
+                                            <input type="password" id="report-approve-verifier-password" class="input-field report-approve-verifier-field" placeholder="Password" autocomplete="off">
+                                        </div>
+                                    </div>
+                                    <button type="button" id="btn-report-approve-submit" class="btn btn-primary report-approve-submit-credentials" onclick="submitReportApprove()">Submit approval</button>
+                                </div>
+                                <div id="report-approve-biometric-wrap" class="report-approve-biometric-wrap">
+                                    <button type="button" id="btn-report-approve-biometric" class="report-approve-biometric-btn" onclick="submitReportApproveBiometric()">
+                                        <div class="biometric-icon report-approve-biometric-icon" aria-hidden="true">
+                                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M18.9 7a8 8 0 0 0-5.3-3.8A8 8 0 0 0 4 12"></path>
+                                                <path d="M12 20a8 8 0 0 0 8-8 4.5 4.5 0 0 0-1-2.8"></path>
+                                                <path d="M9.1 4.6A8 8 0 0 0 4.5 9.4"></path>
+                                                <path d="M12 12a4 4 0 0 0-4 4"></path>
+                                            </svg>
+                                        </div>
+                                        <span>Use fingerprint</span>
+                                    </button>
+                                </div>
+                                <p id="report-approve-verify-error" class="report-approve-verify-error" style="display: none;"></p>
+                                <button type="button" id="btn-report-approve-biometric-retry" class="btn btn-secondary report-approve-biometric-retry" style="display: none;" onclick="submitReportApproveBiometric()">Try again</button>
+                            </div>
+                        </div>
+                        <div class="report-preview-actions" id="report-preview-actions">
+                            <div class="report-preview-print-export-group" id="report-preview-print-export-group">
+                                <button class="btn-print" onclick="handlePrintReport()">Print A4</button>
+                                <button class="btn-print btn-print-thermal" onclick="handlePrintThermal()">Print
+                                    Thermal</button>
+                                <button class="btn-export" onclick="handleExportReport()">Export to USB</button>
+                            </div>
+                            <button class="btn-close" onclick="goToPage('reports')">Close</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- View Recipe Page -->
+                <div class="page" id="page-view-recipes">
+                    <div class="reports-container reports-page-layout">
+                        <h2 class="view-recipes-title">View Recipe</h2>
+                        <table class="reports-table view-recipes-table">
+                            <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th class="view-col">View</th>
+                                </tr>
+                            </thead>
+                            <tbody id="view-recipes-table-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recipe Print Preview Page -->
+                <div class="page" id="page-recipe-print-preview">
+                    <div class="reports-container">
+                        <div class="report-preview-container recipe-print-container" id="recipe-print-content">
+                            <h1>RAISE LAB EQUIPMENT</h1>
+                            <h2>Friability Tester - Recipe</h2>
+                            <h2 id="recipe-print-company-name">COMPANY NAME</h2>
+                            <table class="report-ident-table">
+                                <tr>
+                                    <th>Model No</th>
+                                    <td id="recipe-print-model-no"></td>
+                                    <th>Serial No</th>
+                                    <td id="recipe-print-serial-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Location</th>
+                                    <td id="recipe-print-location"></td>
+                                    <th>Instrument No</th>
+                                    <td id="recipe-print-instrument-no"></td>
+                                </tr>
+                                <tr>
+                                    <th>Last Validation Date</th>
+                                    <td id="recipe-print-previous-val"></td>
+                                    <th>Next Validation Due</th>
+                                    <td id="recipe-print-next-validation"></td>
+                                </tr>
+                            </table>
+                            <h3 id="recipe-print-product">Product Name</h3>
+                            <table>
+                                <tr>
+                                    <th>USP</th>
+                                    <td id="recipe-print-usp"></td>
+                                </tr>
+                                <tr>
+                                    <th>Speed (RPM)</th>
+                                    <td id="recipe-print-speed"></td>
+                                </tr>
+                            </table>
+                            <h3 style="margin-top: 1rem;">Recipe Summary</h3>
+                            <table class="recipe-print-tolerance-table">
+                                <thead>
+                                    <tr>
+                                        <th>Parameter</th>
+                                        <th>Value</th>
+                                        <th>Unit</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recipe-print-tolerance-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="report-preview-actions">
+                            <button class="btn-print" onclick="handlePrintRecipeA4()">Print A4</button>
+                            <button class="btn-print btn-print-thermal" onclick="handlePrintRecipeThermal()">Print
+                                Thermal</button>
+                            <button class="btn-close" onclick="goToPage('view-recipes')">Close</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Validation landing -->
+                <div class="page" id="page-validate">
+                    <div class="validation-main-container">
+                        <div class="validation-settings-grid">
+                            <button class="settings-card settings-validate" onclick="selectOperation('validate')">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                                    </svg>
+                                </div>
+                                <h3>Validate</h3>
+                                <p>Standard apparatus validation</p>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+
+                <!-- Validation type select -->
+                <div class="page" id="page-validate-type-select">
+                    <div class="validation-type-page">
+                        <div class="validation-type-settings-card val-usp val-select-card">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="6" y="0.5" width="12" height="2.5" rx="0.5"></rect>
+                                    <path d="M9 3v16.5l-1.5 3h9l-1.5-3V3z"></path>
+                                    <line x1="14.5" y1="6" x2="16" y2="6"></line>
+                                    <line x1="14.5" y1="8.5" x2="16" y2="8.5"></line>
+                                    <line x1="14.5" y1="11" x2="16" y2="11"></line>
+                                    <line x1="14.5" y1="13.5" x2="16" y2="13.5"></line>
+                                    <line x1="14.5" y1="16" x2="16" y2="16"></line>
+                                    <line x1="14.5" y1="18.5" x2="16" y2="18.5"></line>
+                                </svg>
+                            </div>
+                            <h3>USP</h3>
+                            <p><strong>25</strong> RPM · <strong>4</strong> min · <strong>100</strong> rotations</p>
+                            <p class="val-select-note">Validation counts drum rotations.</p>
+                        </div>
+                        <button type="button" class="btn btn-primary validation-start-btn validation-start-btn-lg" onclick="startValidationFromType()">Start Validation</button>
+                    </div>
+                </div>
+
+                <!-- Validation Test Run Page -->
+                <div class="page" id="page-validation-run">
+                    <div class="validation-run-page">
+                        <div class="val-run-params" aria-label="Validation parameters">
+                            <div class="val-run-param">
+                                <span class="val-run-param-label">Procedure</span>
+                                <span class="val-run-param-value" id="val-run-usp">--</span>
+                            </div>
+                            <span class="val-run-param-dot" aria-hidden="true"></span>
+                            <div class="val-run-param">
+                                <span class="val-run-param-label">Set RPM</span>
+                                <span class="val-run-param-value" id="val-run-rpm">25</span>
+                            </div>
+                            <span class="val-run-param-dot" aria-hidden="true"></span>
+                            <div class="val-run-param">
+                                <span class="val-run-param-label">Duration</span>
+                                <span class="val-run-param-value" id="val-run-set-time">04:00</span>
+                            </div>
+                        </div>
+
+                        <div class="val-run-panel">
+                            <div class="val-run-panel-inner val-run-panel-inner--friability">
+                                <div class="val-run-visual-col">
+                                    <div class="val-run-drum-compact">
+                                        <div class="tr-drum-wrapper validation-drum-wrapper">
+                                            <div class="tr-drum-shell" id="val-drum-shell">
+                                                <div class="tr-drum-inner" id="val-drum-inner">
+                                                    <svg class="tr-drum-tech-svg" viewBox="0 0 220 220" aria-hidden="true">
+                                                        <defs>
+                                                            <radialGradient id="drum-face-grad-val" cx="45%" cy="35%" r="70%">
+                                                                <stop offset="0%" stop-color="#d5dbe3"/>
+                                                                <stop offset="65%" stop-color="#b4bdc9"/>
+                                                                <stop offset="100%" stop-color="#97a2b1"/>
+                                                            </radialGradient>
+                                                            <pattern id="knurl-val" width="6" height="6" patternUnits="userSpaceOnUse">
+                                                                <path d="M0,6 L6,0 M-3,3 L3,-3 M3,9 L9,3" stroke="#5b626b" stroke-width="0.9" fill="none"/>
+                                                            </pattern>
+                                                            <radialGradient id="center-cap-grad-val" cx="50%" cy="45%" r="70%">
+                                                                <stop offset="0%" stop-color="#d8dde3"/>
+                                                                <stop offset="100%" stop-color="#a6afbb"/>
+                                                            </radialGradient>
+                                                            <linearGradient id="drum-baffle-grad-val" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                                <stop offset="0%" stop-color="#4a5159"/>
+                                                                <stop offset="45%" stop-color="#8f98a3"/>
+                                                                <stop offset="100%" stop-color="#3d444c"/>
+                                                            </linearGradient>
+                                                        </defs>
+                                                        <circle cx="110" cy="110" r="94" fill="url(#drum-face-grad-val)"/>
+                                                        <circle class="drum-line" cx="110" cy="110" r="102"/>
+                                                        <circle class="drum-line" cx="110" cy="110" r="94"/>
+                                                        <circle class="drum-bolt" cx="110" cy="12" r="4"/>
+                                                        <circle class="drum-bolt" cx="195" cy="61" r="4"/>
+                                                        <circle class="drum-bolt" cx="195" cy="159" r="4"/>
+                                                        <circle class="drum-bolt" cx="110" cy="208" r="4"/>
+                                                        <circle class="drum-bolt" cx="25" cy="159" r="4"/>
+                                                        <circle class="drum-bolt" cx="25" cy="61" r="4"/>
+                                                        <g class="drum-hub-outer" aria-hidden="true">
+                                                            <circle cx="110" cy="110" r="30" fill="#c9d0d9" stroke="#2f343b" stroke-width="1.6"/>
+                                                            <circle cx="110" cy="110" r="30" fill="none" stroke="url(#knurl-val)" stroke-width="2.2"/>
+                                                        </g>
+                                                        <g class="drum-baffle" aria-hidden="true" transform="translate(220,0) scale(-1,1)">
+                                                            <path fill="url(#drum-baffle-grad-val)" stroke="#1e2329" stroke-width="1" stroke-linejoin="round" d="M 16.92 96.92 A 94 94 0 0 0 35.93 52.13 Q 68 76 87.02 90.72 A 30 30 0 0 1 82.81 97.32 A 52.73 52.73 0 0 0 16.92 96.92 Z"/>
+                                                        </g>
+                                                        <g aria-hidden="true">
+                                                            <circle cx="110" cy="110" r="24" fill="#d0d5dd" stroke="#2f343b" stroke-width="1.5"/>
+                                                            <circle cx="110" cy="110" r="24" fill="none" stroke="url(#knurl-val)" stroke-width="2"/>
+                                                            <circle cx="110" cy="110" r="18" fill="#d7dce2" stroke="#2f343b" stroke-width="1.4"/>
+                                                            <circle cx="110" cy="110" r="13.5" fill="url(#center-cap-grad-val)" stroke="#2f343b" stroke-width="1.2"/>
+                                                        </g>
+                                                    </svg>
+                                                </div>
+                                            </div>
+                                            <div class="tr-drum-label">Validation Drum</div>
+                                        </div>
+                                    </div>
+                                    <div class="val-run-elapsed-block" aria-label="Elapsed time">
+                                        <span class="val-run-elapsed-value" id="val-drum-timer">00:00</span>
+                                        <span class="val-run-elapsed-caption">elapsed</span>
+                                    </div>
+                                </div>
+                                <div class="val-run-stats">
+                                    <div class="val-run-stat">
+                                        <span class="val-run-stat-label">Rotations</span>
+                                        <span class="val-run-stat-value" id="val-run-rotation-count">0</span>
+                                        <span class="val-run-stat-hint">Target <span id="val-run-expected">--</span> (±1)</span>
+                                    </div>
+                                    <div class="val-run-stat">
+                                        <span class="val-run-stat-label">RPM (live)</span>
+                                        <span class="val-run-stat-value val-run-rpm-value" id="val-run-current-rpm">--</span>
+                                        <span class="val-run-stat-hint" id="val-run-rpm-sub">25 ±1</span>
+                                    </div>
+                                    <div class="val-run-stat">
+                                        <span class="val-run-stat-label">Status</span>
+                                        <span class="val-run-stat-value val-run-status-text is-ready" id="val-run-status">Ready</span>
+                                        <span class="val-run-stat-hint" id="val-run-status-sub">Press Start to begin</span>
+                                    </div>
+                                    <div class="val-run-result-strip" id="val-result-card" hidden>
+                                        <span class="val-run-stat-label">Result</span>
+                                        <span class="val-run-result-badge" id="val-run-result">--</span>
+                                        <p class="val-run-result-detail" id="val-run-result-detail">--</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="val-run-cta">
+                            <button type="button" id="btn-validation-start-abort" class="btn btn-primary val-run-start-btn" onclick="toggleValidationRunState()">
+                                <span class="ctrl-icon" aria-hidden="true">&#9654;</span>
+                                <span id="btn-validation-label">Start Validation</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Calibration type select -->
+                <div class="page" id="page-calibration-type-select">
+                    <div class="validation-type-page">
+                        <h2 class="section-title">Select Calibration Type</h2>
+                        <p class="section-subtitle">Choose the calibration procedure to run</p>
+                        <div class="validation-type-grid calibration-grid">
+                            <label class="validation-type-settings-card cal-load">
+                                <input type="radio" name="cal-type" value="load" checked>
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                                    </svg>
+                                </div>
+                                <h3>Load Calibration</h3>
+                                <p>Calibrate load cell with known weight</p>
+                            </label>
+                            <label class="validation-type-settings-card cal-span">
+                                <input type="radio" name="cal-type" value="distance-zero">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                        <polyline points="12 5 19 12 12 19"></polyline>
+                                    </svg>
+                                </div>
+                                <h3>Distance Calibration</h3>
+                                <p>Calibrate distance zero (10 mm gauge block)</p>
+                            </label>
+                        </div>
+                        <button class="btn btn-primary validation-start-btn" onclick="startCalibrationFromType()">Start
+                            Calibration</button>
+                    </div>
+                </div>
+
+
+                <!-- Load Calibration (placeholder) -->
+                <div class="page" id="page-load-calibration">
+                    <div class="validation-test-page calibration-page">
+                        <h2 class="section-title">Load Calibration</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-instructions-card">
+                                <p>1. Set up load cell arrangement per manual.</p>
+                                <p>2. Place calibration plate on load cell.</p>
+                                <p>3. Perform tare process with empty plate.</p>
+                                <p>4. Place 5 kg calibration weight on the plate.</p>
+                                <p>5. Press Start Calibration to complete.</p>
+                            </div>
+                            <button type="button" class="btn btn-primary validation-action-btn"
+                                onclick="goToPage('calibration-type-select')">Back</button>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Status</div>
+                                <span class="validation-card-value" id="load-calibration-status">Ready</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+
+                <!-- Distance Calibration (placeholder) -->
+                <div class="page" id="page-distance-zero-calibration">
+                    <div class="validation-test-page calibration-page">
+                        <h2 class="section-title">Distance Calibration</h2>
+                        <div class="validation-test-layout">
+                            <div class="validation-instructions-card">
+                                <p>1. Press "Distance Zero"</p>
+                                <p>2. Wait for machine to zero and home</p>
+                                <p>3. Place 10 mm gauge block</p>
+                                <p>4. Press "Calibrate"</p>
+                            </div>
+                            <button type="button" class="btn btn-primary validation-action-btn"
+                                onclick="goToPage('calibration-type-select')">Back</button>
+                            <div class="validation-card">
+                                <div class="validation-card-label">Status</div>
+                                <span class="validation-card-value" id="distance-zero-calibration-status">Ready</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings Page -->
+                <div class="page" id="page-settings">
+                    <div class="settings-grid-container">
+                        <button class="settings-card settings-datetime" onclick="goToPage('datetime')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <polyline points="12 6 12 12 16 14"></polyline>
+                                </svg>
+                            </div>
+                            <h3>Edit Date and Time</h3>
+                        </button>
+                        <button class="settings-card settings-ip-configure" onclick="goToPage('ip-configure')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                                </svg>
+                            </div>
+                            <h3>IP Configure</h3>
+                        </button>
+                        <button class="settings-card settings-recipes" onclick="manageRecipes()">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                                </svg>
+                            </div>
+                            <h3>Manage Recipe</h3>
+                        </button>
+                        <button class="settings-card settings-disable" onclick="goToPage('disable-recipes')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <rect x="4" y="4" width="16" height="16" rx="3" ry="3"></rect>
+                                    <line x1="8" y1="12" x2="16" y2="12"></line>
+                                </svg>
+                            </div>
+                            <h3>Disabled Recipes</h3>
+                        </button>
+                        <button class="settings-card settings-validation" onclick="goToPage('validate')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                                </svg>
+                            </div>
+                            <h3>Validation</h3>
+                        </button>
+                        <button class="settings-card settings-factory" style="display: none;" onclick="goToPage('factory-settings')">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path
+                                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                                    </path>
+                                </svg>
+                            </div>
+                            <h3>Factory Settings</h3>
+                        </button>
+                        <button class="settings-card settings-reset" style="display: none;" onclick="showFactoryResetConfirm()">
+                            <div class="settings-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <polyline points="1 4 1 10 7 10"></polyline>
+                                    <polyline points="23 20 23 14 17 14"></polyline>
+                                    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15">
+                                    </path>
+                                </svg>
+                            </div>
+                            <h3>Factory Reset</h3>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- User Profile Page -->
+                <div class="page" id="page-user-profile">
+                    <div class="profile-dashboard-container">
+                        <div class="profile-dashboard-left">
+                            <div class="current-user-header">
+                                <div class="user-avatar-large">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                        <circle cx="12" cy="7" r="4"></circle>
+                                    </svg>
+                                </div>
+                                <div class="user-info-text">
+                                    <h2 id="profile-name-display">Factory</h2>
+                                    <span id="profile-role-display" class="role-badge">Factory</span>
+                                </div>
+                            </div>
+                            <div class="profile-edit-form">
+                                <div class="form-group full-width">
+                                    <label>Edit Full Name</label>
+                                    <input type="text" id="profile-fullname" class="input-field"
+                                        placeholder="Full name">
+                                </div>
+                                <div class="form-group full-width">
+                                    <label>Edit Password</label>
+                                    <input type="password" id="profile-password" class="input-field"
+                                        placeholder="Enter new password">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="profile-actions">
+                            <button class="btn btn-blue btn-block" onclick="saveUserProfile()">Save</button>
+                            <button class="btn btn-orange btn-block" onclick="goToPage('manage-members')">Manage Profiles</button>
+                            <button class="btn btn-blue btn-block" onclick="openAddMember()">Add Members</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manage Profiles Page -->
+                <div class="page" id="page-manage-members">
+                    <div class="manage-members-container">
+                        <div class="member-status-switch">
+                            <button class="btn member-status-btn member-status-btn-locked" onclick="goToPage('locked-members')">
+                                <span class="member-status-label-with-icon">
+                                    <svg class="member-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <rect x="4" y="11" width="16" height="9" rx="2"></rect>
+                                        <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+                                    </svg>
+                                    <span>Locked Accounts</span>
+                                </span>
+                            </button>
+                            <button class="btn member-status-btn member-status-btn-disabled" onclick="goToPage('disabled-members')">
+                                <span class="member-status-label-with-icon">
+                                    <svg class="member-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <circle cx="12" cy="12" r="9"></circle>
+                                        <path d="M8.5 8.5l7 7"></path>
+                                    </svg>
+                                    <span>Disabled Accounts</span>
+                                </span>
+                            </button>
+                        </div>
+                        <div class="manage-members-list-scroll">
+                            <div id="members-empty-state" class="empty-state-message">No members added yet.</div>
+                            <table class="member-table">
+                                <thead>
+                                    <tr>
+                                        <th>Full Name</th>
+                                        <th>Username</th>
+                                        <th>Role</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="members-list-body">
+                                    <!-- Populated by renderMemberList() -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <!-- Change Role Modal Overlay -->
+                    <div id="role-modal-overlay" class="modal-overlay" style="display: none;">
+                        <div class="role-modal">
+                            <h3 id="role-modal-title">Change Role</h3>
+                            <p id="role-modal-current">Current Role: User</p>
+                            <div class="role-modal-buttons">
+                                <button class="btn-role-select btn-role-admin" onclick="confirmRoleChange('Admin')">Admin</button>
+                                <button class="btn-role-select btn-role-supervisor" onclick="confirmRoleChange('Supervisor')">Reviewer</button>
+                                <button class="btn-role-select btn-role-qa" onclick="confirmRoleChange('QA')">QA</button>
+                                <button class="btn-role-select btn-role-user" onclick="confirmRoleChange('User')">User</button>
+                                <button class="btn-role-select btn-role-cancel" onclick="closeRoleModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Locked Members Page -->
+                <div class="page" id="page-locked-members">
+                    <div class="manage-members-container">
+                        <div class="member-status-switch">
+                            <button class="btn member-status-btn member-status-btn-active" onclick="goToPage('manage-members')">Active Accounts</button>
+                            <button class="btn member-status-btn member-status-btn-locked member-status-btn-current" disabled>
+                                <span class="member-status-label-with-icon">
+                                    <svg class="member-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <rect x="4" y="11" width="16" height="9" rx="2"></rect>
+                                        <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+                                    </svg>
+                                    <span>Locked Accounts</span>
+                                </span>
+                            </button>
+                            <button class="btn member-status-btn member-status-btn-disabled" onclick="goToPage('disabled-members')">
+                                <span class="member-status-label-with-icon">
+                                    <svg class="member-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <circle cx="12" cy="12" r="9"></circle>
+                                        <path d="M8.5 8.5l7 7"></path>
+                                    </svg>
+                                    <span>Disabled Accounts</span>
+                                </span>
+                            </button>
+                        </div>
+                        <div class="manage-members-list-scroll">
+                            <div id="locked-members-empty-state" class="empty-state-message">No locked accounts.</div>
+                            <table class="member-table">
+                                <thead>
+                                    <tr>
+                                        <th>Full Name</th>
+                                        <th>Username</th>
+                                        <th>Role</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="locked-members-table-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Disabled Members Page -->
+                <div class="page" id="page-disabled-members">
+                    <div class="manage-members-container">
+                        <div class="member-status-switch">
+                            <button class="btn member-status-btn member-status-btn-active" onclick="goToPage('manage-members')">Active Accounts</button>
+                            <button class="btn member-status-btn member-status-btn-locked" onclick="goToPage('locked-members')">
+                                <span class="member-status-label-with-icon">
+                                    <svg class="member-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <rect x="4" y="11" width="16" height="9" rx="2"></rect>
+                                        <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+                                    </svg>
+                                    <span>Locked Accounts</span>
+                                </span>
+                            </button>
+                            <button class="btn member-status-btn member-status-btn-disabled member-status-btn-current" disabled>
+                                <span class="member-status-label-with-icon">
+                                    <svg class="member-status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <circle cx="12" cy="12" r="9"></circle>
+                                        <path d="M8.5 8.5l7 7"></path>
+                                    </svg>
+                                    <span>Disabled Accounts</span>
+                                </span>
+                            </button>
+                        </div>
+                        <div class="manage-members-list-scroll">
+                            <div id="disabled-members-empty-state" class="empty-state-message">No disabled accounts.</div>
+                            <table class="member-table">
+                                <thead>
+                                    <tr>
+                                        <th>Full Name</th>
+                                        <th>Username</th>
+                                        <th>Role</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="disabled-members-table-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Add Member Page -->
+                <div class="page" id="page-add-member">
+                    <div class="add-member-container">
+                        <h2 class="section-title" id="add-member-page-title">Add New Member</h2>
+                        <div class="add-member-form form-grid">
+                            <div class="form-group">
+                                <label>Full Name</label>
+                                <input type="text" id="add-fullname" class="input-field add-member-input" placeholder="Enter full name"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>User ID / Employee ID</label>
+                                <input type="text" id="add-userid" class="input-field add-member-input"
+                                    placeholder="Enter User ID / Employee ID"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label id="add-password-label">Password</label>
+                                <input type="password" id="add-password" class="input-field add-member-input"
+                                    placeholder="Enter password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label id="add-confirm-password-label">Confirm Password</label>
+                                <input type="password" id="add-confirm-password" class="input-field add-member-input"
+                                    placeholder="Confirm password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                        </div>
+
+                        <div class="role-selection-container">
+                            <label>Role</label>
+                            <div class="role-options">
+                                <button type="button" class="role-btn active" data-role="User" onclick="selectRole('User')">User</button>
+                                <button type="button" class="role-btn" data-role="Supervisor" onclick="selectRole('Supervisor')">Reviewer</button>
+                                <button type="button" class="role-btn" data-role="QA" onclick="selectRole('QA')">QA</button>
+                                <button type="button" class="role-btn" data-role="Admin" onclick="selectRole('Admin')">Admin</button>
+                            </div>
+                            <input type="hidden" id="selected-role" value="User">
+                        </div>
+
+                        <div id="add-member-permissions-panel" class="permissions-panel is-hidden">
+                            <div class="permissions-panel-header">
+                                <label>User functionalities</label>
+                                <span class="permissions-panel-subtitle">Select the permissions for this member.</span>
+                            </div>
+                            <div id="permission-cards-grid" class="permission-cards-grid"></div>
+                        </div>
+
+                        <div class="add-member-actions members-actions-row">
+                            <button type="button" class="btn btn-primary" id="add-member-save-btn" onclick="saveMemberForm()">Save Profile</button>
+                            <button type="button" class="btn btn-secondary" onclick="cancelAddMemberEdit()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="page" id="page-member-biometric">
+                    <div class="add-member-container">
+                        <h2 class="section-title">Register Fingerprint</h2>
+                        <div class="member-biometric-summary">
+                            <div class="member-biometric-summary-row">
+                                <span class="member-biometric-label">Full Name</span>
+                                <strong id="member-biometric-name">--</strong>
+                            </div>
+                            <div class="member-biometric-summary-row">
+                                <span class="member-biometric-label">User ID</span>
+                                <strong id="member-biometric-username">--</strong>
+                            </div>
+                            <div class="member-biometric-summary-row">
+                                <span class="member-biometric-label">Role</span>
+                                <strong id="member-biometric-role">--</strong>
+                            </div>
+                        </div>
+                        <div class="member-biometric-instructions">
+                            Register this user's fingerprint using two scans of the same finger: place finger once, remove it, then place the same finger again.
+                        </div>
+                        <button type="button" id="member-biometric-enroll-btn" class="login-biometric-btn" onclick="enrollMemberBiometric()">
+                            <div class="biometric-icon">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18.9 7a8 8 0 0 0-5.3-3.8A8 8 0 0 0 4 12"></path>
+                                    <path d="M12 20a8 8 0 0 0 8-8 4.5 4.5 0 0 0-1-2.8"></path>
+                                    <path d="M9.1 4.6A8 8 0 0 0 4.5 9.4"></path>
+                                    <path d="M12 12a4 4 0 0 0-4 4"></path>
+                                    <path d="M16 12a4 4 0 0 1-4 4"></path>
+                                    <path d="M12 16v4"></path>
+                                    <path d="M12 8a4 4 0 0 1 4 4"></path>
+                                    <path d="M8 12a4 4 0 0 1 4-4"></path>
+                                </svg>
+                            </div>
+                            <span>Register Fingerprint</span>
+                        </button>
+                        <div class="add-member-actions members-actions-row">
+                            <button class="btn btn-secondary" onclick="skipMemberBiometricEnrollment()">Skip for Now</button>
+                            <button class="btn btn-secondary" onclick="backToMemberAfterBiometric()">Back to Members</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- IP Configure -->
+                <div class="page" id="page-ip-configure">
+                    <div class="ip-configure-container">
+                        <p class="ip-configure-hint">WLAN and LAN IPv4 addresses (Tailscale addresses are hidden).</p>
+                        <div id="ip-configure-list" class="ip-configure-list" aria-live="polite">
+                            <div class="ip-configure-loading">Loading addresses…</div>
+                        </div>
+                        <button type="button" class="btn-refresh-ip-configure" onclick="refreshIpConfigureAddresses()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <polyline points="23 4 23 10 17 10"></polyline>
+                                <polyline points="1 20 1 14 7 14"></polyline>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Date & Time -->
+                <div class="page" id="page-datetime">
+                    <div class="datetime-setup-container">
+                        <div class="datetime-grid">
+                            <div class="datetime-card">
+                                <div class="datetime-label">Date</div>
+                                <div class="datetime-date-row">
+                                    <input type="text" id="edit-date" class="datetime-display-box"
+                                        placeholder="DD-MM-YYYY">
+                                    <button type="button" class="date-picker-icon-btn datetime-picker-btn"
+                                        onclick="openDatePickerForEditDate()" title="Open calendar"
+                                        aria-label="Open calendar">
+                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2">
+                                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                            <line x1="16" y1="2" x2="16" y2="6"></line>
+                                            <line x1="8" y1="2" x2="8" y2="6"></line>
+                                            <line x1="3" y1="10" x2="21" y2="10"></line>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <input type="date" id="edit-date-picker-hidden"
+                                    style="position:absolute;visibility:hidden;width:1px;height:1px;left:0;top:0;clip:rect(0,0,0,0);"
+                                    tabindex="-1">
+                            </div>
+                            <div class="datetime-card">
+                                <div class="datetime-label">Time</div>
+                                <input type="text" id="edit-time" class="datetime-display-box" placeholder="HH:MM (24h)">
+                            </div>
+                        </div>
+                        <button class="btn-apply-datetime" onclick="applyDateTime()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            Apply Date & Time
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Factory Settings -->
+                <div class="page" id="page-factory-settings">
+                    <div class="factory-settings-inner">
+                        <h2 class="section-title">Factory Settings</h2>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>Company Name <span class="required">*</span></label>
+                                <input type="text" id="factory-company-name" class="input-field"
+                                    placeholder="Enter company name"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>Company Location <span class="required">*</span></label>
+                                <input type="text" id="factory-company-location" class="input-field"
+                                    placeholder="City / Site"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>Serial Number</label>
+                                <input type="text" id="factory-serial-no" class="input-field"
+                                    placeholder="Unique device serial"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>Model Number</label>
+                                <input type="text" id="factory-model-no" class="input-field"
+                                    placeholder="Product model"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>Instrument ID</label>
+                                <input type="text" id="factory-instrument-id" class="input-field"
+                                    placeholder="Internal unique ID"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>Installation Date</label>
+                                <div class="date-input-wrapper">
+                                    <input type="date" id="factory-installation-date" class="input-field">
+                                    <button type="button" class="date-picker-icon-btn" onclick="openDatePicker('factory-installation-date')" title="Open calendar" aria-label="Open calendar">
+                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                            <line x1="16" y1="2" x2="16" y2="6"></line>
+                                            <line x1="8" y1="2" x2="8" y2="6"></line>
+                                            <line x1="3" y1="10" x2="21" y2="10"></line>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Firmware Version</label>
+                                <input type="text" id="factory-firmware" class="input-field" value="RD-TDT v1.0.0" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label>Installed By</label>
+                                <input type="text" id="factory-installed-by" class="input-field"
+                                    placeholder="Technician name"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label>Max Recipes</label>
+                                <input type="number" id="factory-max-recipes" class="input-field" min="1" max="999" placeholder="150" value="150">
+                            </div>
+                            <div class="form-group">
+                                <label>Max Users</label>
+                                <input type="number" id="factory-max-users" class="input-field" min="1" max="999" placeholder="10" value="10">
+                            </div>
+                            <div class="form-group">
+                                <label>Max Admins</label>
+                                <input type="number" id="factory-max-admins" class="input-field" min="1" max="99" placeholder="2" value="2">
+                            </div>
+                            <div class="form-group">
+                                <label>Max Reviewers</label>
+                                <input type="number" id="factory-max-supervisors" class="input-field" min="1" max="99" placeholder="3" value="3">
+                            </div>
+                            <div class="form-group">
+                                <label>Password Reset Period (Days)</label>
+                                <input type="number" id="factory-password-reset-days" class="input-field" min="1" max="3650" placeholder="30" value="30">
+                            </div>
+                            <div class="form-group">
+                                <label>Biometric Login</label>
+                                <select id="factory-biometric-enabled" class="input-field">
+                                    <option value="enabled">Enabled</option>
+                                    <option value="disabled">Disabled</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Auto logout after idle (minutes)</label>
+                                <input type="number" id="factory-auto-logout-minutes" class="input-field" min="0" max="10080" placeholder="0"
+                                    value="0"
+                                    title="0 = disabled. While a test or validation run is active, logout is never forced."
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                <p class="section-subtitle" style="margin-top:6px;font-size:13px;">0 disables auto logout. When set, users are logged out after this many minutes with no screen activity. No auto logout during an active test run or validation run.</p>
+                            </div>
+                        </div>
+                        <div class="validation-actions-row">
+                            <button type="button" class="btn btn-secondary"
+                                onclick="goToPage('settings')">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveFactorySettings()">Save</button>
+                        </div>  
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <div id="keyboard-root"></div>
+    <script src="keyboard.js?v=3"></script>
+    <script src="input-focus.js?v=1"></script>
+    <script src="rbac.js?v=6"></script>
+    <script src="script.js?v=66"></script>
+</body>
+
+</html>

@@ -1,0 +1,41 @@
+======================================================================
+                    TAP DENSITY VALIDATION REPORT                     
+======================================================================
+Company: RAM
+Model No: THYY
+Serial No: THY
+Location: dd
+Instrument ID: qq
+Last Val: 18-05-2026
+Next Val Due: 18-08-2026
+
+
+VALIDATION INFORMATION
+Overall Status: Pass
+Completed: 18/05/2026 17:24:26
+
+VALIDATION RESULTS
+----------------------------------------------------------------------
+USP 1
+  Taps/Min: 300
+  Drop (mm): 14
+  Expected: 300 (+/-15)
+  Actual: 302
+  Duration: 60 s
+  Status: Pass
+
+USP 2
+  Taps/Min: 250
+  Drop (mm): 3
+  Expected: 250 (+/-15)
+  Actual: 250
+  Duration: 60 s
+  Status: Pass
+
+Operated by: rahul
+Employee ID: Rahul
+Approval Result: PASS
+Approved By: Factory (factory)
+Approved At: 18/05/2026 17:24:47
+Approval Remarks: gyvyh
+

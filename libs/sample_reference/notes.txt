@@ -1,0 +1,2 @@
+after selecting the parameters,  while entering the delay its not taking the delay,and in the delay page make sure we cant enter "1" the delay must be start from the 2 delay
+in the thermal print with the model there should be NO and same as serial 

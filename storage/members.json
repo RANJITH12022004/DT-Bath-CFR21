@@ -1,0 +1,33 @@
+[
+  {
+    "name": "rahul",
+    "username": "Rahul",
+    "password": "Rle@2024",
+    "role": "User",
+    "featureOverrides": {
+      "allow": [
+        "perm_audit_view",
+        "perm_datetime",
+        "perm_export_approve",
+        "perm_export_usb",
+        "perm_recipe_approve",
+        "perm_reports_view",
+        "perm_test_report_approve",
+        "perm_validation_report_approve",
+        "perm_validation_test"
+      ],
+      "deny": []
+    },
+    "id": 1,
+    "status": "active",
+    "failedAttempts": 0,
+    "createdAt": "2026-05-18T11:43:39.242161Z",
+    "passwordLastChangedAt": "2026-05-18T11:45:22.720660Z",
+    "mustChangePassword": false,
+    "biometricEnabled": true,
+    "fingerprintTemplateId": 1,
+    "biometricEnrolledAt": 1779104637,
+    "biometricEnrollmentStatus": "enrolled",
+    "permissionsVersion": 2
+  }
+]
