@@ -51,7 +51,7 @@ def validate_recipe(recipe_data: Dict[str, Any]) -> Dict[str, Any]:
 
     completion = str(recipe_data.get("customCompletionMode") or "COUNT").strip().upper()
     if mode == "USP":
-        completion = "COUNT"
+        completion = "TIME"
     if completion == "TIME":
         ts = recipe_data.get("timeSeconds") or recipe_data.get("targetSeconds")
         tm = recipe_data.get("timeMinutes")

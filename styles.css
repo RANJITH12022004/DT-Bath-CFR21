@@ -743,9 +743,22 @@ body {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y;
+    overscroll-behavior: contain;
     padding: var(--spacing-xl);
     min-height: 0;
     background: var(--bg-primary);
+}
+
+.page-content.is-drag-scrolling,
+.page-content.is-drag-scrolling * {
+    cursor: grabbing !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+
+/* Reports/Audits: use full content width (less side dead space) */
+.page-content:has(#page-reports.active) {
+    padding: 12px 16px;
 }
 
 /* Full-screen pages: fixed layout, parent does not scroll */
@@ -2785,7 +2798,7 @@ body {
 }
 
 .reports-page-layout {
-    padding: 20px;
+    padding: 12px 8px;
 }
 
 .reports-filter-buttons {
@@ -2794,7 +2807,8 @@ body {
     flex-wrap: nowrap;
     gap: 12px;
     margin-bottom: 32px;
-    overflow-x: hidden;
+    /* Avoid overflow:hidden — it traps touch pans on Pi Chromium so only the scrollbar scrolls. */
+    overflow: visible;
     padding-bottom: 4px;
     width: 100%;
 }
@@ -2880,8 +2894,9 @@ body {
     align-items: center;
     gap: 10px 16px;
     padding: 12px 16px;
-    margin: 12px auto;
-    max-width: 800px;
+    margin: 12px 0;
+    max-width: none;
+    width: 100%;
     background: rgba(45, 55, 72, 0.5);
     border: 1px solid #4a5568;
     border-radius: 8px;
@@ -2914,12 +2929,15 @@ body {
 
 .reports-table {
     width: 100%;
-    max-width: 800px;
-    margin: 0 auto;
-    border-collapse: collapse;
+    max-width: none;
+    margin: 0;
+    border-collapse: separate;
+    border-spacing: 0;
     background: var(--bg-card);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    /* overflow:hidden traps touch pans on Pi Chromium (drag only works on scrollbar). */
+    overflow: visible;
+    touch-action: pan-y;
     border: 1px solid var(--glass-border);
     box-shadow: var(--shadow-sm);
 }
@@ -2982,7 +3000,7 @@ body {
     padding: 8px 12px;
 }
 
-/* Reports / recipe pages — no nested scroll */
+/* Reports / recipe pages — no nested scroll; parent .page-content scrolls */
 #page-view-recipes.active,
 #page-recipe-print-preview.active,
 #page-reports.active,
@@ -2992,11 +3010,32 @@ body {
     height: auto;
     min-height: 100%;
     overflow: visible;
+    touch-action: pan-y;
 }
 
 #page-report-preview .reports-container,
 .reports-container {
     overflow: visible;
+    touch-action: pan-y;
+}
+
+/* Keep pan-y on reports content so drag-scroll works from table/filters (not only scrollbar). */
+#page-reports,
+#page-reports .reports-container,
+#page-reports .reports-table,
+#page-reports .reports-table th,
+#page-reports .reports-table td {
+    touch-action: pan-y;
+}
+
+#page-reports input,
+#page-reports select,
+#page-reports textarea,
+#page-reports button,
+#page-reports a,
+#page-reports .reports-open-btn,
+#page-reports .reports-filter-btn {
+    touch-action: manipulation;
 }
 
 #page-report-preview .reports-container {
@@ -5603,10 +5642,19 @@ input[type="number"] {
 
 .app-container.report-approval-locked .nav-item[data-page],
 .app-container.validation-run-locked .nav-item[data-page],
+.app-container.test-run-locked .nav-item[data-page],
 .app-container.report-approval-locked .user-profile,
 .app-container.report-approval-locked .logout-btn,
 .app-container.report-approval-locked #header-logo,
 .app-container.report-approval-locked #header-back-btn,
+.app-container.test-run-locked .user-profile,
+.app-container.test-run-locked .logout-btn,
+.app-container.test-run-locked #header-logo,
+.app-container.test-run-locked #header-back-btn,
+.app-container.validation-run-locked .user-profile,
+.app-container.validation-run-locked .logout-btn,
+.app-container.validation-run-locked #header-logo,
+.app-container.validation-run-locked #header-back-btn,
 .app-container.report-approval-locked .test-card,
 .app-container.report-approval-locked #report-preview-actions .btn-close,
 .app-container.report-approval-locked #page-report-preview .btn-close,
@@ -5616,8 +5664,16 @@ input[type="number"] {
 }
 
 .app-container.report-approval-locked .nav-item[data-page],
-.app-container.validation-run-locked .nav-item[data-page] {
+.app-container.validation-run-locked .nav-item[data-page],
+.app-container.test-run-locked .nav-item[data-page] {
     cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* Tap Density parity: lock entire sidebar while a run is active */
+.sidebar.sidebar-locked {
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 
@@ -5790,9 +5846,15 @@ input[type="number"] {
     will-change: transform;
 }
 
-/* Rotation count — counter-rotates; sits above hub */
+/* Rotation count above each drum */
 .tr-drum-count {
-    display: none !important;
+    font-size: clamp(28px, 4.5vmin, 44px);
+    font-weight: 800;
+    color: var(--icon-profile);
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+    line-height: 1.1;
 }
 
 .tr-drum-label {
@@ -6088,10 +6150,12 @@ input[type="number"] {
 }
 
 #page-test-run .tr-footer-note {
-    font-size: 14px;
-    color: rgba(232, 240, 252, 0.92);
+    font-size: clamp(19px, 3vmin, 26px);
+    color: rgba(232, 240, 252, 0.98);
     font-style: normal;
-    font-weight: 600;
+    font-weight: 700;
+    line-height: 1.35;
+    text-align: center;
 }
 
 /* Create recipe USP/custom mode toggle */
@@ -6124,89 +6188,148 @@ input[type="number"] {
     cursor: not-allowed;
 }
 
-/* Fit fix for test-run layout (1024x600-friendly) */
+/* Test-run layout: use full vertical space with larger controls */
 #page-test-run .test-run-page {
-    padding: 6px 10px;
-    gap: 6px;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 8px 12px 0;
+    gap: 8px;
 }
 
 #page-test-run .tr-header {
-    padding: 8px 12px;
-    gap: 8px 10px;
+    padding: 10px 14px;
+    gap: 8px 12px;
+    flex-shrink: 0;
 }
 
 #page-test-run .tr-header-block {
-    flex: 1 1 105px;
+    flex: 1 1 110px;
 }
 
 #page-test-run .tr-label {
-    font-size: 11px;
+    font-size: 12px;
 }
 
 #page-test-run .tr-value {
-    font-size: 16px;
-    line-height: 1.2;
+    font-size: 17px;
+    line-height: 1.25;
 }
 
 #page-test-run .tr-drums-row {
+    flex: 1 1 auto;
     min-height: 0;
-    height: 100%;
-    gap: 10px;
+    height: auto;
+    gap: 14px;
     align-items: center;
+    justify-content: center;
 }
 
 #page-test-run .tr-drum-wrapper {
     flex: 1 1 0;
-    gap: 6px;
+    gap: 8px;
+    justify-content: center;
 }
 
 #page-test-run .tr-drum-shell {
-    width: clamp(220px, 36vmin, 300px);
-    height: clamp(220px, 36vmin, 300px);
+    width: clamp(258px, 43vmin, 370px);
+    height: clamp(258px, 43vmin, 370px);
 }
 
 #page-test-run .tr-drum-inner {
-    width: 86%;
-    height: 86%;
-}
-
-#page-test-run .tr-drum-timer {
-    font-size: clamp(24px, 3.4vmin, 32px);
-    margin-bottom: 0;
+    width: 88%;
+    height: 88%;
 }
 
 #page-test-run .tr-drum-count {
-    font-size: clamp(20px, 3vmin, 30px);
+    display: none !important;
+}
+
+#page-test-run .tr-footer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 8px 10px 0;
+    margin-top: auto;
+}
+
+#page-test-run .tr-footer-note {
+    font-size: clamp(19px, 3vmin, 26px);
+    font-weight: 700;
+    color: rgba(232, 240, 252, 0.98);
+    line-height: 1.35;
+    text-align: center;
+}
+
+#page-test-run .tr-drum-label {
+    font-size: 18px;
+}
+
+#page-test-run .tr-drum-status {
+    font-size: 14px;
 }
 
 #page-test-run .tr-controls {
-    width: clamp(128px, 14vmin, 156px);
-    gap: 8px;
+    width: clamp(150px, 17vmin, 190px);
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+#page-test-run .tr-center-timer {
+    font-size: clamp(28px, 4.2vmin, 40px);
+    margin-bottom: 2px;
 }
 
 #page-test-run .tr-btn {
-    padding: 14px 0;
-    font-size: 15px;
-    min-height: 48px;
+    padding: 16px 0;
+    font-size: 16px;
+    min-height: 52px;
     letter-spacing: 0.4px;
 }
 
 #page-test-run .tr-progress-wrap {
-    padding: 6px;
+    width: 100%;
+    padding: 4px 0 0;
+    gap: 8px;
+}
+
+#page-test-run .tr-progress-label {
+    font-size: 14px;
 }
 
 #page-test-run .tr-progress-bg {
-    height: 18px;
+    height: 22px;
+}
+
+#page-test-run .tr-progress-text {
+    font-size: clamp(18px, 2.8vmin, 24px);
+    font-weight: 700;
+    color: #ffffff;
+}
+
+#page-test-run .tr-footer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 8px 10px 0;
+    margin-top: auto;
+}
+
+#page-test-run .tr-footer-note {
+    font-size: clamp(19px, 3vmin, 26px);
+    font-weight: 700;
+    color: rgba(232, 240, 252, 0.98);
+    line-height: 1.35;
+    text-align: center;
 }
 
 @media (max-width: 1100px) and (max-height: 700px) {
     #page-test-run .tr-drum-shell {
-        width: 240px;
-        height: 240px;
-    }
-
-    #page-test-run .tr-drum-timer {
-        font-size: 28px;
+        width: clamp(238px, 39vmin, 310px);
+        height: clamp(238px, 39vmin, 310px);
     }
 }
 
@@ -6817,7 +6940,7 @@ input[type="number"] {
 }
 
 .reports-page-layout {
-    padding: 20px;
+    padding: 12px 8px;
 }
 
 .reports-filter-buttons {
@@ -6826,7 +6949,8 @@ input[type="number"] {
     flex-wrap: nowrap;
     gap: 12px;
     margin-bottom: 32px;
-    overflow-x: hidden;
+    /* Avoid overflow:hidden — it traps touch pans on Pi Chromium so only the scrollbar scrolls. */
+    overflow: visible;
     padding-bottom: 4px;
     width: 100%;
 }
@@ -6925,8 +7049,9 @@ input[type="number"] {
     align-items: center;
     gap: 10px 16px;
     padding: 12px 16px;
-    margin: 12px auto;
-    max-width: 800px;
+    margin: 12px 0;
+    max-width: none;
+    width: 100%;
     background: rgba(45, 55, 72, 0.5);
     border: 1px solid #4a5568;
     border-radius: 8px;
@@ -6966,12 +7091,15 @@ input[type="number"] {
 
 .reports-table {
     width: 100%;
-    max-width: 800px;
-    margin: 0 auto;
-    border-collapse: collapse;
+    max-width: none;
+    margin: 0;
+    border-collapse: separate;
+    border-spacing: 0;
     background: var(--bg-card);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    /* overflow:hidden traps touch pans on Pi Chromium (drag only works on scrollbar). */
+    overflow: visible;
+    touch-action: pan-y;
     border: 1px solid var(--glass-border);
     box-shadow: var(--shadow-sm);
 }
@@ -7060,7 +7188,7 @@ input[type="number"] {
     padding: 8px 12px;
 }
 
-/* Reports / recipe pages — no nested scroll */
+/* Reports / recipe pages — no nested scroll; parent .page-content scrolls */
 #page-view-recipes.active,
 #page-recipe-print-preview.active,
 #page-reports.active,
@@ -7070,11 +7198,32 @@ input[type="number"] {
     height: auto;
     min-height: 100%;
     overflow: visible;
+    touch-action: pan-y;
 }
 
 #page-report-preview .reports-container,
 .reports-container {
     overflow: visible;
+    touch-action: pan-y;
+}
+
+/* Keep pan-y on reports content so drag-scroll works from table/filters (not only scrollbar). */
+#page-reports,
+#page-reports .reports-container,
+#page-reports .reports-table,
+#page-reports .reports-table th,
+#page-reports .reports-table td {
+    touch-action: pan-y;
+}
+
+#page-reports input,
+#page-reports select,
+#page-reports textarea,
+#page-reports button,
+#page-reports a,
+#page-reports .reports-open-btn,
+#page-reports .reports-filter-btn {
+    touch-action: manipulation;
 }
 
 #page-report-preview .reports-container {
@@ -8886,9 +9035,15 @@ body.keyboard-open {
 
 /* ===== TEST RUN PAGE ===== */
 #page-test-run.active {
-    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    flex: 1 1 auto;
     min-height: 0;
     width: 100%;
+    height: 100%;
+    overflow: hidden;
 }
 
 .test-run-page {
@@ -9059,9 +9214,15 @@ body.keyboard-open {
     will-change: transform;
 }
 
-/* Rotation count — counter-rotates; sits above hub */
+/* Rotation count above each drum */
 .tr-drum-count {
-    display: none !important;
+    font-size: clamp(28px, 4.5vmin, 44px);
+    font-weight: 800;
+    color: var(--icon-profile);
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+    line-height: 1.1;
 }
 
 .tr-drum-label {
@@ -9357,10 +9518,12 @@ body.keyboard-open {
 }
 
 #page-test-run .tr-footer-note {
-    font-size: 14px;
-    color: rgba(232, 240, 252, 0.92);
+    font-size: clamp(19px, 3vmin, 26px);
+    color: rgba(232, 240, 252, 0.98);
     font-style: normal;
-    font-weight: 600;
+    font-weight: 700;
+    line-height: 1.35;
+    text-align: center;
 }
 
 /* Create recipe USP/custom mode toggle */
@@ -9393,89 +9556,148 @@ body.keyboard-open {
     cursor: not-allowed;
 }
 
-/* Fit fix for test-run layout (1024x600-friendly) */
+/* Test-run layout: use full vertical space with larger controls */
 #page-test-run .test-run-page {
-    padding: 6px 10px;
-    gap: 6px;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 8px 12px 0;
+    gap: 8px;
 }
 
 #page-test-run .tr-header {
-    padding: 8px 12px;
-    gap: 8px 10px;
+    padding: 10px 14px;
+    gap: 8px 12px;
+    flex-shrink: 0;
 }
 
 #page-test-run .tr-header-block {
-    flex: 1 1 105px;
+    flex: 1 1 110px;
 }
 
 #page-test-run .tr-label {
-    font-size: 11px;
+    font-size: 12px;
 }
 
 #page-test-run .tr-value {
-    font-size: 16px;
-    line-height: 1.2;
+    font-size: 17px;
+    line-height: 1.25;
 }
 
 #page-test-run .tr-drums-row {
+    flex: 1 1 auto;
     min-height: 0;
-    height: 100%;
-    gap: 10px;
+    height: auto;
+    gap: 14px;
     align-items: center;
+    justify-content: center;
 }
 
 #page-test-run .tr-drum-wrapper {
     flex: 1 1 0;
-    gap: 6px;
+    gap: 8px;
+    justify-content: center;
 }
 
 #page-test-run .tr-drum-shell {
-    width: clamp(220px, 36vmin, 300px);
-    height: clamp(220px, 36vmin, 300px);
+    width: clamp(258px, 43vmin, 370px);
+    height: clamp(258px, 43vmin, 370px);
 }
 
 #page-test-run .tr-drum-inner {
-    width: 86%;
-    height: 86%;
-}
-
-#page-test-run .tr-drum-timer {
-    font-size: clamp(24px, 3.4vmin, 32px);
-    margin-bottom: 0;
+    width: 88%;
+    height: 88%;
 }
 
 #page-test-run .tr-drum-count {
-    font-size: clamp(20px, 3vmin, 30px);
+    display: none !important;
+}
+
+#page-test-run .tr-footer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 8px 10px 0;
+    margin-top: auto;
+}
+
+#page-test-run .tr-footer-note {
+    font-size: clamp(19px, 3vmin, 26px);
+    font-weight: 700;
+    color: rgba(232, 240, 252, 0.98);
+    line-height: 1.35;
+    text-align: center;
+}
+
+#page-test-run .tr-drum-label {
+    font-size: 18px;
+}
+
+#page-test-run .tr-drum-status {
+    font-size: 14px;
 }
 
 #page-test-run .tr-controls {
-    width: clamp(128px, 14vmin, 156px);
-    gap: 8px;
+    width: clamp(150px, 17vmin, 190px);
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+#page-test-run .tr-center-timer {
+    font-size: clamp(28px, 4.2vmin, 40px);
+    margin-bottom: 2px;
 }
 
 #page-test-run .tr-btn {
-    padding: 14px 0;
-    font-size: 15px;
-    min-height: 48px;
+    padding: 16px 0;
+    font-size: 16px;
+    min-height: 52px;
     letter-spacing: 0.4px;
 }
 
 #page-test-run .tr-progress-wrap {
-    padding: 6px;
+    width: 100%;
+    padding: 4px 0 0;
+    gap: 8px;
+}
+
+#page-test-run .tr-progress-label {
+    font-size: 14px;
 }
 
 #page-test-run .tr-progress-bg {
-    height: 18px;
+    height: 22px;
+}
+
+#page-test-run .tr-progress-text {
+    font-size: clamp(18px, 2.8vmin, 24px);
+    font-weight: 700;
+    color: #ffffff;
+}
+
+#page-test-run .tr-footer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 8px 10px 0;
+    margin-top: auto;
+}
+
+#page-test-run .tr-footer-note {
+    font-size: clamp(19px, 3vmin, 26px);
+    font-weight: 700;
+    color: rgba(232, 240, 252, 0.98);
+    line-height: 1.35;
+    text-align: center;
 }
 
 @media (max-width: 1100px) and (max-height: 700px) {
     #page-test-run .tr-drum-shell {
-        width: 240px;
-        height: 240px;
-    }
-
-    #page-test-run .tr-drum-timer {
-        font-size: 28px;
+        width: clamp(238px, 39vmin, 310px);
+        height: clamp(238px, 39vmin, 310px);
     }
 }
 

@@ -13,6 +13,9 @@ var appModalResolve = null;
 var lastValidationType = 'usp';
 var validationRunState = 'idle'; // 'idle' | 'running'
 var validationRunIntervalId = null;
+var validationRunRafId = null;
+var validationRunLastPaintElapsed = -1;
+var validationRunLivePollInFlight = false;
 var validationRunCurrentCount = 0;
 var validationRunTarget = 100;
 var validationRunTolerance = 1;
@@ -28,6 +31,9 @@ var validationRunSseListener = null;
 var validationRunLivePollIntervalId = null;
 var VALIDATION_RUN_DURATION_SEC = 240;
 var validationRunSecondsRemaining = 240;
+/** Wall-clock start of the active validation run (Date.now()); null when idle. */
+var validationRunStartMs = null;
+var validationRunLastCheckpointElapsed = -1;
 var VALIDATION_TARGET_RPM = 25;
 var VALIDATION_RPM_WARMUP_ROTATIONS = 6;
 var biometricEnabledSetting = true;
@@ -37,6 +43,8 @@ var currentRecipeForPrint = null;
 var lastKnownDateTime = null;
 var dateTimeClockInterval = null;
 var _wallClockResyncInterval = null;
+var _wallClockRafId = null;
+var _wallClockLastPaintKey = '';
 var lastDisplayedRecipes = [];
 var lastTestRunRecipe = null;
 /** Set when starting a test from Quick Test; cleared after report save so the form resets. */
@@ -149,11 +157,29 @@ function isEditableTarget(el) {
 }
 
 function isTestRunActive() {
-    return getActivePageName() === 'test-run' && _trIsActiveTestOperation();
+    // Tap Density style: block on the operation flag, not "are we still on page-test-run".
+    // Requiring the active page caused free navigation if the page switched (or never matched).
+    return _trIsActiveTestOperation();
 }
 
 function _trIsActiveTestOperation() {
-    return !!(typeof _tr !== 'undefined' && _tr && (_tr.running || _tr.initializing || _tr.startPending));
+    return !!(typeof _tr !== 'undefined' && _tr && (
+        _tr.running || _tr.initializing || _tr.startPending || _tr.dispensing
+    ));
+}
+
+function setTestRunNavigationLock(locked) {
+    var app = document.querySelector('.app-container');
+    if (app) app.classList.toggle('test-run-locked', !!locked);
+    var sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+        if (locked) sidebar.classList.add('sidebar-locked');
+        else if (!isValidationRunActive()) sidebar.classList.remove('sidebar-locked');
+    }
+}
+
+function _trSyncNavigationLock() {
+    setTestRunNavigationLock(_trIsActiveTestOperation());
 }
 
 function _trConfirmAbortRunningTest(options) {
@@ -164,6 +190,7 @@ function _trConfirmAbortRunningTest(options) {
     return showConfirmModal(message, title).then(function (ok) {
         if (!ok) return false;
         _trAbortRunningTestNow();
+        _trSyncNavigationLock();
         return true;
     });
 }
@@ -173,10 +200,12 @@ function _trAbortRunningTestNow() {
     var wasRunning = !!_tr.running;
     _trBumpRunGeneration();
     _trDoStop({ createAbortReport: wasRunning });
+    _trSyncNavigationLock();
 }
 
 function isValidationRunActive() {
-    return getActivePageName() === 'validation-run' && validationRunState === 'running';
+    // Operation-based (do not require current page == validation-run).
+    return validationRunState === 'running' || !!validationRunBackendPending;
 }
 
 function isValidationNavigationBlocked() {
@@ -190,8 +219,19 @@ function confirmAbortValidationForNavigation() {
     ).then(function (ok) {
         if (!ok) return false;
         abortValidationRun({ openPreview: true });
+        setValidationRunNavigationLock(false);
         return true;
     });
+}
+
+function setValidationRunNavigationLock(locked) {
+    var app = document.querySelector('.app-container');
+    if (app) app.classList.toggle('validation-run-locked', !!locked);
+    var sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+        if (locked) sidebar.classList.add('sidebar-locked');
+        else if (!isTestRunActive()) sidebar.classList.remove('sidebar-locked');
+    }
 }
 
 function isValidationPartiallyCompleted() {
@@ -217,10 +257,7 @@ function stopActiveRunForLogout() {
         return abortValidationRun({ openPreview: false }).catch(function () {});
     }
     if (validationRunBackendPending) {
-        if (validationRunIntervalId != null) {
-            clearInterval(validationRunIntervalId);
-            validationRunIntervalId = null;
-        }
+        if (typeof _clearValidationRunTimer === 'function') _clearValidationRunTimer();
         _closeValidationRunHardwareEs();
         return stopValidationOnBackend().catch(function () {}).finally(function () {
             validationRunState = 'idle';
@@ -995,6 +1032,40 @@ function stopReportApprovalPoll() {
     }
 }
 
+function unlockReportPreviewAfterServerStatus(preview, reportId, options) {
+    options = options || {};
+    preview = preview || {};
+    var st = String(preview.reportApprovalStatus || '').trim().toLowerCase();
+    if (st !== 'approved' && st !== 'aborted') return false;
+    try {
+        populateReportPreview(preview);
+    } catch (e) {}
+    clearReportApprovalGate();
+    applyReportPreviewLockUi(preview);
+    if (typeof _trClearTestRunCheckpoint === 'function') _trClearTestRunCheckpoint();
+    if (st === 'approved') {
+        if (reportId != null) _saveReportPdfSilent(reportId);
+        if (options.showModal !== false) {
+            showAppModal('Report has been approved. You may now print or leave this screen.', 'Report');
+        }
+    } else if (options.showModal !== false) {
+        showAppModal(
+            'This report was closed as Aborted (power interruption or restart) and can no longer be approved. You may leave this screen.',
+            'Report'
+        );
+    }
+    return true;
+}
+
+function refreshReportPreviewApprovalState(reportId) {
+    if (reportId == null) return Promise.resolve(null);
+    return apiRequest(API_BASE + '/api/reports/' + reportId + '/preview').then(function (data) {
+        if (!data || !data.preview) return null;
+        unlockReportPreviewAfterServerStatus(data.preview, reportId, { showModal: true });
+        return data.preview;
+    }).catch(function () { return null; });
+}
+
 function startReportApprovalPollIfLocked() {
     stopReportApprovalPoll();
     if (!isReportPreviewNavigationLocked(window._lastReportPreview)) return;
@@ -1008,13 +1079,9 @@ function startReportApprovalPollIfLocked() {
         apiRequest(API_BASE + '/api/reports/' + rid + '/preview').then(function (data) {
             if (!data || !data.preview) return;
             var st = String(data.preview.reportApprovalStatus || '').trim().toLowerCase();
-            if (st === 'approved') {
-                populateReportPreview(data.preview);
-                clearReportApprovalGate();
-                applyReportPreviewLockUi(data.preview);
-                _saveReportPdfSilent(rid);
-                if (typeof _trClearTestRunCheckpoint === 'function') _trClearTestRunCheckpoint();
-                showAppModal('Report has been approved. You may now print or leave this screen.', 'Report');
+            if (st === 'approved' || st === 'aborted') {
+                unlockReportPreviewAfterServerStatus(data.preview, rid, { showModal: true });
+                stopReportApprovalPoll();
             }
         }).catch(function () {});
     }, 5000);
@@ -1603,6 +1670,7 @@ function wallClockPartsPlusSeconds(parts, extraSec) {
 }
 
 var _wallClockAnchor = null;
+var _wallClockFetchGen = 0;
 
 function applyWallClockToTopBar(parts) {
     if (!parts) return;
@@ -1614,24 +1682,67 @@ function applyWallClockToTopBar(parts) {
     if (dateEl) dateEl.textContent = fmt.dateString;
 }
 
+function wallClockPartsFromLocalDate(d) {
+    return {
+        y: d.getFullYear(),
+        mo: d.getMonth() + 1,
+        d: d.getDate(),
+        h: d.getHours(),
+        mi: d.getMinutes(),
+        sec: d.getSeconds()
+    };
+}
+
+function _isHardwareRunActiveForClock() {
+    return !!(_tr && _tr.running) || validationRunState === 'running';
+}
+
 function tickWallClockFromAnchor() {
-    if (!_wallClockAnchor || !_wallClockAnchor.parts) return;
-    var elapsed = Math.floor((Date.now() - _wallClockAnchor.at) / 1000);
-    applyWallClockToTopBar(wallClockPartsPlusSeconds(_wallClockAnchor.parts, elapsed));
+    // Always paint from the device system clock (synced from DS1307 at boot).
+    // Do NOT derive the top bar from a network RTC fetch during tests — fetch latency
+    // under live-poll/checkpoint load makes the displayed time run late.
+    applyWallClockToTopBar(wallClockPartsFromLocalDate(new Date()));
+}
+
+function _wallClockRafLoop() {
+    _wallClockRafId = requestAnimationFrame(_wallClockRafLoop);
+    var now = new Date();
+    var key = now.getFullYear() + '-' + now.getMonth() + '-' + now.getDate() + ' ' +
+        now.getHours() + ':' + now.getMinutes() + ':' + now.getSeconds();
+    if (key === _wallClockLastPaintKey) return;
+    _wallClockLastPaintKey = key;
+    applyWallClockToTopBar(wallClockPartsFromLocalDate(now));
+}
+
+function ensureWallClockDisplayLoop() {
+    if (_wallClockRafId != null) return;
+    _wallClockRafId = requestAnimationFrame(_wallClockRafLoop);
 }
 
 function updateDateTime() {
+    // Never re-anchor from /api/get_datetime while a test/validation is running — that is
+    // exactly when the top bar was going late (queued behind live polls + USB checkpoints).
+    if (_isHardwareRunActiveForClock()) {
+        tickWallClockFromAnchor();
+        return;
+    }
+    var fetchGen = ++_wallClockFetchGen;
+    var fetchStartedAt = Date.now();
     fetchDateTimeFromBackend().then(function (data) {
+        if (fetchGen !== _wallClockFetchGen) return;
+        if (_isHardwareRunActiveForClock()) {
+            tickWallClockFromAnchor();
+            return;
+        }
         var timeString = '--:--:--';
         var dateString = '--/--/----';
         if (data && data.datetime) {
             var parts = parseWallDatetimeIso(data.datetime);
             if (parts) {
-                _wallClockAnchor = { parts: parts, at: Date.now() };
-                var fmt = formatWallClockParts(parts);
-                dateString = fmt.dateString;
-                timeString = fmt.timeString;
-                lastKnownDateTime = { timeString: timeString, dateString: dateString };
+                // Keep anchor for settings UI / audit only; top bar always uses local Date.
+                _wallClockAnchor = { parts: parts, at: fetchStartedAt };
+                tickWallClockFromAnchor();
+                return;
             }
         } else if (data && data.date && data.time) {
             dateString = (data.date || '').replace(/-/g, '/');
@@ -1643,13 +1754,12 @@ function updateDateTime() {
             timeString = lastKnownDateTime.timeString;
             dateString = lastKnownDateTime.dateString;
         }
-        if (_wallClockAnchor && _wallClockAnchor.parts) {
-            applyWallClockToTopBar(_wallClockAnchor.parts);
-        } else {
+        tickWallClockFromAnchor();
+        if (!document.getElementById('current-time') || !lastKnownDateTime) {
             var timeEl = document.getElementById('current-time');
             var dateEl = document.getElementById('current-date');
-            if (timeEl) timeEl.textContent = timeString;
-            if (dateEl) dateEl.textContent = dateString;
+            if (timeEl && timeString) timeEl.textContent = timeString;
+            if (dateEl && dateString) dateEl.textContent = dateString;
         }
     });
 }
@@ -1683,13 +1793,14 @@ function showAppContainer() {
     else if (typeof clearSidebarInteractionLock === 'function') clearSidebarInteractionLock();
     if (typeof bindSidebarNavigation === 'function') bindSidebarNavigation();
     updateDateTime();
+    // Paint top-bar time on animation frames from the device clock so it stays on-time
+    // during tests (setInterval was delayed by stacked live-poll/checkpoint work).
+    ensureWallClockDisplayLoop();
     if (!dateTimeClockInterval) {
-        dateTimeClockInterval = setInterval(function () {
-            tickWallClockFromAnchor();
-            if (!_wallClockResyncInterval) {
-                _wallClockResyncInterval = setInterval(updateDateTime, 5000);
-            }
-        }, 1000);
+        dateTimeClockInterval = true; // marker: loop started (legacy flag kept for callers)
+    }
+    if (!_wallClockResyncInterval) {
+        _wallClockResyncInterval = setInterval(updateDateTime, 120000);
     }
     setTimeout(function () {
         if (typeof refreshShellAccessVisibility === 'function') refreshShellAccessVisibility();
@@ -1766,8 +1877,9 @@ function refreshShellAccessVisibility() {
 
 function goToPage(pageName) {
     var prevPage = getActivePageName();
-    if (!_suppressTestRunNavGuardOnce && isTestRunActive && typeof isTestRunActive === 'function') {
-        if (isTestRunActive() && pageName !== 'test-run') {
+    // Tap Density: while a test/validation operation is active, require abort confirm before leaving.
+    if (!_suppressTestRunNavGuardOnce && typeof _trIsActiveTestOperation === 'function' && _trIsActiveTestOperation()) {
+        if (pageName !== 'test-run') {
             _trConfirmAbortRunningTest().then(function (didAbort) {
                 if (!didAbort) return;
                 _suppressTestRunNavGuardOnce = true;
@@ -1982,7 +2094,7 @@ function goBack() {
     if (pageId === 'page-quick-test') {
         goToPage('home');
     } else if (pageId === 'page-test-run') {
-        if (isTestRunActive && typeof isTestRunActive === 'function' && isTestRunActive()) {
+        if (typeof _trIsActiveTestOperation === 'function' && _trIsActiveTestOperation()) {
             _trConfirmAbortRunningTest().then(function (didAbort) {
                 if (!didAbort) return;
                 _suppressTestRunNavGuardOnce = true;
@@ -2700,7 +2812,11 @@ function runBiometricVerifyWithRetry(opts) {
             );
             apiRequest(API_BASE + '/api/data/auth/approval-verify', {
                 method: 'POST',
-                body: { method: 'biometric', purpose: purpose }
+                body: (function () {
+                    var body = { method: 'biometric', purpose: purpose };
+                    if (opts.reportId != null) body.reportId = opts.reportId;
+                    return body;
+                })()
             }).then(function (data) {
                 if (cancelled) return;
                 if (data && data.ok && data.token) {
@@ -3515,7 +3631,10 @@ function startQuickTestRunFromParams() {
         speed = 25;
         timeSeconds = 240;
         tabletCount = 100;
-        customCompletionMode = 'COUNT';
+        // Exact root cause for 3:37-vs-4:00 runs:
+        // USP was hardcoded to finish by 100 rotations, so if the hardware reached
+        // 100 rotations before 04:00 the test ended early. USP must finish by time.
+        customCompletionMode = 'TIME';
     } else {
         if (isNaN(speed) || speed < 20 || speed > 70) {
             showAppModal('Please enter a valid speed between 20 and 70 RPM.', 'Quick Test');
@@ -3547,7 +3666,7 @@ function startQuickTestRunFromParams() {
         tabletCount: tabletCount,
         usp: mode === 'USP' ? 'USP' : 'Custom',
         uspMode: mode === 'USP' ? 'USP' : 'CUSTOM',
-        customCompletionMode: mode === 'USP' ? 'COUNT' : customCompletionMode,
+        customCompletionMode: mode === 'USP' ? 'TIME' : customCompletionMode,
         drumCount: drumCount,
         stepCount: 1,
         quickTest: true
@@ -3641,7 +3760,7 @@ function saveRecipeFromParams() {
         speed = 25;
         timeSeconds = 240;
         tabletCount = 100;
-        customCompletionMode = 'COUNT';
+        customCompletionMode = 'TIME';
     } else {
         if (isNaN(speed) || speed < 20 || speed > 70) {
             showAppModal('Please enter a valid speed between 20 and 70 RPM.', 'Create Recipe');
@@ -3670,10 +3789,10 @@ function saveRecipeFromParams() {
         tabletCount: tabletCount,
         usp: mode === 'USP' ? 'USP' : 'Custom',
         uspMode: mode === 'USP' ? 'USP' : 'CUSTOM',
-        customCompletionMode: mode === 'USP' ? 'COUNT' : customCompletionMode,
+        customCompletionMode: mode === 'USP' ? 'TIME' : customCompletionMode,
         drumCount: drumCount,
         stepCount: 1,
-        createdAt: new Date().toISOString()
+        createdAt: (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString()
     };
 
     var editId = window.currentEditingRecipeId;
@@ -3723,6 +3842,9 @@ function logTestReportSavedAudit(reportId, payload) {
     if (isAborted) {
         var abortAction = reportType === 'validation' ? 'Validation aborted' : 'Test aborted';
         chain = chain.then(function () { return logAuditEvent(abortAction, label + ' | report id ' + reportId, entityOpts); });
+    } else if (reportType === 'validation') {
+        chain = chain.then(function () { return logAuditEvent('Validation finished', label + ' | report id ' + reportId, entityOpts); })
+            .then(function () { return logAuditEvent('Validation performed', label + ' | report id ' + reportId, entityOpts); });
     } else {
         chain = chain.then(function () { return logAuditEvent('Test finished', label + ' | report id ' + reportId, entityOpts); })
             .then(function () { return logAuditEvent(isQuick ? 'Quick test performed' : 'Test performed', label + ' | report id ' + reportId, entityOpts); });
@@ -4232,10 +4354,7 @@ function goBackFromValidationRun() {
         });
         return;
     }
-    if (validationRunIntervalId != null) {
-        clearInterval(validationRunIntervalId);
-        validationRunIntervalId = null;
-    }
+    if (typeof _clearValidationRunTimer === 'function') _clearValidationRunTimer();
     _stopValidationLivePoll();
     if (validationRunState === 'running' || validationRunBackendPending) {
         stopValidationOnBackend().catch(function () {});
@@ -4288,29 +4407,170 @@ function getValidationScrollSurface(pageName) {
     return page.querySelector(sel) || page;
 }
 
+function _touchPanIgnoreTarget(target) {
+    if (!target || !target.closest) return false;
+    // Nested scroll surfaces / OSK handle their own gestures.
+    if (target.closest('#osk, .keyboard, .temp-wheel, .roller-column, [data-own-scroll="true"]')) return true;
+    // Never start drag on controls — taps (Open, filters, nav) must always win.
+    if (target.closest('button, a, .nav-item, .reports-open-btn, .reports-filter-btn, [onclick], label, summary')) return true;
+    var tag = (target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option') return true;
+    if (target.isContentEditable) return true;
+    return false;
+}
+
+function _scrollSurfaceMax(el) {
+    return Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+}
+
+/**
+ * Drag-anywhere scroll for kiosk Chromium.
+ * Pi touchscreens often deliver mouse/pointer events (not touch), and mouse-drag
+ * does not natively scroll overflow containers — only the scrollbar does.
+ * Buttons/links are ignored so Open and nav stay responsive.
+ */
 function bindTouchPanScroll(el) {
     if (!el || el._touchPanScrollBound) return;
     el._touchPanScrollBound = true;
     var startY = 0;
     var startScroll = 0;
     var tracking = false;
-    el.addEventListener('touchstart', function (e) {
-        if (e.touches.length !== 1) return;
+    var moved = false;
+    var didScroll = false;
+    var activePointerId = null;
+    var usingTouch = false;
+    var captured = false;
+    var blockClickUntil = 0;
+    var DRAG_THRESHOLD = 10;
+
+    function releaseCapture(pointerId) {
+        if (!captured) return;
+        captured = false;
+        try {
+            if (pointerId != null) el.releasePointerCapture(pointerId);
+        } catch (err) { /* ignore */ }
+    }
+
+    function beginTrack(clientY, target) {
+        if (_scrollSurfaceMax(el) <= 0) return false;
+        if (_touchPanIgnoreTarget(target)) return false;
         tracking = true;
-        startY = e.touches[0].clientY;
-        startScroll = el.scrollTop;
-    }, { passive: true });
-    el.addEventListener('touchmove', function (e) {
-        if (!tracking || e.touches.length !== 1) return;
-        var dy = startY - e.touches[0].clientY;
+        moved = false;
+        didScroll = false;
+        startY = clientY;
+        startScroll = el.scrollTop || 0;
+        return true;
+    }
+
+    function moveTrack(clientY, e, pointerId) {
+        if (!tracking) return;
+        var dy = startY - clientY;
+        if (!moved && Math.abs(dy) < DRAG_THRESHOLD) return;
+        if (!moved) {
+            moved = true;
+            el.classList.add('is-drag-scrolling');
+            // Capture only after we know this is a scroll gesture (not a tap).
+            if (pointerId != null && !captured) {
+                try {
+                    el.setPointerCapture(pointerId);
+                    captured = true;
+                } catch (err) { /* ignore */ }
+            }
+        }
         var next = startScroll + dy;
-        var max = Math.max(0, el.scrollHeight - el.clientHeight);
+        var max = _scrollSurfaceMax(el);
         if (next < 0) next = 0;
         if (next > max) next = max;
-        el.scrollTop = next;
-    }, { passive: true });
-    el.addEventListener('touchend', function () { tracking = false; }, { passive: true });
-    el.addEventListener('touchcancel', function () { tracking = false; }, { passive: true });
+        if (el.scrollTop !== next) {
+            el.scrollTop = next;
+            didScroll = true;
+        }
+        if (e && e.cancelable) e.preventDefault();
+    }
+
+    function endTrack(e, pointerId) {
+        var wasScroll = moved && didScroll;
+        tracking = false;
+        moved = false;
+        didScroll = false;
+        activePointerId = null;
+        usingTouch = false;
+        el.classList.remove('is-drag-scrolling');
+        releaseCapture(pointerId != null ? pointerId : (e && e.pointerId));
+        // Briefly block only the synthetic click that follows a real scroll.
+        // Do not leave a long-lived swallow that breaks Open / nav.
+        if (wasScroll) {
+            blockClickUntil = Date.now() + 50;
+        }
+    }
+
+    el.addEventListener('click', function (e) {
+        if (Date.now() < blockClickUntil) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+
+    el.addEventListener('touchstart', function (e) {
+        if (e.touches.length !== 1) return;
+        usingTouch = true;
+        activePointerId = null;
+        beginTrack(e.touches[0].clientY, e.target);
+    }, { passive: true, capture: true });
+
+    el.addEventListener('touchmove', function (e) {
+        if (!tracking || !usingTouch || e.touches.length !== 1) return;
+        moveTrack(e.touches[0].clientY, e, null);
+    }, { passive: false, capture: true });
+
+    el.addEventListener('touchend', function (e) { if (usingTouch) endTrack(e, null); }, { passive: true, capture: true });
+    el.addEventListener('touchcancel', function (e) { if (usingTouch) endTrack(e, null); }, { passive: true, capture: true });
+
+    // Mouse / pen (and touch-as-mouse on some Pi Chromium builds).
+    el.addEventListener('pointerdown', function (e) {
+        if (e.pointerType === 'touch') return;
+        if (e.button != null && e.button !== 0) return;
+        if (!beginTrack(e.clientY, e.target)) return;
+        usingTouch = false;
+        activePointerId = e.pointerId;
+        // Do NOT capture yet — wait until past drag threshold.
+    }, true);
+
+    el.addEventListener('pointermove', function (e) {
+        if (e.pointerType === 'touch') return;
+        if (!tracking || usingTouch) return;
+        if (activePointerId != null && e.pointerId !== activePointerId) return;
+        moveTrack(e.clientY, e, e.pointerId);
+    }, true);
+
+    el.addEventListener('pointerup', function (e) {
+        if (e.pointerType === 'touch') return;
+        if (!tracking || usingTouch) return;
+        if (activePointerId != null && e.pointerId !== activePointerId) return;
+        endTrack(e, e.pointerId);
+    }, true);
+
+    el.addEventListener('pointercancel', function (e) {
+        if (e.pointerType === 'touch') return;
+        if (!tracking || usingTouch) return;
+        endTrack(e, e.pointerId);
+    }, true);
+
+    // Legacy mouse fallback when Pointer Events are unavailable / not firing.
+    el.addEventListener('mousedown', function (e) {
+        if (window.PointerEvent) return;
+        if (e.button !== 0) return;
+        if (!beginTrack(e.clientY, e.target)) return;
+        usingTouch = false;
+        var onMove = function (ev) { moveTrack(ev.clientY, ev, null); };
+        var onUp = function (ev) {
+            document.removeEventListener('mousemove', onMove, true);
+            document.removeEventListener('mouseup', onUp, true);
+            endTrack(ev, null);
+        };
+        document.addEventListener('mousemove', onMove, true);
+        document.addEventListener('mouseup', onUp, true);
+    }, true);
 }
 
 var FIXED_LAYOUT_TOUCH_SCROLL_PAGES = { home: true, 'test-run': true, 'validation-run': true };
@@ -4366,11 +4626,10 @@ function initValidationRunPage() {
     validationRunCurrentCount = 0;
     validationRunState = 'idle';
     validationRunSecondsRemaining = VALIDATION_RUN_DURATION_SEC;
+    validationRunStartMs = null;
+    validationRunLastCheckpointElapsed = -1;
     updateValidationRunTimerUi(validationRunSecondsRemaining);
-    if (validationRunIntervalId != null) {
-        clearInterval(validationRunIntervalId);
-        validationRunIntervalId = null;
-    }
+    if (typeof _clearValidationRunTimer === 'function') _clearValidationRunTimer();
 
     var btn = document.getElementById('btn-validation-start-abort');
     var label = document.getElementById('btn-validation-label');
@@ -4632,8 +4891,10 @@ function loadReports(filterType) {
                     if (!name) name = 'Validation - ' + (r.validationSubtype === 'load' ? 'USP 2' : 'USP 1');
                 }
                 if (!name) name = (r.recipe && r.recipe.productName) || 'Report ' + (r.id || (i + 1));
-                var created = r.createdAt || r.created || '';
-                if (created && created.length > 10) created = created.slice(0, 10) + ' ' + created.slice(11, 19);
+                var createdRaw = r.createdAt || r.completedAt || r.created || '';
+                var created = (typeof formatReportDate === 'function')
+                    ? formatReportDate(createdRaw)
+                    : createdRaw;
                 row.innerHTML = '<td>' + (i + 1) + '</td><td>' + name + '</td><td>' + created + '</td><td><button class="reports-open-btn" onclick="openReportPreview(' + (r.id || 0) + ')">Open</button></td>';
                 tbody.appendChild(row);
             });
@@ -4658,6 +4919,18 @@ function userCanViewReports(userObj) {
     if (!u) return false;
     if (isFactorySessionUser(u)) return true;
     return typeof canAccess === 'function' && canAccess(u, 'reports-view');
+}
+
+function userCanOpenReportPreview(userObj) {
+    var u = userObj || window.currentUser;
+    if (!u) return false;
+    if (isFactorySessionUser(u)) return true;
+    if (typeof canAccess !== 'function') return false;
+    return canAccess(u, 'reports-view')
+        || canAccess(u, 'recipe-test')
+        || canAccess(u, 'validation-test')
+        || canAccess(u, 'test-report-approve')
+        || canAccess(u, 'validation-report-approve');
 }
 
 function userCanRunValidation(userObj) {
@@ -5141,7 +5414,7 @@ function scrollReportPreviewActionsIntoView() {
 
 function openReportPreview(reportId, options) {
     if (!reportId) return;
-    if (!userCanViewReports()) {
+    if (!userCanOpenReportPreview()) {
         denyPermission('view reports');
         return;
     }
@@ -5186,15 +5459,36 @@ function setReportEl(id, value) {
 
 function formatReportDate(isoStr) {
     if (!isoStr) return '--';
-    var d = new Date(isoStr);
-    if (isNaN(d.getTime())) return '--';
+    var raw = String(isoStr).trim();
+    if (!raw) return '--';
+    // Prefer parsing so UTC (…Z) values convert to device local wall time.
+    var d = new Date(raw);
+    if (isNaN(d.getTime())) {
+        // Fallback: naive "YYYY-MM-DDTHH:MM:SS" / "YYYY-MM-DD HH:MM:SS"
+        var m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+        if (!m) return raw;
+        return m[3] + '/' + m[2] + '/' + m[1] + ' ' + m[4] + ':' + m[5] + ':' + (m[6] || '00');
+    }
     var dd = String(d.getDate()).padStart(2, '0');
     var mm = String(d.getMonth() + 1).padStart(2, '0');
     var yy = d.getFullYear();
     var h = String(d.getHours()).padStart(2, '0');
-    var m = String(d.getMinutes()).padStart(2, '0');
+    var mi = String(d.getMinutes()).padStart(2, '0');
     var s = String(d.getSeconds()).padStart(2, '0');
-    return dd + '/' + mm + '/' + yy + ' ' + h + ':' + m + ':' + s;
+    return dd + '/' + mm + '/' + yy + ' ' + h + ':' + mi + ':' + s;
+}
+
+/** Local wall-clock ISO (no Z), matching server RTC/report stamps. */
+function formatLocalWallClockIso(dateObj) {
+    var d = dateObj instanceof Date ? dateObj : new Date();
+    if (isNaN(d.getTime())) d = new Date();
+    var y = d.getFullYear();
+    var mo = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    var h = String(d.getHours()).padStart(2, '0');
+    var mi = String(d.getMinutes()).padStart(2, '0');
+    var s = String(d.getSeconds()).padStart(2, '0');
+    return y + '-' + mo + '-' + day + 'T' + h + ':' + mi + ':' + s;
 }
 
 /** Rows in TEST DATA table: only steps that actually ran (not recipe stepCount). */
@@ -5403,6 +5697,7 @@ function verifyReportApproverInline(method) {
     if (method === 'biometric') {
         return runBiometricVerifyWithRetry({
             purpose: 'report',
+            reportId: currentReportId,
             title: 'Verify Fingerprint',
             message: 'Place a Reviewer or Admin fingerprint on the scanner to approve this report.',
             failureHint: 'Place your finger on the scanner and tap Try again.'
@@ -5442,7 +5737,13 @@ function verifyReportApproverInline(method) {
     }
     return apiRequest(API_BASE + '/api/data/auth/approval-verify', {
         method: 'POST',
-        body: { method: 'credentials', username: username, password: password, purpose: 'report' }
+        body: {
+            method: 'credentials',
+            username: username,
+            password: password,
+            purpose: 'report',
+            reportId: currentReportId
+        }
     }).then(function (data) {
         if (!data || !data.ok || !data.token) {
             setReportApproveVerifyError((data && data.error) ? String(data.error) : 'Verification failed.');
@@ -5472,6 +5773,10 @@ function approveReportWithVerifier(reportId, passFail, remarks, verifyMethod, dr
             if (data && data.ok) return data;
             var msg = (data && data.error) ? String(data.error) : 'Approval failed.';
             setReportApproveVerifyError(msg);
+            // Server already closed the report (e.g. aborted after restart) — unlock stuck UI.
+            if (/invalid approval state|does not require approval|not found/i.test(msg)) {
+                refreshReportPreviewApprovalState(reportId);
+            }
             return null;
         });
     }
@@ -5682,8 +5987,12 @@ var _tr = {
     abortedRun: false,
     dispenseTimer: null,
     timerInterval: null,
+    timerRafId: null,
     livePollInterval: null,
-    runStartMs: null
+    livePollInFlight: false,
+    runStartMs: null,
+    _lastCheckpointElapsed: -1,
+    _lastTimerPaintSec: -1
 };
 
 function _trBumpRunGeneration() {
@@ -5693,19 +6002,34 @@ function _trBumpRunGeneration() {
 
 var TR_DISPENSE_SPIN_RPM = 10;
 
+function _trFormatRotationProgressText() {
+    var count = Math.max(0, parseInt(_tr.rotationCount, 10) || 0);
+    if (_tr.completionMode === 'COUNT') {
+        var targetCount = Math.max(1, parseInt(_tr.targetRotations, 10) || 1);
+        return count + ' / ' + targetCount;
+    }
+    var recipeCount = _tr.recipe && _tr.recipe.tabletCount != null
+        ? parseInt(_tr.recipe.tabletCount, 10) : NaN;
+    if (!isNaN(recipeCount) && recipeCount > 0) {
+        return count + ' / ' + recipeCount;
+    }
+    return String(count);
+}
+
 function _trGetProgressData() {
+    var countText = _trFormatRotationProgressText();
     if (_tr.completionMode === 'TIME') {
         var targetTime = Math.max(1, _tr.targetSeconds || 1);
         return {
             pct: Math.min(100, (_tr.elapsedSeconds / targetTime) * 100),
-            text: formatSecondsToMmSs(_tr.elapsedSeconds) + ' / ' + formatSecondsToMmSs(targetTime),
+            text: countText,
             done: _tr.elapsedSeconds >= targetTime
         };
     }
     var targetCount = Math.max(1, _tr.targetRotations || 1);
     return {
         pct: Math.min(100, (_tr.rotationCount / targetCount) * 100),
-        text: _tr.rotationCount + ' / ' + targetCount,
+        text: countText,
         done: _tr.rotationCount >= targetCount
     };
 }
@@ -5756,7 +6080,7 @@ function initTestRunPage(recipe) {
 
     var storedMode = String((_tr.recipe && _tr.recipe.customCompletionMode) || '').toUpperCase();
     var uspMode = String((_tr.recipe && (_tr.recipe.uspMode || _tr.recipe.usp)) || '').toUpperCase();
-    if (uspMode === 'USP') storedMode = 'COUNT';
+    if (uspMode === 'USP') storedMode = 'TIME';
     _tr.completionMode = storedMode === 'TIME' ? 'TIME' : 'COUNT';
     _tr.targetRotations = Math.max(1, parseInt(_tr.recipe.tabletCount, 10) || 100);
     _tr.targetSeconds = resolveRecipeTimeSeconds(_tr.recipe) || 240;
@@ -5776,11 +6100,11 @@ function initTestRunPage(recipe) {
     if (_tr.completionMode === 'TIME') {
         if (trTargetEl) trTargetEl.textContent = formatSecondsToMmSs(_tr.targetSeconds);
         if (trModeEl) trModeEl.textContent = _tr.drumCount === 2 ? '2 Drums • Time' : '1 Drum • Time';
-        if (trProgressLabelEl) trProgressLabelEl.textContent = 'Progress (Time)';
+        if (trProgressLabelEl) trProgressLabelEl.textContent = 'Rotations';
     } else {
         if (trTargetEl) trTargetEl.textContent = _tr.targetRotations + ' Rotations';
         if (trModeEl) trModeEl.textContent = _tr.drumCount === 2 ? '2 Drums • Count' : '1 Drum • Count';
-        if (trProgressLabelEl) trProgressLabelEl.textContent = 'Progress (Count)';
+        if (trProgressLabelEl) trProgressLabelEl.textContent = 'Rotations';
     }
     if (trIw1Val) trIw1Val.textContent = _tr.initialWeight1 != null ? _tr.initialWeight1.toFixed(3) : '--';
     if (trIw2Val) trIw2Val.textContent = _tr.initialWeight2 != null ? _tr.initialWeight2.toFixed(3) : '--';
@@ -5923,7 +6247,12 @@ function _trFormatTime(secs) { return formatSecondsToMmSs(secs); }
 
 function _trClearRunIntervals() {
     if (_tr.timerInterval) { clearInterval(_tr.timerInterval); _tr.timerInterval = null; }
+    if (_tr.timerRafId != null) {
+        cancelAnimationFrame(_tr.timerRafId);
+        _tr.timerRafId = null;
+    }
     if (_tr.livePollInterval) { clearInterval(_tr.livePollInterval); _tr.livePollInterval = null; }
+    _tr.livePollInFlight = false;
 }
 
 function _trPollLiveState() {
@@ -5933,9 +6262,31 @@ function _trPollLiveState() {
             _tr.rotationCount = parseInt(data.rotationCount, 10);
             _trSetText('tr-count1', _tr.rotationCount);
             _trSetText('tr-count2', _tr.rotationCount);
+            if (_tr.running) _trRefreshProgressUi();
         }
         return data;
     }).catch(function () { return null; });
+}
+
+function _trTimerRafLoop() {
+    _tr.timerRafId = requestAnimationFrame(_trTimerRafLoop);
+    if (!_tr.running || _tr.paused || !_tr.runStartMs) return;
+    var elapsed = Math.floor((Date.now() - _tr.runStartMs) / 1000);
+    if (elapsed < 0) elapsed = 0;
+    if (elapsed === _tr._lastTimerPaintSec) return;
+    _tr._lastTimerPaintSec = elapsed;
+    _tr.elapsedSeconds = elapsed;
+    _trSetText('tr-timer', _trFormatTime(_tr.elapsedSeconds));
+    if (_tr.elapsedSeconds % 5 === 0 && _tr.elapsedSeconds !== _tr._lastCheckpointElapsed) {
+        _tr._lastCheckpointElapsed = _tr.elapsedSeconds;
+        if (typeof _trSyncTestRunCheckpoint === 'function') {
+            _trSyncTestRunCheckpoint();
+        }
+    }
+    if (_tr.completionMode === 'TIME') {
+        _trRefreshProgressUi();
+        if (_trGetProgressData().done) _trCompleteTest();
+    }
 }
 
 function _trStartRunLoop() {
@@ -5943,37 +6294,36 @@ function _trStartRunLoop() {
     _tr.startPending = false;
     _tr.paused = false;
     _tr.runStartMs = Date.now();
+    _tr._lastCheckpointElapsed = -1;
+    _tr._lastTimerPaintSec = -1;
+    _tr.livePollInFlight = false;
     _trSetStatus(1, 'running');
     _trSetStatus(2, 'running');
     _trSetButtons('running');
     _trSetFooterNote('Test in progress…');
     _trStartSpin();
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
+    // Keep top-bar on device clock; stop network datetime fetches for the run duration.
+    tickWallClockFromAnchor();
     if (typeof _trSyncTestRunCheckpoint === 'function') _trSyncTestRunCheckpoint();
 
-    _tr.timerInterval = setInterval(function () {
-        if (!_tr.running || _tr.paused) return;
-        if (_tr.runStartMs) {
-            _tr.elapsedSeconds = Math.floor((Date.now() - _tr.runStartMs) / 1000);
-        } else {
-            _tr.elapsedSeconds++;
-        }
-        _trSetText('tr-timer', _trFormatTime(_tr.elapsedSeconds));
-        if (_tr.elapsedSeconds % 5 === 0 && typeof _trSyncTestRunCheckpoint === 'function') {
-            _trSyncTestRunCheckpoint();
-        }
-        if (_tr.completionMode === 'TIME') {
-            _trRefreshProgressUi();
-            if (_trGetProgressData().done) _trCompleteTest();
-        }
-    }, 1000);
+    // Elapsed test time: rAF + Date.now() so stacked live polls cannot make seconds late.
+    if (_tr.timerRafId != null) cancelAnimationFrame(_tr.timerRafId);
+    _tr.timerRafId = requestAnimationFrame(_trTimerRafLoop);
 
+    // Non-overlapping live polls — previous 500ms interval stacked fetches during a test
+    // and starved the UI thread (top-bar + tr-timer painted late).
     _tr.livePollInterval = setInterval(function () {
-        if (!_tr.running || _tr.paused) return;
+        if (!_tr.running || _tr.paused || _tr.livePollInFlight) return;
+        _tr.livePollInFlight = true;
         _trPollLiveState().then(function () {
+            if (!_tr.running || _tr.paused) return;
             _trRefreshProgressUi();
             if (_tr.completionMode === 'COUNT' && _trGetProgressData().done) _trCompleteTest();
+        }).finally(function () {
+            _tr.livePollInFlight = false;
         });
-    }, 500);
+    }, 1000);
 }
 
 function trHandleStartButton() {
@@ -5991,6 +6341,7 @@ function trInitialize() {
     var initGen = _trBumpRunGeneration();
     _tr.initializing = true;
     _tr.startPending = false;
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
     _trSetButtons('initializing');
     _trSetFooterNote('Initialising hardware…');
     apiRequest(API_BASE + '/api/hardware/friability/initialise', { method: 'POST', body: {} })
@@ -6001,12 +6352,14 @@ function trInitialize() {
             }
             _tr.hardwareInitialized = true;
             _tr.initializing = false;
+            if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
             _trSetButtons('ready');
             _trSetFooterNote('Press Start to begin the test.');
         })
         .catch(function (err) {
             if (initGen !== _trRunGeneration) return;
             _tr.initializing = false;
+            if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
             _trSetButtons('idle');
             _trSetFooterNote('Press Initialize to prepare the drums.');
             if (startBtn) startBtn.disabled = false;
@@ -6065,6 +6418,7 @@ function trStartTest() {
 
     var startGen = _trBumpRunGeneration();
     _tr.startPending = true;
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
     apiRequest(API_BASE + '/api/hardware/friability/start', { method: 'POST', body: { rpm: _tr.rpm } })
         .then(function (res) {
             if (startGen !== _trRunGeneration) return;
@@ -6077,6 +6431,7 @@ function trStartTest() {
         .catch(function (err) {
             if (startGen !== _trRunGeneration) return;
             _tr.startPending = false;
+            if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
             if (startBtn) startBtn.disabled = false;
             _trSetButtons('ready');
             showAppModal('Could not start test: ' + (err && err.message ? err.message : 'Hardware error'), 'Test Run');
@@ -6100,6 +6455,7 @@ function trResumeTest() {
     apiRequest(API_BASE + '/api/hardware/friability/resume', { method: 'POST', body: {} }).catch(function () {});
     _tr.paused = false;
     _tr.runStartMs = Date.now() - (_tr.elapsedSeconds * 1000);
+    _tr._lastTimerPaintSec = -1;
     _trStartSpin();
     _trSetStatus(1, 'running');
     _trSetStatus(2, 'running');
@@ -6142,6 +6498,7 @@ function trDispenseTest(opts) {
         return Promise.reject(new Error('No test to dispense'));
     }
     _tr.dispensing = true;
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
     _trSetButtons('dispensing');
     var footer = _trEl('tr-footer-note');
     if (footer) footer.textContent = 'Dispense in progress…';
@@ -6154,6 +6511,7 @@ function trDispenseTest(opts) {
                 _tr.dispenseTimer = null;
             }
             _tr.dispensing = false;
+            if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
             _trEndDispenseSpin();
             if (!ok) {
                 _trSetButtons('await-dispense');
@@ -6214,6 +6572,7 @@ function _trDoStop() {
     _tr.done = false;
     _trClearRunIntervals();
     _trStopSpin();
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
     _trSetStatus(1, 'idle');
     _trSetStatus(2, 'idle');
     if (wasRunning || wasStarting) {
@@ -6322,6 +6681,7 @@ function _trCleanupOnLeave() {
     _tr.testFinished = false;
     _trClearRunIntervals();
     _trStopSpin();
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
 }
 
 function _trStopRunHardwareAndTimers() {
@@ -6330,6 +6690,7 @@ function _trStopRunHardwareAndTimers() {
     _tr.running = false;
     _tr.paused = false;
     _trStopSpin();
+    if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
 }
 
 function _trRound3(n) {
@@ -6421,7 +6782,7 @@ function _trClearTestRunCheckpoint() {
 function _trSyncTestRunCheckpoint(extra) {
     try {
         var payload = stampOperatorOnTestReportPayload(_trBuildCompletionReportPayload(extra || {}));
-        payload._checkpointAt = new Date().toISOString();
+        payload._checkpointAt = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
         payload._checkpointPhase = (_tr.testFinished ? 'awaiting-dispense-or-weights' : (_tr.running ? 'running' : 'idle'));
         return apiRequest(API_BASE + '/api/data/test-run/checkpoint', {
             method: 'PUT',
@@ -6515,7 +6876,9 @@ function _trBuildCompletionReportPayload(opts) {
     opts = opts || {};
     var isAborted = !!opts.aborted;
     var recipe = _tr.recipe || {};
-    var nowIso = new Date().toISOString();
+    var nowIso = (typeof formatLocalWallClockIso === 'function')
+        ? formatLocalWallClockIso()
+        : new Date().toISOString();
     var passFail = 'FAIL';
     var loss = null;
     var weightDifference = null;
@@ -6561,6 +6924,9 @@ function _trBuildCompletionReportPayload(opts) {
             resultText: '__'
         });
     }
+    var startIso = (typeof formatLocalWallClockIso === 'function')
+        ? formatLocalWallClockIso(new Date(Date.now() - (_tr.elapsedSeconds * 1000)))
+        : new Date(Date.now() - (_tr.elapsedSeconds * 1000)).toISOString();
     return {
         name: 'Friability Test - ' + (recipe.productName || recipe.name || 'Recipe') + (isAborted ? ' (Aborted)' : ''),
         type: 'test',
@@ -6580,7 +6946,7 @@ function _trBuildCompletionReportPayload(opts) {
             mode: modeLabel,
             target: targetLabel,
             durationSeconds: _tr.elapsedSeconds,
-            testStartTime: new Date(Date.now() - (_tr.elapsedSeconds * 1000)).toISOString(),
+            testStartTime: startIso,
             testEndTime: nowIso,
             stepCount: _tr.drumCount,
             completedSteps: isAborted ? 0 : _tr.drumCount,
@@ -6616,11 +6982,23 @@ function _trCompleteTest() {
 function trExitTestRun() {
     _pendingTestRunReportId = null;
     closeTestRunCompletionApprovalModal();
+    if (typeof _trIsActiveTestOperation === 'function' && _trIsActiveTestOperation()) {
+        _trConfirmAbortRunningTest({
+            message: 'Test is running. Do you want to abort and exit?',
+            title: 'Operation in progress'
+        }).then(function (didAbort) {
+            if (!didAbort) return;
+            _suppressTestRunNavGuardOnce = true;
+            goToPage('home');
+        });
+        return;
+    }
     if (_tr.running) {
         friabilityHardwareStopWithRetry().catch(function () {});
         _trClearRunIntervals();
         _trStopSpin();
         _tr.running = false;
+        if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
     }
     goToPage('home');
 }
@@ -6679,11 +7057,10 @@ function confirmRecipeAction(action) {
         editRecipe(id);
     } else if (action === 'disable') {
         disableRecipe(id);
-    } else if (action === 'load') {
-        loadRecipeById(id);
     } else if (action === 'approve') {
         openRecipeApproveModal(id);
     }
+    // Load is only available from home → Load Recipe (recipeListMode === 'load').
 }
 
 function openRecipeApproveModal(recipeId) {
@@ -7220,7 +7597,7 @@ function loadManageRecipes() {
             } else {
                 var appr = getEffectiveRecipeApprovalStatus(r);
                 var apprLabel = appr === 'pending' ? 'Pending' : 'Approved';
-                var actionsBtnHtml = '<button type="button" class="btn-action btn-actions" onclick="openRecipeActionsModal(' + (r.id || 0) + ')" title="Edit / Delete / Load">' +
+                var actionsBtnHtml = '<button type="button" class="btn-action btn-actions" onclick="openRecipeActionsModal(' + (r.id || 0) + ')" title="Edit / Disable">' +
                     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
                     '<circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg> Actions</button>';
                 tr.innerHTML =
@@ -7366,11 +7743,11 @@ function _parseValidationStreamPayload(data) {
 }
 
 function _validationAbortFromHardwareError(kind, lineStr, norm) {
-    if (validationRunIntervalId != null) {
-        clearInterval(validationRunIntervalId);
-        validationRunIntervalId = null;
-    }
+    if (typeof _clearValidationRunTimer === 'function') _clearValidationRunTimer();
+    validationRunStartMs = null;
+    validationRunLastCheckpointElapsed = -1;
     validationRunState = 'idle';
+    if (typeof setValidationRunNavigationLock === 'function') setValidationRunNavigationLock(false);
     setValidationDrumSpinning(false);
     stopValidationOnBackend().catch(function () {});
     _closeValidationRunHardwareEs();
@@ -7407,8 +7784,15 @@ function _pollValidationLiveState() {
 
 function _startValidationLivePoll() {
     _stopValidationLivePoll();
+    validationRunLivePollInFlight = false;
     _pollValidationLiveState();
-    validationRunLivePollIntervalId = setInterval(_pollValidationLiveState, 500);
+    validationRunLivePollIntervalId = setInterval(function () {
+        if (validationRunState !== 'running' || validationRunLivePollInFlight) return;
+        validationRunLivePollInFlight = true;
+        Promise.resolve(_pollValidationLiveState()).finally(function () {
+            validationRunLivePollInFlight = false;
+        });
+    }, 1000);
 }
 
 function _stopValidationLivePoll() {
@@ -7416,6 +7800,45 @@ function _stopValidationLivePoll() {
         clearInterval(validationRunLivePollIntervalId);
         validationRunLivePollIntervalId = null;
     }
+    validationRunLivePollInFlight = false;
+}
+
+function _clearValidationRunTimer() {
+    if (validationRunIntervalId != null) {
+        clearInterval(validationRunIntervalId);
+        validationRunIntervalId = null;
+    }
+    if (validationRunRafId != null) {
+        cancelAnimationFrame(validationRunRafId);
+        validationRunRafId = null;
+    }
+    validationRunLastPaintElapsed = -1;
+}
+
+function validationRunTimerTick() {
+    if (validationRunState !== 'running' || validationRunStartMs == null) return;
+    var elapsed = Math.floor((Date.now() - validationRunStartMs) / 1000);
+    if (elapsed < 0) elapsed = 0;
+    if (elapsed > VALIDATION_RUN_DURATION_SEC) elapsed = VALIDATION_RUN_DURATION_SEC;
+    if (elapsed === validationRunLastPaintElapsed) return;
+    validationRunLastPaintElapsed = elapsed;
+    validationRunSecondsRemaining = VALIDATION_RUN_DURATION_SEC - elapsed;
+    updateValidationRunTimerUi(validationRunSecondsRemaining);
+    if (elapsed > 0 && elapsed % 5 === 0 && elapsed !== validationRunLastCheckpointElapsed) {
+        validationRunLastCheckpointElapsed = elapsed;
+        if (typeof _syncValidationRunCheckpoint === 'function') {
+            _syncValidationRunCheckpoint();
+        }
+    }
+    if (validationRunSecondsRemaining <= 0) {
+        _clearValidationRunTimer();
+        completeValidationRunAfterDuration();
+    }
+}
+
+function _validationRunTimerRafLoop() {
+    validationRunRafId = requestAnimationFrame(_validationRunTimerRafLoop);
+    validationRunTimerTick();
 }
 
 function validationRunHardwareMessage(ev) {
@@ -7450,7 +7873,7 @@ function validationRunHardwareMessage(ev) {
 function _buildValidationInProgressCheckpointPayload() {
     var elapsed = VALIDATION_RUN_DURATION_SEC - (validationRunSecondsRemaining || 0);
     if (elapsed < 0) elapsed = 0;
-    var now = new Date().toISOString();
+    var now = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
     var run = {
         validationSubtype: 'usp',
         usp: 'USP',
@@ -7511,7 +7934,7 @@ function _syncValidationRunCheckpoint(extra) {
         }
         if (!payload) return Promise.resolve(null);
         stampOperatorOnValidationReportPayload(payload);
-        payload._checkpointAt = new Date().toISOString();
+        payload._checkpointAt = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
         if (extra.pendingReportId != null) {
             payload._pendingReportId = extra.pendingReportId;
             payload.id = extra.pendingReportId;
@@ -7533,27 +7956,8 @@ function _syncValidationRunCheckpoint(extra) {
     }
 }
 
-function validationRunTimerTick() {
-    validationRunSecondsRemaining--;
-    if (validationRunSecondsRemaining < 0) validationRunSecondsRemaining = 0;
-    updateValidationRunTimerUi(validationRunSecondsRemaining);
-    var elapsed = VALIDATION_RUN_DURATION_SEC - validationRunSecondsRemaining;
-    if (elapsed > 0 && elapsed % 5 === 0 && typeof _syncValidationRunCheckpoint === 'function') {
-        _syncValidationRunCheckpoint();
-    }
-    if (validationRunSecondsRemaining <= 0) {
-        if (validationRunIntervalId != null) {
-            clearInterval(validationRunIntervalId);
-            validationRunIntervalId = null;
-        }
-        completeValidationRunAfterDuration();
-    }
-}
-
-
-
 function buildValidationRunSnapshot(isPass) {
-    var now = new Date().toISOString();
+    var now = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
     return {
         validationSubtype: 'usp',
         usp: 'USP',
@@ -7581,7 +7985,7 @@ function buildCombinedValidationReportPayload() {
     var run = runs[0];
     var isPass = String(run.status || '').toLowerCase() === 'pass';
     var user = window.currentUser || {};
-    var now = new Date().toISOString();
+    var now = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
     return {
         name: 'Validation - USP - ' + (isPass ? 'Pass' : 'Fail'),
         type: 'validation',
@@ -7616,7 +8020,7 @@ function buildCombinedValidationReportPayload() {
 function buildValidationAbortedRunSnapshot() {
     var elapsed = VALIDATION_RUN_DURATION_SEC - (validationRunSecondsRemaining || 0);
     if (elapsed < 0) elapsed = 0;
-    var now = new Date().toISOString();
+    var now = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
     return {
         validationSubtype: 'usp',
         usp: 'USP',
@@ -7635,7 +8039,7 @@ function buildValidationAbortedRunSnapshot() {
 function buildAbortedValidationReportPayload() {
     var run = buildValidationAbortedRunSnapshot();
     var user = window.currentUser || {};
-    var now = new Date().toISOString();
+    var now = (typeof formatLocalWallClockIso === 'function') ? formatLocalWallClockIso() : new Date().toISOString();
     return {
         name: 'Validation - USP - Aborted',
         type: 'validation',
@@ -7687,13 +8091,10 @@ function saveAbortedValidationReportAndOpenPreview(opts) {
                 payload.reportApprovalStatus = 'pending';
                 _syncValidationRunCheckpoint({ aborted: true, pendingReportId: reportId });
             } catch (e) {}
-            if (opts.openPreview !== false && typeof openReportPreview === 'function') {
+            if (opts.openPreview !== false && typeof finishValidationReportSaved === 'function') {
+                finishValidationReportSaved(reportId);
+            } else if (opts.openPreview !== false && typeof openReportPreview === 'function') {
                 openReportPreview(reportId, { setGate: true });
-                setTimeout(function () {
-                    if (typeof scrollReportApprovePanelIntoView === 'function') {
-                        scrollReportApprovePanelIntoView();
-                    }
-                }, 400);
             }
             return reportId;
         })
@@ -7712,16 +8113,16 @@ function abortValidationRun(opts) {
     validationRunBackendPending = true;
     var btn = document.getElementById('btn-validation-start-abort');
     if (btn) btn.disabled = true;
-    if (validationRunIntervalId != null) {
-        clearInterval(validationRunIntervalId);
-        validationRunIntervalId = null;
-    }
+    if (typeof _clearValidationRunTimer === 'function') _clearValidationRunTimer();
+    validationRunStartMs = null;
+    validationRunLastCheckpointElapsed = -1;
     _stopValidationLivePoll();
     if (typeof _syncValidationRunCheckpoint === 'function') {
         _syncValidationRunCheckpoint({ aborted: true });
     }
     return stopValidationOnBackend().catch(function () {}).then(function () {
         validationRunState = 'idle';
+        if (typeof setValidationRunNavigationLock === 'function') setValidationRunNavigationLock(false);
         setValidationDrumSpinning(false);
         _closeValidationRunHardwareEs();
         updateValidationRunTimerUi(VALIDATION_RUN_DURATION_SEC);
@@ -7751,31 +8152,57 @@ function abortValidationRun(opts) {
     });
 }
 
+function finishValidationReportSaved(reportId) {
+    if (reportId) {
+        if (typeof openReportPreview === 'function') {
+            openReportPreview(reportId, { setGate: true });
+            setTimeout(function () {
+                if (typeof scrollReportPendingBannerIntoView === 'function') {
+                    scrollReportPendingBannerIntoView();
+                }
+                if (typeof scrollReportApprovePanelIntoView === 'function') {
+                    scrollReportApprovePanelIntoView();
+                }
+            }, 400);
+        } else {
+            goToPage('reports');
+            if (typeof loadReports === 'function') loadReports('validation');
+        }
+    } else {
+        goToPage('reports');
+        if (typeof loadReports === 'function') loadReports('validation');
+    }
+}
+
 function saveCombinedValidationReport() {
     var reportPayload = stampOperatorOnValidationReportPayload(buildCombinedValidationReportPayload());
     if (!reportPayload) return Promise.resolve();
+    currentReportFilter = 'validation';
     return apiRequest(API_BASE + '/api/data/reports', { method: 'POST', body: reportPayload })
         .then(function (result) {
             var reportId = result && result.id;
-            if (reportId) {
-                try {
-                    reportPayload.id = reportId;
-                    reportPayload.reportApprovalStatus = 'pending';
-                    _syncValidationRunCheckpoint({ completed: true, pendingReportId: reportId });
-                } catch (e) {}
+            if (!reportId) {
+                showAppModal('Validation completed, but report id was not returned.', 'Report');
+                goToPage('reports');
+                return null;
             }
+            if (typeof logTestReportSavedAudit === 'function') {
+                logTestReportSavedAudit(reportId, reportPayload);
+            }
+            try {
+                reportPayload.id = reportId;
+                reportPayload.reportApprovalStatus = 'pending';
+                _syncValidationRunCheckpoint({ completed: true, pendingReportId: reportId });
+            } catch (e) {}
             validationSessionResults = { usp: null };
             validationCompletion = { usp: false };
-            currentReportFilter = 'validation';
-            if (reportId) {
-                if (typeof openReportPreview === 'function') openReportPreview(reportId, { setGate: true });
-                else goToPage('reports');
-            } else {
-                goToPage('reports');
-            }
+            finishValidationReportSaved(reportId);
+            return reportId;
         })
         .catch(function (err) {
             console.error('Failed to save validation report', err);
+            var msg = (err && err.message) ? String(err.message) : 'Unknown error';
+            showAppModal('Validation completed, but report could not be saved: ' + msg, 'Report');
             currentReportFilter = 'validation';
             goToPage('reports');
         });
@@ -7834,6 +8261,7 @@ function renderValidationDetailsInPreview(preview) {
 
 function completeValidationRunAfterDuration() {
     validationRunState = 'idle';
+    if (typeof setValidationRunNavigationLock === 'function') setValidationRunNavigationLock(false);
     setValidationDrumSpinning(false);
     stopValidationOnBackend().catch(function () {});
     _closeValidationRunHardwareEs();
@@ -7933,6 +8361,7 @@ function toggleValidationRunState() {
                     return Promise.reject(new Error(errText));
                 }
                 validationRunState = 'running';
+                if (typeof setValidationRunNavigationLock === 'function') setValidationRunNavigationLock(true);
                 setValidationDrumSpinning(true);
                 logAuditEvent('Validation started', validationAdapterLabel() + ' validation run started', {
                     eventType: 'lifecycle',
@@ -7941,6 +8370,8 @@ function toggleValidationRunState() {
                 });
                 validationRunCurrentCount = 0;
                 setValRunEl('val-run-rotation-count', '0');
+                validationRunStartMs = Date.now();
+                validationRunLastCheckpointElapsed = -1;
                 validationRunSecondsRemaining = VALIDATION_RUN_DURATION_SEC;
                 updateValidationRunTimerUi(validationRunSecondsRemaining);
                 setValRunEl('val-run-status', 'Running');
@@ -7954,7 +8385,9 @@ function toggleValidationRunState() {
                 }
                 if (label) label.textContent = 'Abort';
                 _startValidationLivePoll();
-                validationRunIntervalId = setInterval(validationRunTimerTick, 1000);
+                _clearValidationRunTimer();
+                validationRunLastPaintElapsed = -1;
+                validationRunRafId = requestAnimationFrame(_validationRunTimerRafLoop);
                 if (typeof _syncValidationRunCheckpoint === 'function') {
                     _syncValidationRunCheckpoint();
                 }
@@ -8694,7 +9127,7 @@ function applyDateTime() {
             var parts = parseWallDatetimeIso(data.datetime);
             if (parts) {
                 _wallClockAnchor = { parts: parts, at: Date.now() };
-                applyWallClockToTopBar(parts);
+                tickWallClockFromAnchor();
             }
         }
         updateDateTime();
@@ -8990,7 +9423,10 @@ function clearSidebarInteractionLock() {
     if (app) {
         app.classList.remove('report-approval-locked');
         app.classList.remove('validation-run-locked');
+        app.classList.remove('test-run-locked');
     }
+    var sidebar = document.querySelector('.sidebar');
+    if (sidebar) sidebar.classList.remove('sidebar-locked');
     document.querySelectorAll('.nav-item[data-page]').forEach(function (btn) {
         btn.style.pointerEvents = '';
         btn.style.opacity = '';

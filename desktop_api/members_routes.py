@@ -428,6 +428,7 @@ def register_members_routes(bp, kiosk):
                 return jsonify({"ok": False, "error": "Unsupported verification method"}), 400
 
             verifier_role = str(verifier.get("role") or "").strip().lower()
+            report_type_for_verify = None
             eligible_fn = getattr(kiosk, "_approval_verifier_eligible_for_recipe", None)
             if purpose == "recipe":
                 if eligible_fn:
@@ -435,10 +436,14 @@ def register_members_routes(bp, kiosk):
                 else:
                     eligible = auth_store._verifier_payload_has_internal(verifier, "recipe-approve")
             elif purpose == "report":
+                report_type_for_verify = auth_store._resolve_report_type_for_approval_verify(payload)
                 fn = getattr(kiosk, "_approval_verifier_eligible_for_report", None)
-                eligible = fn(verifier) if fn else auth_store._verifier_payload_has_internal(
-                    verifier, "test-report-approve"
-                )
+                if fn:
+                    eligible = fn(verifier, report_type_for_verify)
+                else:
+                    eligible = auth_store._verifier_payload_has_internal(
+                        verifier, auth_store._report_approval_internal_key(report_type_for_verify)
+                    )
             elif purpose == "export":
                 eligible = auth_store._verifier_payload_has_internal(verifier, "export-approve")
             else:
@@ -481,7 +486,11 @@ def register_members_routes(bp, kiosk):
                         )
                         return jsonify({"ok": False, "error": "Verifier account is not active"}), 403
 
-            token, token_payload = auth_store.issue_approval_verify_token(verifier, purpose)
+            token, token_payload = auth_store.issue_approval_verify_token(
+                verifier,
+                purpose,
+                report_type=report_type_for_verify if purpose == "report" else None,
+            )
             vname = verifier.get("username") or username
             audit_event(
                 kiosk,

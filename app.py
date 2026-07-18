@@ -483,14 +483,9 @@ def _startup_session_power_audit():
             pending = dict(pending)
             pending.pop("powerAuditLogged", None)
             data_service.write_session_power_audit_pending(pending)
-        # After orderly power-off/restart (clean stop), still convert any leftover
-        # pending test/validation reports to aborted (preview open without approval).
-        if had_clean_shutdown:
-            try:
-                _abort_pending_reports_after_power_loss(None)
-                _create_aborted_report_from_power_loss_checkpoint(None)
-            except Exception:
-                app.logger.exception("Abort stranded pending reports after clean stop failed")
+        # Clean stop (service restart / orderly shutdown): leave pending reports alone.
+        # They stay awaiting approval so a verifier can still sign after reboot.
+        # Only unclean power loss (branch above) converts pending -> aborted.
         cur = data_service.get_current_user()
         if cur:
             if not pending:
@@ -569,13 +564,39 @@ def _approval_verifier_eligible_for_recipe_disable(verifier: dict) -> bool:
     return rbac_service.member_has_internal(vm, "recipe-manage")
 
 
-def _approval_verifier_eligible_for_report(verifier: dict) -> bool:
-    """Test report approval: verifier must have test-report-approve permission (Factory bypass)."""
+def _report_approval_internal_key(report_type: str) -> str:
+    """Internal RBAC key for approving a report by type."""
+    if str(report_type or "").strip().lower() == "validation":
+        return "validation-report-approve"
+    return "test-report-approve"
+
+
+def _resolve_report_type_for_approval_verify(payload) -> str:
+    """Resolve report type from approval-verify payload (reportId preferred)."""
+    payload = payload or {}
+    report_id = payload.get("reportId")
+    if report_id is None:
+        report_id = payload.get("report_id")
+    if report_id is not None:
+        try:
+            report = data_service.get_report(int(report_id))
+            if report:
+                return str(report.get("type") or "test").strip().lower() or "test"
+        except (TypeError, ValueError):
+            pass
+    report_type = payload.get("reportType")
+    if report_type is None:
+        report_type = payload.get("report_type")
+    return str(report_type or "test").strip().lower() or "test"
+
+
+def _approval_verifier_eligible_for_report(verifier: dict, report_type: str = None) -> bool:
+    """Report approval: verifier must have type-specific approve permission (Factory bypass)."""
     vm = _approval_verifier_member(verifier)
     role = str(vm.get("role") or "").strip().lower()
     if role == "factory":
         return True
-    return rbac_service.member_has_internal(vm, "test-report-approve")
+    return rbac_service.member_has_internal(vm, _report_approval_internal_key(report_type))
 
 
 def _approval_verifier_eligible_for_export(verifier: dict) -> bool:
@@ -1094,7 +1115,7 @@ def _cleanup_approval_verify_tokens():
         _approval_verify_tokens.pop(token, None)
 
 
-def _issue_approval_verify_token(verifier_user, purpose):
+def _issue_approval_verify_token(verifier_user, purpose, report_type=None):
     _cleanup_approval_verify_tokens()
     now = int(time.time())
     token = secrets.token_urlsafe(24)
@@ -1106,6 +1127,8 @@ def _issue_approval_verify_token(verifier_user, purpose):
         "issuedAt": now,
         "expiresAt": now + APPROVAL_VERIFY_TTL_SECONDS,
     }
+    if str(purpose or "").strip().lower() == "report":
+        payload["reportType"] = str(report_type or "test").strip().lower() or "test"
     _approval_verify_tokens[token] = payload
     return token, payload
 
@@ -1123,7 +1146,11 @@ def _consume_approval_verify_token(expected_purpose):
     if got != exp:
         return None, "Approval verification was issued for a different action."
     if exp == "report":
-        if not _verifier_payload_has_internal(payload, "test-report-approve"):
+        report_type = str(payload.get("reportType") or "test").strip().lower() or "test"
+        perm_key = _report_approval_internal_key(report_type)
+        if not _verifier_payload_has_internal(payload, perm_key):
+            if perm_key == "validation-report-approve":
+                return None, "Verifier does not have validation report approval permission."
             return None, "Verifier does not have test report approval permission."
     elif exp == "recipe":
         if not _verifier_payload_has_internal(payload, "recipe-approve"):
@@ -1640,6 +1667,13 @@ def approve_report(report_id):
         report = data_service.get_report(report_id)
         if not report:
             return jsonify({"ok": False, "error": "Report not found"}), 404
+        if token and verified:
+            token_report_type = str(verified.get("reportType") or "test").strip().lower() or "test"
+            actual_report_type = str(report.get("type") or "test").strip().lower() or "test"
+            if token_report_type != actual_report_type:
+                return jsonify(
+                    {"ok": False, "error": "Approval verification was issued for a different report type."}
+                ), 401
         verified_username = _norm_username(verified.get("username"))
         st_raw = report.get("reportApprovalStatus")
         st = str(st_raw or "").strip().lower()
@@ -2689,8 +2723,10 @@ def approval_verify():
             return jsonify({"ok": False, "error": "Unsupported verification method"}), 400
 
         verifier_role = str(verifier.get("role") or "").strip().lower()
+        report_type_for_verify = None
         if purpose == "report":
-            eligible = _approval_verifier_eligible_for_report(verifier)
+            report_type_for_verify = _resolve_report_type_for_approval_verify(payload)
+            eligible = _approval_verifier_eligible_for_report(verifier, report_type_for_verify)
         elif purpose == "recipe":
             eligible = _approval_verifier_eligible_for_recipe(verifier)
         elif purpose == "recipe_disable":
@@ -2727,7 +2763,9 @@ def approval_verify():
                     )
                     return jsonify({"ok": False, "error": "Verifier account is not active"}), 403
 
-        token, token_payload = _issue_approval_verify_token(verifier, purpose)
+        token, token_payload = _issue_approval_verify_token(
+            verifier, purpose, report_type=report_type_for_verify if purpose == "report" else None
+        )
         vname = verifier.get("username") or username
         _audit_event(
             action="Approval verification",
@@ -3203,7 +3241,7 @@ def _build_audit_trail_html(entries, filters, factory):
     return (
         '<!doctype html><html><head><meta charset="utf-8"><title>Audit Trail Export</title>'
         '<style>'
-        '@page { size: A4 landscape; margin: 10mm 8mm; }'
+        '@page { size: A4 portrait; margin: 10mm; }'
         'html, body { margin: 0; padding: 0; background:#ffffff; color:#111;'
         '   font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif; font-size: 9.5pt; }'
         'h1 { font-size: 14pt; margin: 0 0 4px 0; letter-spacing: 0.5px; }'
@@ -3488,7 +3526,16 @@ def validate_recipe_endpoint():
 @app.route("/api/reports/<int:report_id>/preview", methods=["GET"])
 def get_report_preview(report_id):
     try:
-        gate = _require_session_internal("reports-view", "Forbidden. You do not have permission to view reports.")
+        gate = _require_any_session_internal(
+            [
+                "reports-view",
+                "recipe-test",
+                "validation-test",
+                "test-report-approve",
+                "validation-report-approve",
+            ],
+            "Forbidden. You do not have permission to view reports.",
+        )
         if gate:
             return gate
         report = data_service.get_report(report_id)
@@ -4750,4 +4797,4 @@ _start_export_purge_thread()
 
 
 if __name__ == "__main__":
-    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, threaded=True)

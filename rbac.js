@@ -355,6 +355,11 @@ function checkNavigationAccess(screenId) {
   var userObj = (typeof window !== 'undefined' && window.currentUser) ? window.currentUser : null;
   var role = getCurrentRole();
   if (!role && !userObj) return false;
+  if (screenId === 'report-preview') {
+    if (typeof userCanOpenReportPreview === 'function') {
+      return userCanOpenReportPreview(userObj);
+    }
+  }
   var featureKey = SCREEN_FEATURE_MAP[screenId] || screenId;
   if (screenId === 'manage-recipes') {
     var mode = (typeof window !== 'undefined' && window.recipeListMode) ? window.recipeListMode : 'manage';

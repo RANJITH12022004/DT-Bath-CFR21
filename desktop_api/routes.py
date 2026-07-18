@@ -41,6 +41,26 @@ def _filter_range(filters: dict) -> dict:
     return out
 
 
+def _build_audit_html(kiosk, entries, filters, factory, user):
+    """Call product `_build_audit_trail_html` with optional export_meta (TD only)."""
+    import inspect
+
+    build = getattr(kiosk, "_build_audit_trail_html", None)
+    if not build:
+        raise RuntimeError("Kiosk app is missing _build_audit_trail_html")
+    export_meta = {"exported_by": user, "approved_by": user}
+    try:
+        params = inspect.signature(build).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "export_meta" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return build(entries, filters, factory, export_meta=export_meta)
+    try:
+        return build(entries, filters, factory, export_meta)
+    except TypeError:
+        return build(entries, filters, factory)
+
+
 def _send_temp(path, download_name, mimetype):
     path = pathlib.Path(path)
 
@@ -241,9 +261,11 @@ def create_blueprint(kiosk):
             return jsonify({"error": "Report not found"}), 404
         if not kiosk._report_pdf_status_allowed(report):
             return jsonify({"error": "PDF is available only after the report is approved or marked aborted."}), 403
-        if not kiosk._generate_report_pdf_file(report_id, write_audit=True):
-            return jsonify({"error": "PDF generation failed"}), 500
         path = kiosk._report_pdf_path(report_id)
+        # Prefer cached PDF — regenerating every download stalls bulk ZIP/sync.
+        if not (path.exists() and path.stat().st_size > 0):
+            if not kiosk._generate_report_pdf_file(report_id, write_audit=True):
+                return jsonify({"error": "PDF generation failed"}), 500
         return send_file(path, mimetype="application/pdf", as_attachment=False, download_name="report-{}.pdf".format(report_id))
 
     @bp.route("/reports/download", methods=["POST"])
@@ -267,15 +289,32 @@ def create_blueprint(kiosk):
             return jsonify({"error": "No reports found"}), 404
         tmp = pathlib.Path(tempfile.NamedTemporaryFile(delete=False, suffix=".zip").name)
         try:
-            with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            added = 0
+            skipped = 0
+            # STORED: PDFs are already compressed; regenerating every file made bulk ZIP hang.
+            with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED) as zf:
                 for report in reports:
                     rid = int(report.get("id"))
                     if not kiosk._report_pdf_status_allowed(report):
+                        skipped += 1
                         continue
-                    if kiosk._generate_report_pdf_file(rid, write_audit=True):
-                        pdf = kiosk._report_pdf_path(rid)
-                        if pdf.exists():
-                            zf.write(pdf, "reports/report-{}.pdf".format(rid))
+                    pdf = kiosk._report_pdf_path(rid)
+                    if not (pdf.exists() and pdf.stat().st_size > 0):
+                        kiosk._generate_report_pdf_file(rid, write_audit=False)
+                    if pdf.exists() and pdf.stat().st_size > 0:
+                        zf.write(pdf, "reports/report-{}.pdf".format(rid))
+                        added += 1
+                    else:
+                        skipped += 1
+            if added <= 0:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return jsonify({
+                    "error": "No PDF files could be added to the ZIP. Reports must be approved or aborted before download.",
+                    "skipped": skipped,
+                }), 400
             return _send_temp(tmp, "reports-download.zip", "application/zip")
         except Exception:
             try:
@@ -298,10 +337,25 @@ def create_blueprint(kiosk):
         filters = _filter_range(payload.get("filters") or payload)
         entries = kiosk._prepare_audit_entries_for_display(audit_service.list_entries(filters))
         factory = data_service.get_factory_settings() or {}
-        html = kiosk._build_audit_trail_html(entries, filters, factory, export_meta={"exported_by": user, "approved_by": user})
+        # Chunk large trails so Chromium can render stably, then merge into one PDF.
+        chunk_size = 350
+        html_chunks = []
+        if not entries:
+            html_chunks.append(_build_audit_html(kiosk, [], filters, factory, user))
+        else:
+            total = len(entries)
+            for start in range(0, total, chunk_size):
+                chunk = entries[start : start + chunk_size]
+                html_chunks.append(_build_audit_html(kiosk, chunk, filters, factory, user))
         tmp = pathlib.Path(tempfile.NamedTemporaryFile(delete=False, suffix=".pdf").name)
         try:
-            pdf_generator.render_html_to_pdf(html, tmp)
+            # Large exports can take several minutes on Pi hardware.
+            per_chunk_timeout = 240.0 if len(html_chunks) > 1 else 180.0
+            pdf_generator.render_html_chunks_to_pdf(
+                html_chunks,
+                tmp,
+                timeout_sec=per_chunk_timeout,
+            )
             if audit_log:
                 audit_log(
                     user.get("username") or user.get("name"),

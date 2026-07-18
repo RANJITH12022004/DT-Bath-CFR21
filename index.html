@@ -7,7 +7,8 @@
     <meta name="viewport"
         content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Friability Tester</title>
-    <link rel="stylesheet" href="styles.css?v=25">
+    <link rel="stylesheet" href="/styles.css?v=32" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=32&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -571,7 +572,7 @@
                         </div>
                         </div>
 
-                        <!-- Recipe Actions Modal (Edit / Disable / Load) -->
+                        <!-- Recipe Actions Modal (Edit / Disable / Approve) — Load only from home Load Recipe -->
                         <div id="recipe-actions-modal-overlay" class="modal-overlay" style="display: none;">
                             <div class="role-modal">
                                 <h3 id="recipe-actions-modal-title">Recipe</h3>
@@ -584,8 +585,6 @@
                                     <button type="button" class="btn-role-select btn-role-supervisor"
                                         id="recipe-action-disable-btn"
                                         onclick="confirmRecipeAction('disable')">Disable</button>
-                                    <button type="button" class="btn-role-select btn-role-user"
-                                        id="recipe-action-load-btn" onclick="confirmRecipeAction('load')">Load</button>
                                     <button type="button" class="btn-role-select btn-role-cancel"
                                         onclick="closeRecipeActionsModal()">Cancel</button>
                                 </div>
@@ -735,11 +734,11 @@
                                 <button type="button" class="tr-btn tr-btn-dispense" id="tr-dispense-btn" onclick="trDispenseTest()" style="display:none;">Dispense</button>
                                 <button type="button" class="tr-btn tr-btn-stop" id="tr-stop-btn" onclick="trStopTest()">Abort</button>
                                 <div class="tr-progress-wrap">
-                                    <div class="tr-progress-label" id="tr-progress-label">Progress</div>
+                                    <div class="tr-progress-label" id="tr-progress-label">Rotations</div>
                                     <div class="tr-progress-bg">
                                         <div class="tr-progress-fill" id="tr-progress-fill" style="width:0%"></div>
                                     </div>
-                                    <div class="tr-progress-text" id="tr-progress-text">0 / --</div>
+                                    <div class="tr-progress-text" id="tr-progress-text">0</div>
                                 </div>
                             </div>
 
@@ -1994,10 +1993,10 @@
         </main>
     </div>
     <div id="keyboard-root"></div>
-    <script src="keyboard.js?v=3"></script>
-    <script src="input-focus.js?v=1"></script>
-    <script src="rbac.js?v=6"></script>
-    <script src="script.js?v=66"></script>
+    <script src="/keyboard.js?v=3"></script>
+    <script src="/input-focus.js?v=1"></script>
+    <script src="/rbac.js?v=7"></script>
+    <script src="/script.js?v=78"></script>
 </body>
 
 </html>

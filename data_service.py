@@ -701,10 +701,80 @@ def get_password_policy_for_members() -> Dict[str, Any]:
     }
 
 
+def _compute_password_cycle_state(
+    anchor: datetime,
+    period_days: int,
+    plc_dt: datetime,
+    now_dt: datetime,
+) -> Dict[str, Any]:
+    """
+    Rolling password-expiry cycles anchored to installation date.
+
+    First enforcement boundary: installationDate + periodDays + 1 day
+    (e.g. install 01-03 with 30 days => enforce from 01-04).
+    Later boundaries: every periodDays after that first boundary.
+    Expired when passwordLastChangedAt is before the current cycle start.
+    """
+    if period_days < 1:
+        return {"expired": False, "reason": "invalid-policy"}
+    if now_dt.tzinfo is not None:
+        now_dt = now_dt.replace(tzinfo=None)
+    if plc_dt.tzinfo is not None:
+        plc_dt = plc_dt.replace(tzinfo=None)
+    if anchor.tzinfo is not None:
+        anchor = anchor.replace(tzinfo=None)
+    # Compare on calendar dates so time-of-day on password change does not skip a cycle.
+    anchor_day = datetime(anchor.year, anchor.month, anchor.day)
+    now_day = datetime(now_dt.year, now_dt.month, now_dt.day)
+    plc_day = datetime(plc_dt.year, plc_dt.month, plc_dt.day)
+
+    if now_day < anchor_day:
+        first = anchor_day + timedelta(days=period_days + 1)
+        return {
+            "expired": False,
+            "reason": "before-anchor",
+            "expiresOn": first.strftime("%Y-%m-%d"),
+            "cycleStart": first.strftime("%Y-%m-%dT%H:%M:%S"),
+            "nextCycleStart": first.strftime("%Y-%m-%dT%H:%M:%S"),
+            "passwordLastChangedAt": plc_day.strftime("%Y-%m-%dT%H:%M:%S"),
+            "periodDays": period_days,
+            "cycleIndex": 0,
+        }
+
+    first_boundary = anchor_day + timedelta(days=period_days + 1)
+    if now_day < first_boundary:
+        return {
+            "expired": False,
+            "reason": "before-first-cycle",
+            "expiresOn": first_boundary.strftime("%Y-%m-%d"),
+            "cycleStart": first_boundary.strftime("%Y-%m-%dT%H:%M:%S"),
+            "nextCycleStart": first_boundary.strftime("%Y-%m-%dT%H:%M:%S"),
+            "passwordLastChangedAt": plc_day.strftime("%Y-%m-%dT%H:%M:%S"),
+            "periodDays": period_days,
+            "cycleIndex": 0,
+        }
+
+    days_past = (now_day - first_boundary).days
+    cycle_index = days_past // period_days  # 0 = first enforceable cycle
+    cycle_start = first_boundary + timedelta(days=cycle_index * period_days)
+    next_cycle = cycle_start + timedelta(days=period_days)
+    expired = plc_day < cycle_start
+    return {
+        "expired": bool(expired),
+        "reason": "expired" if expired else "ok",
+        "expiresOn": (cycle_start if expired else next_cycle).strftime("%Y-%m-%d"),
+        "cycleStart": cycle_start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "nextCycleStart": next_cycle.strftime("%Y-%m-%dT%H:%M:%S"),
+        "passwordLastChangedAt": plc_day.strftime("%Y-%m-%dT%H:%M:%S"),
+        "periodDays": period_days,
+        "cycleIndex": int(cycle_index) + 1,
+    }
+
+
 def get_member_password_expiry_state(member: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
     """
     Compute password expiry status for a non-factory member.
-    Global cycle anchor: installationDate + N * periodDays.
+    Global rolling cycles: installationDate + N * periodDays (first boundary at +period+1).
     """
     policy = get_password_policy_for_members()
     if not policy.get("enabled"):
@@ -712,26 +782,14 @@ def get_member_password_expiry_state(member: Dict[str, Any], now: Optional[datet
     anchor = policy.get("installationDate")
     period_days = int(policy.get("periodDays") or 0)
     now_dt = now or datetime.now()
-    if now_dt.tzinfo is not None:
-        now_dt = now_dt.replace(tzinfo=None)
     if not anchor or period_days < 1:
         return {"expired": False, "reason": "invalid-policy"}
-    if now_dt < anchor:
-        return {"expired": False, "reason": "before-anchor"}
-    # First enforcement boundary uses "after N full days from installation".
-    # Example: 01-03 + 30 days => enforce from 01-04.
-    cycle_start = anchor + timedelta(days=period_days + 1)
-    plc_dt = _parse_isoish_datetime(member.get("passwordLastChangedAt")) or _parse_isoish_datetime(member.get("createdAt"))
+    plc_dt = _parse_isoish_datetime(member.get("passwordLastChangedAt")) or _parse_isoish_datetime(
+        member.get("createdAt")
+    )
     if not plc_dt:
         plc_dt = datetime.min
-    expired = now_dt >= cycle_start and plc_dt < cycle_start
-    return {
-        "expired": bool(expired),
-        "expiresOn": cycle_start.strftime("%Y-%m-%d"),
-        "cycleStart": cycle_start.strftime("%Y-%m-%dT%H:%M:%S"),
-        "passwordLastChangedAt": plc_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-        "periodDays": period_days,
-    }
+    return _compute_password_cycle_state(anchor, period_days, plc_dt, now_dt)
 
 
 def save_member(member_data: Dict[str, Any], acting_user_id: Optional[Any] = None) -> int:

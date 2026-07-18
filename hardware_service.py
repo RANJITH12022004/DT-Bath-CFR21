@@ -4,6 +4,7 @@ hardware_service.py - Serial communication to MCU for Friability Tester.
 """
 
 import errno
+import fcntl
 import json
 import os
 import queue
@@ -33,6 +34,10 @@ _uart_log_lock = threading.Lock()
 _live_state_lock = threading.Lock()
 _uart_log_path = ""
 _boot_marker_path = ""
+_uart_owner_lock_path = "/tmp/friability_uart_owner.lock"
+_uart_owner_lock_fd = None
+_hardware_init_done = False
+_hardware_owner_active = False
 DEFAULT_UART_LOG = "/opt/kiosk/uart_communications.log"
 _live_state = {
     "running": False,
@@ -327,8 +332,44 @@ def _ensure_log_reset_on_power_on():
             pass
 
 
+def _acquire_uart_owner_lock() -> bool:
+    """Allow only one process to own UART init/reset for this boot.
+
+    Root cause fixed here: `hardware_service.init()` runs at import time from `app.py`.
+    If another Python process imports the app or manually launches `bridge.py`, it used
+    to re-run the "power_on" log reset and reset UART buffers even without a real power cut.
+    """
+    global _uart_owner_lock_fd
+    if _uart_owner_lock_fd is not None:
+        return True
+    lock_path = _config.get("UART_OWNER_LOCK_PATH", _uart_owner_lock_path) or _uart_owner_lock_path
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    except Exception:
+        pass
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            fd.close()
+        except Exception:
+            pass
+        return False
+    try:
+        fd.seek(0)
+        fd.truncate()
+        fd.write(str(os.getpid()))
+        fd.flush()
+    except Exception:
+        pass
+    _uart_owner_lock_fd = fd
+    return True
+
+
 def init(app, config):
     global _logger, _config, _esp_port, line_q, sse_clients, _uart_log_path, _boot_marker_path
+    global _hardware_init_done, _hardware_owner_active
     _logger = app.logger
     _config = dict(config)
     _esp_port = _config.get("ESP_PORT", "/dev/serial0")
@@ -337,6 +378,17 @@ def init(app, config):
         "UART_LOG_BOOT_MARKER",
         os.path.join(os.path.dirname(_uart_log_path), ".esp_pi_log_boot_id"),
     )
+    if _hardware_init_done:
+        return
+    _hardware_init_done = True
+    _hardware_owner_active = _acquire_uart_owner_lock()
+    if not _hardware_owner_active:
+        if _logger:
+            _logger.warning(
+                "[HARDWARE] Skipping UART init in PID %s; another process already owns the UART",
+                os.getpid(),
+            )
+        return
     _ensure_log_reset_on_power_on()
     line_q = queue.Queue(maxsize=2000)
     sse_clients = []

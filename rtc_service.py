@@ -11,6 +11,7 @@ hwclock(8). The hardware RTC is the source of truth: network/NTP must not overri
 
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List
+import email.utils
 import fcntl
 import os
 import re
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time as time_mod
+import urllib.request
 
 _logger = None
 _smbus = None
@@ -32,6 +34,10 @@ SYSFS_RTC_DIR = "/sys/class/rtc/rtc0"
 _RTC_SET_TIME_IOCTLS = (0x4024700A, 0x4024700a, 0x4024700B)
 _rtc_startup_done = False
 _rtc_startup_lock = threading.Lock()
+NETWORK_TIME_URLS = (
+    "https://google.com",
+    "https://example.com",
+)
 
 
 def init(logger=None):
@@ -66,6 +72,30 @@ def disable_network_time_sync() -> bool:
     if not ok and _logger:
         _logger.warning("timedatectl set-ntp false failed: %s", err)
     return ok
+
+
+def _fetch_network_wall_datetime() -> Optional[datetime]:
+    """Fetch trusted wall time from HTTP Date headers.
+
+    This is a one-shot startup correction, not a continuous time source.
+    It exists because the DS1307 can drift, and this kiosk currently disables NTP.
+    """
+    for url in NETWORK_TIME_URLS:
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                date_hdr = (resp.headers.get("Date") or "").strip()
+            if not date_hdr:
+                continue
+            dt = email.utils.parsedate_to_datetime(date_hdr)
+            if dt is None:
+                continue
+            if getattr(dt, "tzinfo", None) is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
+            return dt
+        except Exception:
+            continue
+    return None
 
 
 def _read_rtc_sysfs_wall_datetime() -> Optional[datetime]:
@@ -265,11 +295,32 @@ def get_device_wall_datetime_payload() -> Dict[str, Any]:
 
 
 def ensure_rtc_is_clock_authority() -> None:
-    """On app/service start: no NTP; system clock follows DS1307 (sysfs/hwclock read)."""
+    """On app/service start: prefer real network wall time, else fall back to DS1307.
+
+    Exact root cause fixed here:
+    - the service disabled NTP
+    - then always loaded Linux time from the DS1307
+    - if the DS1307 drifted behind real time, both system time and all Date.now()-based
+      UI timers inherited that stale wall clock.
+    """
     if os.name == "nt" or sys.platform == "win32":
         return
     try:
         disable_network_time_sync()
+        net_dt = _fetch_network_wall_datetime()
+        rtc_dt = read_rtc_wall_datetime()
+        if net_dt is not None:
+            # If RTC is absent or meaningfully behind/ahead, correct system time from network
+            # and persist that correction back into the RTC.
+            rtc_delta_ok = _wall_times_match(net_dt, rtc_dt, slack_sec=30)
+            if not rtc_delta_ok:
+                ok, err = apply_user_wall_time(net_dt)
+                if ok:
+                    if _logger:
+                        _logger.info("System clock loaded from network time and persisted to RTC")
+                    return
+                if _logger:
+                    _logger.warning("Could not set system time from network time: %s", err)
         if kernel_rtc_device_path() or os.path.exists(SYSFS_RTC_DIR):
             if sync_system_clock_from_rtc():
                 if _logger:
