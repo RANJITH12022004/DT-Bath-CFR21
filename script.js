@@ -163,8 +163,11 @@ function isTestRunActive() {
 }
 
 function _trIsActiveTestOperation() {
+    // Include post-run phases (await dispense / final weight) so Abort still saves a report
+    // and navigation stays locked until the report is opened — same idea as Tap Density.
     return !!(typeof _tr !== 'undefined' && _tr && (
-        _tr.running || _tr.initializing || _tr.startPending || _tr.dispensing
+        _tr.running || _tr.initializing || _tr.startPending || _tr.dispensing ||
+        (_tr.testFinished && !_tr.done)
     ));
 }
 
@@ -197,9 +200,9 @@ function _trConfirmAbortRunningTest(options) {
 
 function _trAbortRunningTestNow() {
     if (!_tr) return;
-    var wasRunning = !!_tr.running;
+    var shouldReport = !!(_tr.running || _tr.testFinished);
     _trBumpRunGeneration();
-    _trDoStop({ createAbortReport: wasRunning });
+    _trDoStop({ createAbortReport: shouldReport });
     _trSyncNavigationLock();
 }
 
@@ -6468,21 +6471,24 @@ function trStopTest() {
         showConfirmModal('Dispense in progress. Do you want to abort?', 'Operation in progress').then(function (ok) {
             if (!ok) return;
             _trBumpRunGeneration();
-            _trDoStop();
+            _trDoStop({ createAbortReport: !!_tr.testFinished });
         });
         return;
     }
-    if (_trIsActiveTestOperation()) {
+    if (_tr.running || _tr.initializing || _tr.startPending) {
         _trConfirmAbortRunningTest({
             message: 'Test is running. Do you want to abort?',
             title: 'Operation in progress'
         });
         return;
     }
-    if (_tr.testFinished && !_tr.dispenseComplete) {
-        showYesNoModal('Discard this completed test before dispense?', 'Test', 'OK', 'Cancel').then(function (ok) {
+    if (_tr.testFinished && !_tr.done) {
+        var abortMsg = _tr.dispenseComplete
+            ? 'Abort this test without final weight? An aborted report will be saved and opened for approval.'
+            : 'Abort this completed test before dispense? An aborted report will be saved and opened for approval.';
+        showConfirmModal(abortMsg, 'Abort Test').then(function (ok) {
             if (!ok) return;
-            _trDoStop();
+            _trDoStop({ createAbortReport: true });
         });
         return;
     }
@@ -6496,6 +6502,10 @@ function trDispenseTest(opts) {
     }
     if (!_tr.testFinished && !_tr.running) {
         return Promise.reject(new Error('No test to dispense'));
+    }
+    // Dispense already done — only re-prompt final weights (Cancel on weight modal).
+    if (_tr.dispenseComplete) {
+        return _trPromptFinalWeightAndSaveReport({ aborted: !!opts.aborted || !!_tr.abortedRun });
     }
     _tr.dispensing = true;
     if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
@@ -6545,9 +6555,10 @@ function _trDoStop() {
     var wasRunning = !!_tr.running;
     var wasStarting = !!_tr.startPending;
     var wasInitializing = !!_tr.initializing;
+    var wasTestFinished = !!_tr.testFinished;
     var needsHardwareStop = wasRunning || wasStarting || wasInitializing;
     var abortPayload = null;
-    if (createAbortReport && wasRunning) {
+    if (createAbortReport && (wasRunning || wasTestFinished)) {
         abortPayload = _trBuildCompletionReportPayload({ aborted: true });
         var recAb = window.activeTestRecipe || {};
         logAuditEvent('Test aborted', 'User aborted test for ' + (recAb.productName || 'recipe'), { eventType: 'lifecycle', outcome: 'aborted' });
@@ -6565,7 +6576,8 @@ function _trDoStop() {
     _tr.startPending = false;
     _tr.initializing = false;
     _tr.testFinished = false;
-    _tr.abortedRun = !!(createAbortReport && wasRunning);
+    _tr.dispenseComplete = false;
+    _tr.abortedRun = !!(createAbortReport && (wasRunning || wasTestFinished));
     _pendingTestRunReportId = null;
     closeTestRunCompletionApprovalModal();
     _tr.paused = false;
@@ -6575,9 +6587,9 @@ function _trDoStop() {
     if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
     _trSetStatus(1, 'idle');
     _trSetStatus(2, 'idle');
-    if (wasRunning || wasStarting) {
+    if (wasRunning || wasStarting || wasTestFinished) {
         _trSetButtons('ready');
-        _trSetFooterNote('Test aborted. Press Start to run again.');
+        _trSetFooterNote(abortPayload ? 'Test aborted. Opening report…' : 'Test aborted. Press Start to run again.');
     } else if (wasInitializing) {
         _tr.hardwareInitialized = false;
         _trSetButtons('idle');
@@ -6596,6 +6608,8 @@ function _trDoStop() {
         _tr.initialWeight = null;
     }
     _tr.finalWeight = null;
+    _tr.finalWeight1 = null;
+    _tr.finalWeight2 = null;
     _trSetText('tr-count1', '0');
     _trSetText('tr-count2', '0');
     _trSetText('tr-timer', '00:00');
@@ -6733,6 +6747,20 @@ function _trBuildStepResults() {
 
 function _trPromptFinalWeights() {
     return new Promise(function (resolve) {
+        function confirmAbortOrRetry(retryFn) {
+            // Tap Density style: Cancel on weight entry asks abort confirm;
+            // declining keeps the test and re-opens weight entry.
+            showConfirmModal(
+                'Final weight is required to save the report. Do you want to abort the test?',
+                'Abort Test'
+            ).then(function (wantAbort) {
+                if (!wantAbort) {
+                    retryFn();
+                    return;
+                }
+                resolve(false);
+            });
+        }
         function askDrum2() {
             if (_tr.drumCount !== 2) {
                 _tr.finalWeight = Number(_tr.finalWeight1);
@@ -6748,7 +6776,7 @@ function _trPromptFinalWeights() {
                 invalidMessage: 'Please enter a valid final weight in gms.'
             }).then(function (value) {
                 if (value == null) {
-                    resolve(false);
+                    confirmAbortOrRetry(askDrum2);
                     return;
                 }
                 _tr.finalWeight2 = value;
@@ -6756,22 +6784,25 @@ function _trPromptFinalWeights() {
                 resolve(true);
             });
         }
-        promptNumberModal({
-            title: 'Final Weight (gms) - Drum 1',
-            message: 'Enter the final tablet weight for Drum 1 after dispense (gms).',
-            placeholder: 'Weight (gms)',
-            min: 0,
-            step: '0.001',
-            invalidMessage: 'Please enter a valid final weight in gms.'
-        }).then(function (value) {
-            if (value == null) {
-                resolve(false);
-                return;
-            }
-            _tr.finalWeight1 = value;
-            _tr.finalWeight = Number(value);
-            askDrum2();
-        });
+        function askDrum1() {
+            promptNumberModal({
+                title: 'Final Weight (gms) - Drum 1',
+                message: 'Enter the final tablet weight for Drum 1 after dispense (gms).',
+                placeholder: 'Weight (gms)',
+                min: 0,
+                step: '0.001',
+                invalidMessage: 'Please enter a valid final weight in gms.'
+            }).then(function (value) {
+                if (value == null) {
+                    confirmAbortOrRetry(askDrum1);
+                    return;
+                }
+                _tr.finalWeight1 = value;
+                _tr.finalWeight = Number(value);
+                askDrum2();
+            });
+        }
+        askDrum1();
     });
 }
 
@@ -6799,9 +6830,9 @@ function _trPromptFinalWeightAndSaveReport(opts) {
     _trSetButtons('done');
     return _trPromptFinalWeights().then(function (captured) {
         if (!captured) {
-            _trSetButtons('await-dispense');
-            _trEl('tr-footer-note').textContent = 'Final weight is required to save the report.';
-            throw new Error('Final weight entry cancelled');
+            // User confirmed abort on the final-weight Cancel path — save aborted report + open preview.
+            _tr.abortedRun = true;
+            return _trSaveCompletionReportAndOpenPreview(true);
         }
         var note = (isAborted ? 'Test aborted' : 'Test complete') + '! Total time: ' + _trFormatTime(_tr.elapsedSeconds);
         if (_tr.initialWeight != null && _tr.finalWeight != null) {
@@ -6813,39 +6844,43 @@ function _trPromptFinalWeightAndSaveReport(opts) {
                 ', Friability: ' + (friabilityPct != null ? friabilityPct.toFixed(3) + '%' : '--');
         }
         _trEl('tr-footer-note').textContent = note;
-        var payload = stampOperatorOnTestReportPayload(_trBuildCompletionReportPayload({ aborted: isAborted }));
-        return apiRequest(API_BASE + '/api/data/reports', {
-            method: 'POST',
-            body: payload
-        }).then(function (result) {
-            var reportId = result && result.id;
-            if (reportId == null) {
-                showAppModal((isAborted ? 'Test aborted' : 'Test completed') + ', but report id was not returned.', 'Report');
-                throw new Error('Report id not returned');
-            }
-            _tr.done = true;
-            if (isAborted) {
-                auditTestRunAborted('User aborted test run');
-            } else {
-                auditTestRunFinished(reportId);
-            }
-            // Pending draft is created for approval; final list entry appears only after approve.
-            // Keep a checkpoint keyed to this pending report for unclean-shutdown recovery.
-            try {
-                payload.id = reportId;
-                payload.reportApprovalStatus = 'pending';
-                apiRequest(API_BASE + '/api/data/test-run/checkpoint', {
-                    method: 'PUT',
-                    body: Object.assign({}, payload, { _pendingReportId: reportId, _checkpointPhase: 'awaiting-approval' })
-                }).catch(function () {});
-            } catch (e) {}
-            finishTestRunReportSaved(reportId);
-            return reportId;
-        }).catch(function (err) {
-            var msg = (err && err.message) ? String(err.message) : 'Unknown error';
-            showAppModal((isAborted ? 'Test aborted' : 'Test completed') + ', but report could not be saved: ' + msg, 'Report');
-            throw err;
-        });
+        return _trSaveCompletionReportAndOpenPreview(isAborted);
+    });
+}
+
+function _trSaveCompletionReportAndOpenPreview(isAborted) {
+    var payload = stampOperatorOnTestReportPayload(_trBuildCompletionReportPayload({ aborted: !!isAborted }));
+    return apiRequest(API_BASE + '/api/data/reports', {
+        method: 'POST',
+        body: payload
+    }).then(function (result) {
+        var reportId = result && result.id;
+        if (reportId == null) {
+            showAppModal((isAborted ? 'Test aborted' : 'Test completed') + ', but report id was not returned.', 'Report');
+            throw new Error('Report id not returned');
+        }
+        _tr.done = true;
+        _tr.testFinished = false;
+        if (typeof _trSyncNavigationLock === 'function') _trSyncNavigationLock();
+        if (isAborted) {
+            auditTestRunAborted('User aborted test run');
+        } else {
+            auditTestRunFinished(reportId);
+        }
+        try {
+            payload.id = reportId;
+            payload.reportApprovalStatus = 'pending';
+            apiRequest(API_BASE + '/api/data/test-run/checkpoint', {
+                method: 'PUT',
+                body: Object.assign({}, payload, { _pendingReportId: reportId, _checkpointPhase: 'awaiting-approval' })
+            }).catch(function () {});
+        } catch (e) {}
+        finishTestRunReportSaved(reportId);
+        return reportId;
+    }).catch(function (err) {
+        var msg = (err && err.message) ? String(err.message) : 'Unknown error';
+        showAppModal((isAborted ? 'Test aborted' : 'Test completed') + ', but report could not be saved: ' + msg, 'Report');
+        throw err;
     });
 }
 
