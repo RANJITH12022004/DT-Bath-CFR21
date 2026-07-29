@@ -897,9 +897,9 @@ def _normalize_validation_runs(td: Dict[str, Any], report_data: Dict[str, Any]) 
 
 
 def _is_friability_validation_run(run: Dict[str, Any]) -> bool:
+    """Legacy name kept for call sites — true for DT stroke/temp/calibration validation."""
     sub = str(run.get("validationSubtype") or "").strip().lower()
-    usp = str(run.get("usp") or "").strip().lower()
-    return sub == "usp" or "friability" in usp
+    return sub in ("stroke", "temp", "temperature", "calibration", "usp") or bool(run.get("strokesPerMin") is not None)
 
 
 def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
@@ -907,46 +907,52 @@ def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
         ("Start Time", _format_ts_readable(run.get("validationStartTime") or run.get("testStartTime"))),
         ("End Time", _format_ts_readable(run.get("validationEndTime") or run.get("testEndTime") or run.get("completedAt"))),
     ]
-    if _is_friability_validation_run(run):
+    sub = str(run.get("validationSubtype") or "").strip().lower()
+    if sub == "stroke" or run.get("strokesPerMin") is not None:
         pairs.extend([
-            ("RPM", _cell_str(run.get("rpm") or run.get("tapsMin"))),
-            ("Duration (min)", _cell_str(run.get("timeMinutes"))),
-            ("Expected rotations", _validation_expected_display(run)),
-            ("Actual rotations", _cell_str(run.get("actualTapCount"))),
+            ("Basket", _cell_str(run.get("basket") or run.get("beaker"))),
+            ("Strokes/Min", _cell_str(run.get("strokesPerMin"))),
+            ("Required Range", _cell_str(run.get("requiredRange") or "29-32")),
+        ])
+    elif sub in ("temp", "temperature"):
+        pairs.extend([
+            ("Basket", _cell_str(run.get("basket") or run.get("beaker"))),
+            ("Set Temp (°C)", _cell_str(run.get("setTemperature"))),
+            ("Min Temp (°C)", _cell_str(run.get("minTemp"))),
+            ("Max Temp (°C)", _cell_str(run.get("maxTemp"))),
+            ("Max Deviation", _cell_str(run.get("maxDeviation"))),
+            ("Limit (±°C)", _cell_str(run.get("requiredDeviation") or "0.5")),
+        ])
+    elif sub == "calibration":
+        pairs.extend([
+            ("Sensor", _cell_str(run.get("sensor"))),
+            ("Set Temp (°C)", _cell_str(run.get("setTemperature"))),
+            ("Measured (°C)", _cell_str(run.get("measuredTemperature") or run.get("afterValue"))),
+            ("Before (°C)", _cell_str(run.get("beforeValue"))),
+            ("Offset", _cell_str(run.get("calibrationOffset"))),
         ])
     else:
         pairs.extend([
-            ("Taps/Min", _cell_str(run.get("tapsMin"))),
-            ("Drop (mm)", _cell_str(run.get("dropHeight"))),
+            ("Basket", _cell_str(run.get("basket") or run.get("beaker"))),
             ("Expected", _validation_expected_display(run)),
-            ("Actual", _cell_str(run.get("actualTapCount"))),
+            ("Actual", _cell_str(_validation_actual_value(run))),
         ])
-    dur = run.get("validationDurationSec") or run.get("durationSeconds")
-    if dur is not None:
-        try:
-            pairs.append(("Elapsed", f"{int(dur)} s"))
-        except (TypeError, ValueError):
-            pass
     pairs.append(("Status", _cell_str(run.get("status"))))
     return pairs
 
 
 def _validation_usp_label(run: Dict[str, Any]) -> str:
+    sub = str(run.get("validationSubtype") or "").strip().lower()
+    if sub == "stroke":
+        return "Stroke Rate"
+    if sub in ("temp", "temperature"):
+        return "Temperature Hold"
+    if sub == "calibration":
+        return "Calibration"
     usp = run.get("usp")
     if usp:
         return str(usp)
-    return "USP 2" if run.get("validationSubtype") == "load" else "USP 1"
-
-
-def _validation_expected_display(run: Dict[str, Any]) -> str:
-    expected = run.get("expectedTapCount", "--")
-    tol = run.get("expectedTolerance")
-    if tol is not None and expected not in (None, "--", ""):
-        try:
-            return f"{expected} (+/-{tol})"
-        except (TypeError, ValueError):
-            pass
-    return _cell_str(expected)
+    return "Validation"
 
 
 def _validation_overall_status_label(td: Dict[str, Any], report_data: Dict[str, Any]) -> str:
@@ -971,20 +977,23 @@ def _format_thermal_validation_runs_block(runs: list, width: int = THERMAL_WIDTH
         lines.append(_validation_usp_label(run))
         if _is_friability_validation_run(run):
             lines.append(f"RPM: {_cell_str(run.get('rpm') or run.get('tapsMin'))}")
-            lines.append(f"Duration (min): {_cell_str(run.get('timeMinutes'))}")
+            lines.append(f"Duration (min): {_cell_str(_validation_time_minutes(run))}")
             lines.append(f"Expected rotations: {_validation_expected_display(run)}")
-            lines.append(f"Actual rotations: {_cell_str(run.get('actualTapCount'))}")
+            lines.append(f"Actual rotations: {_cell_str(_validation_actual_value(run))}")
         else:
             lines.append(f"Taps/Min: {_cell_str(run.get('tapsMin'))}")
             lines.append(f"Drop(mm): {_cell_str(run.get('dropHeight'))}")
             lines.append(f"Expected: {_validation_expected_display(run)}")
-            lines.append(f"Actual: {_cell_str(run.get('actualTapCount'))}")
-        dur = run.get("validationDurationSec")
+            lines.append(f"Actual: {_cell_str(_validation_actual_value(run))}")
+        dur = _validation_duration_sec(run)
         if dur is not None:
             try:
                 lines.append(f"Duration: {int(dur)} s")
             except (TypeError, ValueError):
                 pass
+        start = run.get("validationStartTime") or run.get("testStartTime")
+        if start:
+            lines.append(f"Start Time: {_format_ts_readable(start)}")
         lines.append(f"Status: {_cell_str(run.get('status'))}")
     lines.extend(["", _thermal_sep("-", w), ""])
     return lines
@@ -1102,52 +1111,76 @@ def _format_thermal_run_detail_lines(td: Dict[str, Any], run_details: Any, width
 
 
 def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Dict[str, Any], width: int, thermal: bool) -> None:
-    """Append run details, friability drum rows, then remarks (matches A4 / on-screen preview)."""
+    """Append DT run details, vessel times, then remarks."""
     dash = "" if thermal else ("-" * width)
     remarks = report_data.get("approvalRemarks")
     if remarks in (None, ""):
-        remarks = report_data.get("remarks")
-    if remarks is None and isinstance(td, dict):
-        remarks = td.get("remarks")
+        cause = str(
+            report_data.get("abortCause")
+            or (td.get("abortCause") if isinstance(td, dict) else "")
+            or ""
+        ).strip().lower()
+        approved_by = str(report_data.get("approvedBy") or "").strip().lower()
+        fallback = report_data.get("remarks")
+        if fallback in (None, "") and isinstance(td, dict):
+            fallback = td.get("remarks")
+        fb = str(fallback or "").strip().lower()
+        is_power = (
+            cause in ("power_interruption", "power_loss", "power")
+            or "power interruption" in approved_by
+            or "power interruption" in fb
+        )
+        if is_power and fallback not in (None, ""):
+            remarks = fallback
+        else:
+            remarks = None
 
     if not isinstance(td, dict):
         td = {}
-    results = td.get("stepResults") or []
-    row_count = _effective_friability_step_count(td)
 
-    run_details = td.get("runDetails") or td.get("runSummary")
-    if not run_details and (td.get("mode") or td.get("target")):
-        run_details = "Mode: {}, Target: {}".format(td.get("mode") or "--", td.get("target") or "--")
-    if run_details:
+    basket = td.get("basket") or td.get("beaker") or report_data.get("basket") or "--"
+    mode = td.get("mode") or report_data.get("mode") or "--"
+    cfg = td.get("basketConfig") or report_data.get("basketConfig") or "--"
+    set_temp = td.get("setTemperature") if td.get("setTemperature") is not None else report_data.get("setTemperature")
+    min_temp = td.get("minTemp") if td.get("minTemp") is not None else report_data.get("minTemp")
+    max_temp = td.get("maxTemp") if td.get("maxTemp") is not None else report_data.get("maxTemp")
+    duration = td.get("duration") or report_data.get("duration") or "--"
+    status = td.get("status") or report_data.get("status") or "--"
+
+    detail_pairs = [
+        ("Basket/Beaker", basket),
+        ("Mode", str(mode).upper() if mode else "--"),
+        ("Tube Count", cfg),
+        ("Set Temperature (°C)", set_temp if set_temp is not None else "--"),
+        ("Min Temperature (°C)", min_temp if min_temp is not None else "--"),
+        ("Max Temperature (°C)", max_temp if max_temp is not None else "--"),
+        ("Test Duration", duration),
+        ("Test Status", status),
+    ]
+    if str(mode).lower() == "timer":
+        set_dur = td.get("setDuration") or td.get("setDurationMinutes")
+        if set_dur is not None:
+            detail_pairs.insert(6, ("Set Duration", set_dur))
+
+    if thermal:
+        lines.extend(["", "TEST DETAILS"])
+        for k, v in detail_pairs:
+            lines.append(f"{k}: {_cell_str(v)}")
+    else:
+        eq = _section_sep("=", width, False)
+        lines.extend(["", eq, "TEST DETAILS", dash if dash else ""])
+        _append_two_column_pairs(lines, [(k, _cell_str(v)) for k, v in detail_pairs], width)
+
+    vessel_times = td.get("vesselTimes") or report_data.get("vesselTimes") or {}
+    if isinstance(vessel_times, dict) and vessel_times and str(mode).lower() == "manual":
         if thermal:
-            lines.extend(_format_thermal_run_detail_lines(td, run_details, width))
+            lines.extend(["", "TUBE COMPLETION TIMES"])
+            for n in sorted(vessel_times.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x)):
+                lines.append(f"Tube {n}: {vessel_times[n]}")
         else:
-            _append_two_column_pairs(lines, [("Run Details", _truncate_with_ellipsis(run_details, max(16, width - 20)))], width)
-
-    recipe = report_data.get("recipe") or td.get("recipe") or {}
-    if not isinstance(recipe, dict):
-        recipe = {}
-
-    if row_count > 0:
-        if thermal:
-            lines.extend(_format_thermal_friability_test_data_table(td, width))
-        else:
-            eq = _section_sep("=", width, False)
-            lines.extend(["", eq, "TEST DATA", dash if dash else ""])
-            hdr = f"{'S':>2}  {'W1 gms':>8}  {'W2 gms':>8}  {'Diff gms':>8}  {'Fri%':>8}  {'Trend':>10}  {'Result':>8}"
-            lines.append(hdr)
-            if dash:
-                lines.append(dash)
-            for i in range(row_count):
-                row = _friability_step_row_values(td, results, i)
-                sn = i + 1
-                lines.append(
-                    f"{sn:2d}  {row['w1']:>8}  {row['w2']:>8}  {row['diff']:>8}  "
-                    f"{row['friability']:>8}  {row['trend']:>10}  {row['result']:>8}"
-                )
-            lines.append(dash if dash else "")
-    elif str(report_data.get("type") or "test").strip().lower() == "test":
-        lines.extend(["", "TEST DATA: No test data recorded"])
+            lines.extend(["", "TUBE COMPLETION TIMES", dash if dash else ""])
+            pairs = [(f"Tube {n}", vessel_times[n]) for n in sorted(vessel_times.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x))]
+            _append_two_column_pairs(lines, pairs, width)
 
     if remarks not in (None, ""):
         if thermal:
@@ -1156,6 +1189,31 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
             lines.extend(["", "REMARKS", dash if dash else ""])
             _append_two_column_pairs(lines, [("Comments", _truncate_with_ellipsis(remarks, max(16, width - 20)))], width)
             lines.append("")
+
+
+def _validation_expected_value(run: Dict[str, Any]):
+    if not isinstance(run, dict):
+        return None
+    for key in ("expectedTapCount", "expectedRotationCount", "requiredRange"):
+        if run.get(key) not in (None, "", "--"):
+            return run.get(key)
+    return None
+
+
+def _validation_actual_value(run: Dict[str, Any]):
+    if not isinstance(run, dict):
+        return None
+    for key in ("actualTapCount", "actualRotationCount", "strokesPerMin", "maxDeviation"):
+        if run.get(key) not in (None, "", "--"):
+            return run.get(key)
+    return None
+
+
+def _validation_expected_display(run: Dict[str, Any]) -> str:
+    expected = _validation_expected_value(run)
+    if expected is None:
+        expected = "--"
+    return _cell_str(expected)
 
 
 def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH) -> str:
@@ -1172,12 +1230,12 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
         report_data["approvalPassFail"] = approval_result
     fs = report_data.get("factorySettings") or {}
     rtype = str(report_data.get("type") or "test").strip().lower()
-    title = "FRIABILITY VALIDATION REPORT" if rtype == "validation" else "FRIABILITY TEST REPORT"
+    title = "DISINTEGRATION VALIDATION REPORT" if rtype == "validation" else "DISINTEGRATION TEST REPORT"
     lines: list = []
     if thermal:
-        lines.extend([sep, "RAISE LAB EQUIPMENT", ""])
+        lines.extend([sep, "RAISE LAB EQUIPMENT", "Tablet Disintegration Tester", ""])
     else:
-        lines.extend([sep, "RAISE LAB EQUIPMENT".center(width), ""])
+        lines.extend([sep, "RAISE LAB EQUIPMENT".center(width), "Tablet Disintegration Tester".center(width), ""])
     lines.append(title if thermal else title.center(width))
     if thermal:
         lines.append("")
@@ -1243,12 +1301,13 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
             info_lines = [
                 sep,
                 "TEST INFORMATION",
-                f"Product: {recipe.get('productName', td.get('productName', 'N/A'))}",
+                f"Product: {recipe.get('productName', td.get('productName', td.get('name', 'N/A')))}",
                 f"Batch No: {batch_no}",
-                f"Test Type: {derived.get('testType', '--')}",
-                f"Test Method: {derived.get('testMethod', '--')}",
-                f"RPM: {derived.get('rpm', '--')}",
-                f"Drums: {derived.get('drumCount', '--')}",
+                f"Basket: {derived.get('basket', td.get('basket', '--'))}",
+                f"Mode: {derived.get('mode', td.get('mode', '--'))}",
+                f"Set Temp: {derived.get('setTemperature', '--')} C",
+                f"Min/Max Temp: {td.get('minTemp', '--')}/{td.get('maxTemp', '--')} C",
+                f"Tubes: {derived.get('basketConfig', td.get('basketConfig', '--'))}",
                 f"Duration: {derived.get('durationFormatted', '--')}",
                 f"Test Start Date: {start_date}",
                 f"Test Start Time: {start_time}",
@@ -1258,22 +1317,26 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
             ]
             lines.extend(info_lines)
         else:
-            lines.extend(["", "TEST INFORMATION", sep_dash])
-            info_pairs = [
-                ("Product", recipe.get("productName", td.get("productName", "N/A"))),
-                ("Batch No", batch_no),
-                ("Test Type", derived.get("testType", "--")),
-                ("Test Method", derived.get("testMethod", "--")),
-                ("RPM", derived.get("rpm", "--")),
-                ("Drums", derived.get("drumCount", "--")),
-                ("Duration", derived.get("durationFormatted", "--")),
-                ("Test Start Date", start_date),
-                ("Test Start Time", start_time),
-                ("Completed Date", end_date),
-                ("Completed Time", end_time),
-                ("Status", status_label),
-            ]
-            _append_two_column_pairs(lines, info_pairs, width)
+            _append_two_column_pairs(
+                lines,
+                [
+                    ("Product", recipe.get("productName", td.get("productName", td.get("name", "N/A")))),
+                    ("Batch No", batch_no),
+                    ("Basket", derived.get("basket", td.get("basket", "--"))),
+                    ("Mode", derived.get("mode", td.get("mode", "--"))),
+                    ("Set Temp (°C)", derived.get("setTemperature", "--")),
+                    ("Min Temp (°C)", td.get("minTemp", "--")),
+                    ("Max Temp (°C)", td.get("maxTemp", "--")),
+                    ("Tube Count", derived.get("basketConfig", td.get("basketConfig", "--"))),
+                    ("Duration", derived.get("durationFormatted", "--")),
+                    ("Test Start Date", start_date),
+                    ("Test Start Time", start_time),
+                    ("Completed Date", end_date),
+                    ("Completed Time", end_time),
+                    ("Status", status_label),
+                ],
+                width,
+            )
         _append_test_report_details(lines, td if isinstance(td, dict) else {}, report_data, width, thermal)
     if thermal:
         lines.extend(["", "APPROVAL"])
@@ -1325,17 +1388,20 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
 
 
 def format_for_a4_printer(
-    report_data: Dict[str, Any], *, include_printed_timestamp: bool = True
+    report_data: Dict[str, Any],
+    *,
+    include_printed_timestamp: bool = True,
+    timestamp_kind: str = "printed",
 ) -> str:
     text = _format_report_text(report_data, width=A4_TEXT_WIDTH).rstrip("\n")
     if not include_printed_timestamp:
         return text
-    footer = "\n".join(_thermal_printed_timestamp_lines())
+    footer = "\n".join(_report_timestamp_footer_lines(timestamp_kind))
     return text + "\n\n" + footer
 
 
-def _thermal_printed_timestamp_lines() -> list:
-    """Printed date/time from device RTC at format time."""
+def _report_timestamp_footer_lines(kind: str = "printed") -> list:
+    """Date/time footer from device RTC. kind: 'printed' | 'exported'."""
     try:
         import rtc_service
 
@@ -1346,17 +1412,34 @@ def _thermal_printed_timestamp_lines() -> list:
         now = datetime.now()
         pdate = now.strftime("%d-%m-%Y")
         ptime = now.strftime("%H:%M:%S")
-    return ["", f"Printed Date: {pdate}", f"Printed Time: {ptime}"]
+    label = "Exported" if str(kind or "").strip().lower() == "exported" else "Printed"
+    return ["", f"{label} Date: {pdate}", f"{label} Time: {ptime}"]
+
+
+def _thermal_printed_timestamp_lines() -> list:
+    """Printed date/time from device RTC at format time."""
+    return _report_timestamp_footer_lines("printed")
 
 
 def _thermal_trailing_feed() -> str:
     return "\n" * THERMAL_POST_PRINT_FEED_LINES
 
 
-def format_for_thermal_printer(report_data: Dict[str, Any]) -> str:
+def format_for_thermal_printer(
+    report_data: Dict[str, Any], *, timestamp_kind: str = "printed"
+) -> str:
     text = _format_report_text(report_data, width=THERMAL_WIDTH).rstrip("\n")
-    footer = "\n".join(_thermal_printed_timestamp_lines())
+    footer = "\n".join(_report_timestamp_footer_lines(timestamp_kind))
     return text + "\n\n" + footer + _thermal_trailing_feed()
+
+
+def format_for_export(report_data: Dict[str, Any], *, thermal: bool = False) -> str:
+    """A4/thermal text with Exported Date/Time at the end (for USB/file export)."""
+    if thermal:
+        return format_for_thermal_printer(report_data, timestamp_kind="exported")
+    return format_for_a4_printer(
+        report_data, include_printed_timestamp=True, timestamp_kind="exported"
+    )
 
 
 def save_report_text_files(report_data: Dict[str, Any], report_id: int, reports_dir: pathlib.Path) -> None:
@@ -1365,8 +1448,9 @@ def save_report_text_files(report_data: Dict[str, Any], report_id: int, reports_
     try:
         reports_dir = pathlib.Path(reports_dir)
         reports_dir.mkdir(parents=True, exist_ok=True)
-        text_48 = format_for_thermal_printer(report_data)
-        text_80 = format_for_a4_printer(report_data).rstrip() + "\r\n\x0c"
+        # Stored text matches preview: no Printed/Exported stamp (stamped at live print/export).
+        text_48 = _format_report_text(report_data, width=THERMAL_WIDTH).rstrip("\n") + _thermal_trailing_feed()
+        text_80 = format_for_a4_printer(report_data, include_printed_timestamp=False).rstrip() + "\r\n\x0c"
         (reports_dir / f"report_{report_id}_a4.txt").write_text(text_80, encoding="utf-8")
         (reports_dir / f"report_{report_id}_thermal.txt").write_text(text_48, encoding="utf-8")
     except Exception as e:

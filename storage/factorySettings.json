@@ -1,10 +1,10 @@
 {
+  "lastValidationDate": "20-07-2026",
   "companyName": "MSN LABS",
   "companyLocation": "QC BLOCK-C",
   "serialNo": "2606401",
   "modelNo": "RFT-2B",
   "instrumentId": ".",
-  "installationDate": "",
   "firmware": "RD-TDT v1.0.0",
   "installedBy": "qqq",
   "maxRecipes": 150,
@@ -14,6 +14,9 @@
   "biometricEnabled": true,
   "passwordResetPeriodDays": 30,
   "autoLogoutMinutes": 0,
-  "lastValidationDate": "10-07-2026",
-  "nextValidationDate": "10-07-2027"
+  "nextValidationDate": "20-07-2027",
+  "enabledBeakers": "1",
+  "defaultBasket": 1,
+  "defaultTubeCount": 1,
+  "installationDate": ""
 }

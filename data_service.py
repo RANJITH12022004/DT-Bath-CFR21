@@ -1351,85 +1351,60 @@ def clear_test_run_data() -> None:
             pass
 
 
-# =================== REPORT EXPORT SCHEDULE (24h purge) ==========================
+# =================== REPORT EXPORT SCHEDULE (24h purge, Tap Density style) =======
 
 REPORT_EXPORT_SCHEDULE_FILE = "report_export_schedule.json"
-REPORT_EXPORT_PURGE_AFTER_MS = 24 * 60 * 60 * 1000
+REPORT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000
+REPORT_EXPORT_PURGE_AFTER_MS = REPORT_EXPORT_RETENTION_MS
 
 
 def _report_export_schedule_path() -> pathlib.Path:
     return _get_storage_path(REPORT_EXPORT_SCHEDULE_FILE)
 
 
-def read_report_export_schedule() -> List[Dict[str, Any]]:
+def _load_report_export_schedule() -> Dict[str, Any]:
     path = _report_export_schedule_path()
-    if not path.exists():
-        return []
+    if not path.is_file():
+        return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return []
+        return {}
 
 
-def write_report_export_schedule(batches: List[Dict[str, Any]]) -> None:
+def _save_report_export_schedule(data: Dict[str, Any]) -> None:
     path = _report_export_schedule_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(batches, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def stage_report_export(report_ids: List[int], exporter_username: str, approver_username: str) -> Dict[str, Any]:
-    import secrets
-    import time
-    ids = []
-    for rid in report_ids or []:
+def clear_report_export_schedule() -> None:
+    path = _report_export_schedule_path()
+    if path.exists():
         try:
-            n = int(rid)
-            if n > 0:
-                ids.append(n)
-        except (TypeError, ValueError):
-            continue
-    batch_id = secrets.token_hex(8)
-    batch = {
-        "id": batch_id,
-        "reportIds": ids,
-        "exporterUsername": (exporter_username or "").strip(),
-        "approverUsername": (approver_username or "").strip(),
-        "stagedAt": int(time.time() * 1000),
-        "confirmedAt": None,
-        "purged": False,
-    }
-    batches = read_report_export_schedule()
-    batches.append(batch)
-    write_report_export_schedule(batches)
-    return batch
+            path.unlink()
+        except Exception:
+            pass
 
 
-def confirm_report_export_batch(batch_id: str) -> Optional[Dict[str, Any]]:
-    import time
-    batches = read_report_export_schedule()
-    found = None
-    for b in batches:
-        if str(b.get("id")) == str(batch_id):
-            b["confirmedAt"] = int(time.time() * 1000)
-            found = b
-            break
-    if found:
-        write_report_export_schedule(batches)
-    return found
-
-
-def purge_report_files(report_id: int, reports_dir: pathlib.Path) -> None:
+def purge_report_files(report_id: int, reports_dir: Optional[pathlib.Path] = None) -> None:
     """Remove PDF and text artifacts for a report id."""
-    rid = int(report_id)
-    patterns = [
-        reports_dir / "report_{}.pdf".format(rid),
-        reports_dir / "report_{}_a4.txt".format(rid),
-        reports_dir / "report_{}_thermal.txt".format(rid),
-    ]
-    for p in patterns:
+    try:
+        rid = int(report_id)
+    except (TypeError, ValueError):
+        return
+    if reports_dir is None:
+        return
+    d = pathlib.Path(reports_dir)
+    for name in (
+        "report_{}.pdf".format(rid),
+        "report_{}_a4.txt".format(rid),
+        "report_{}_thermal.txt".format(rid),
+    ):
+        p = d / name
         try:
             if p.exists():
                 p.unlink()
@@ -1437,38 +1412,129 @@ def purge_report_files(report_id: int, reports_dir: pathlib.Path) -> None:
             pass
 
 
-def purge_due_report_exports(reports_dir: pathlib.Path, now_ms: Optional[int] = None) -> int:
-    """Purge exported reports 24h after confirm. Returns count of reports removed."""
-    import time
-    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-    batches = read_report_export_schedule()
-    if not batches:
-        return 0
-    total_removed = 0
-    changed = False
-    for b in batches:
-        if b.get("purged"):
-            continue
-        confirmed = b.get("confirmedAt")
-        if not confirmed:
-            continue
+def purge_reports_by_ids(report_ids: List[int], reports_dir: Optional[pathlib.Path] = None) -> int:
+    """Delete reports from storage JSON and remove associated files."""
+    ids: List[int] = []
+    for x in report_ids or []:
         try:
-            confirmed_ms = int(confirmed)
+            n = int(x)
+            if n > 0:
+                ids.append(n)
         except (TypeError, ValueError):
             continue
-        if now_ms - confirmed_ms < REPORT_EXPORT_PURGE_AFTER_MS:
+    removed = 0
+    for rid in ids:
+        if delete_report(rid):
+            removed += 1
+        if reports_dir is not None:
+            purge_report_files(rid, reports_dir)
+    return removed
+
+
+def stage_report_export_pending(
+    *,
+    export_id: str,
+    report_ids: List[int],
+    exported_by: Dict[str, Any],
+    approved_by: Dict[str, Any],
+) -> None:
+    """Store a successful USB report export awaiting operator verification (no purge yet)."""
+    import time
+    now_ms = int(time.time() * 1000)
+    ids: List[int] = []
+    for x in report_ids or []:
+        try:
+            n = int(x)
+            if n > 0:
+                ids.append(n)
+        except (TypeError, ValueError):
             continue
-        for rid in b.get("reportIds") or []:
-            try:
-                rid_int = int(rid)
-            except (TypeError, ValueError):
-                continue
-            if delete_report(rid_int):
-                total_removed += 1
-            purge_report_files(rid_int, reports_dir)
-        b["purged"] = True
-        b["purgedAt"] = now_ms
-        changed = True
-    if changed:
-        write_report_export_schedule(batches)
-    return total_removed
+    state = _load_report_export_schedule()
+    state["staged"] = {
+        "export_id": str(export_id or "").strip(),
+        "report_ids": ids,
+        "exported_by": dict(exported_by or {}),
+        "approved_by": dict(approved_by or {}),
+        "exported_at_ms": now_ms,
+    }
+    _save_report_export_schedule(state)
+
+
+def confirm_report_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
+    """Operator confirmed USB export OK: schedule purge in 24h."""
+    import time
+    want = str(export_id or "").strip()
+    if not want:
+        return None
+    state = _load_report_export_schedule()
+    staged = state.get("staged") if isinstance(state.get("staged"), dict) else {}
+    if str(staged.get("export_id") or "").strip() != want:
+        return None
+    now_ms = int(time.time() * 1000)
+    scheduled = {
+        "export_id": want,
+        "report_ids": list(staged.get("report_ids") or []),
+        "exported_by": dict(staged.get("exported_by") or {}),
+        "approved_by": dict(staged.get("approved_by") or {}),
+        "exported_at_ms": int(staged.get("exported_at_ms") or now_ms),
+        "confirmed_at_ms": now_ms,
+        "purge_at_ms": now_ms + REPORT_EXPORT_RETENTION_MS,
+    }
+    state["scheduled"] = scheduled
+    state.pop("staged", None)
+    _save_report_export_schedule(state)
+    return scheduled
+
+
+def run_due_report_export_purge(reports_dir: Optional[pathlib.Path] = None) -> Optional[Dict[str, Any]]:
+    """If a confirmed report export purge is due, delete only its report_ids."""
+    import time
+    state = _load_report_export_schedule()
+    scheduled = state.get("scheduled") if isinstance(state.get("scheduled"), dict) else {}
+    purge_at = scheduled.get("purge_at_ms")
+    if purge_at is None:
+        return None
+    try:
+        purge_at_ms = int(purge_at)
+    except (TypeError, ValueError):
+        return None
+    now_ms = int(time.time() * 1000)
+    if now_ms < purge_at_ms:
+        return None
+    report_ids = list(scheduled.get("report_ids") or [])
+    purge_reports_by_ids(report_ids, reports_dir)
+    state.pop("scheduled", None)
+    _save_report_export_schedule(state)
+    out = dict(scheduled)
+    out["purged_at_ms"] = now_ms
+    out["reports_removed"] = len(report_ids)
+    return out
+
+
+# ---- Backward-compatible wrappers (legacy batch API / tests) ----
+
+def stage_report_export(report_ids: List[int], exporter_username: str, approver_username: str) -> Dict[str, Any]:
+    export_id = secrets.token_urlsafe(16)
+    exported_by = {"username": (exporter_username or "").strip() or "--", "employee_id": "--", "role": "--"}
+    approved_by = {"username": (approver_username or "").strip() or "--", "employee_id": "--", "role": "--"}
+    stage_report_export_pending(
+        export_id=export_id,
+        report_ids=report_ids or [],
+        exported_by=exported_by,
+        approved_by=approved_by,
+    )
+    return {"id": export_id, "export_id": export_id, "reportIds": report_ids or []}
+
+
+def confirm_report_export_batch(batch_id: str) -> Optional[Dict[str, Any]]:
+    return confirm_report_export_verified(batch_id)
+
+
+def purge_due_report_exports(reports_dir: pathlib.Path, now_ms: Optional[int] = None) -> int:
+    purged = run_due_report_export_purge(reports_dir)
+    if not purged:
+        return 0
+    try:
+        return int(purged.get("reports_removed") or 0)
+    except (TypeError, ValueError):
+        return 0

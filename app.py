@@ -1,6 +1,6 @@
  #!/usr/bin/env python3
 """
-app.py - Flask application for Friability Tester
+app.py - Flask application for Tablet Disintegration Tester (DT-CFR)
 Serves static files and REST API for data, auth, audit, reports, and print.
 """
 
@@ -15,6 +15,7 @@ import sys
 import time
 import threading
 from datetime import datetime
+from typing import Optional
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 
 try:
@@ -28,7 +29,10 @@ import audit_service
 import calculation_service
 import report_service
 import print_service
-import hardware_service
+import dt_hardware_service as hardware_service
+import dt_test_service
+import dt_validation_service
+import dt_calibration_service
 import biometric_service
 import rtc_service
 import network_service
@@ -72,15 +76,16 @@ STORAGE_DIR = _default_storage_dir()
 REPORTS_DIR = _default_reports_dir()
 AUDIT_DB_DIR = _default_audit_db_dir()
 EXPORT_USB_PATH = os.environ.get("EXPORT_USB_PATH", str(APP_ROOT / "export"))
+EXPORT_SUBFOLDER = os.environ.get("EXPORT_SUBFOLDER", "Disintegration-Reports-Exported")
 ESP_PORT = os.environ.get("ESP_PORT", "/dev/serial0")
 ESP_BAUD = int(os.environ.get("ESP_BAUD", "9600"))
+DT_HARDWARE_MOCK = str(os.environ.get("DT_HARDWARE_MOCK", "1")).strip().lower() in ("1", "true", "yes", "on")
 BIOMETRIC_PORT = os.environ.get("BIOMETRIC_PORT", "/dev/ttyAMA5")
 BIOMETRIC_BAUD = int(os.environ.get("BIOMETRIC_BAUD", "57600"))
 BIOMETRIC_ENROLL_TIMEOUT_SEC = float(os.environ.get("BIOMETRIC_ENROLL_TIMEOUT_SEC", "120"))
 BIOMETRIC_LOGIN_TIMEOUT_SEC = float(os.environ.get("BIOMETRIC_LOGIN_TIMEOUT_SEC", "30"))
 FLASK_HOST = os.environ.get("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(os.environ.get("FLASK_PORT", "5000"))
-EXPORT_SUBFOLDER = "Friability-Reports-Exported"
 DATETIME_STORAGE = STORAGE_DIR / "datetime.json"
 APPROVAL_VERIFY_TTL_SECONDS = int(os.environ.get("APPROVAL_VERIFY_TTL_SECONDS", "180"))
 
@@ -108,6 +113,7 @@ config = {
     "THERMAL_BAUD": int(os.environ.get("THERMAL_BAUD", "9600")),
     "ESP_PORT": ESP_PORT,
     "ESP_BAUD": ESP_BAUD,
+    "DT_HARDWARE_MOCK": DT_HARDWARE_MOCK,
     "UART_LOG_PATH": os.environ.get("UART_LOG_PATH", str(APP_ROOT / "uart_communications.log")),
     "BIOMETRIC_PORT": BIOMETRIC_PORT,
     "BIOMETRIC_BAUD": BIOMETRIC_BAUD,
@@ -121,6 +127,44 @@ calculation_service.init()
 report_service.init(config)
 print_service.init(config)
 hardware_service.init(app, config)
+
+
+def _dt_audit_bridge(action, details="", **kwargs):
+    """Bridge for dt_* services to emit structured audit events."""
+    try:
+        outcome = kwargs.pop("outcome", None) or "success"
+        _audit_event(
+            action=action,
+            outcome=outcome,
+            details=details or "",
+            **{k: v for k, v in kwargs.items() if v is not None},
+        )
+    except Exception:
+        app.logger.exception("dt audit bridge failed")
+
+
+def _dt_save_report(report: dict):
+    """Persist pending report from dt_test_service (watchdog auto-stop)."""
+    rid = data_service.save_report(report)
+    saved = data_service.get_report(rid) or report
+    try:
+        _audit_event(
+            action="Report saved",
+            outcome="success",
+            details=f"Pending test report basket {report.get('basket')}",
+            entity_type="report",
+            entity_id=str(rid or ""),
+            entity_name=(saved or {}).get("name") or "",
+            extra={"basket": report.get("basket"), "mock": report.get("mock"), "auto": True},
+        )
+    except Exception:
+        pass
+    return saved
+
+
+dt_test_service.init(logger=app.logger, audit_fn=_dt_audit_bridge, save_report_fn=_dt_save_report)
+dt_validation_service.init(logger=app.logger, audit_fn=_dt_audit_bridge)
+dt_calibration_service.init(logger=app.logger, audit_fn=_dt_audit_bridge)
 
 _enroll_sessions = {}
 _enroll_sessions_lock = threading.Lock()
@@ -280,13 +324,50 @@ def _audit_event(
 
 
 POWER_INTERRUPTION_REMARKS = "power interruption"
+OPERATOR_ABORT_REMARKS = "Aborted"
+ABORT_CAUSE_OPERATOR = "operator"
+ABORT_CAUSE_POWER = "power_interruption"
 
 
-def _apply_power_loss_abort_to_report(report: dict) -> dict:
-    """Mark a report aborted after power loss with mandatory power-interruption remarks.
+def _report_test_status(report: dict) -> str:
+    td = report.get("testData") if isinstance((report or {}).get("testData"), dict) else {}
+    return str((td or {}).get("status") or (report or {}).get("status") or "").strip().lower()
 
-    No Pass/Fail is assigned — approval UI is not used for power-loss recovery.
-    """
+
+def _report_abort_cause(report: dict) -> str:
+    """Return 'operator', 'power_interruption', or '' for a report/checkpoint payload."""
+    report = report or {}
+    td = report.get("testData") if isinstance(report.get("testData"), dict) else {}
+    cause = str(report.get("abortCause") or (td or {}).get("abortCause") or "").strip().lower()
+    if cause in ("operator", "user"):
+        return ABORT_CAUSE_OPERATOR
+    if cause in ("power_interruption", "power_loss", "power"):
+        return ABORT_CAUSE_POWER
+    remarks = str(
+        report.get("approvalRemarks")
+        or report.get("remarks")
+        or (td or {}).get("remarks")
+        or ""
+    ).strip().lower()
+    if POWER_INTERRUPTION_REMARKS in remarks:
+        return ABORT_CAUSE_POWER
+    approved_by = str(report.get("approvedBy") or "").strip().lower()
+    if "power interruption" in approved_by:
+        return ABORT_CAUSE_POWER
+    # Already aborted (operator pressed Abort) before unclean shutdown.
+    if _report_test_status(report) == "aborted":
+        return ABORT_CAUSE_OPERATOR
+    return ""
+
+
+def _apply_unclean_shutdown_abort_fields(
+    report: dict,
+    *,
+    remarks: str,
+    approved_by: str,
+    abort_cause: str,
+) -> dict:
+    """Shared finalize fields for unclean-shutdown abort (operator or power loss)."""
     report = dict(report or {})
     td = report.get("testData")
     if not isinstance(td, dict):
@@ -294,8 +375,9 @@ def _apply_power_loss_abort_to_report(report: dict) -> dict:
     else:
         td = dict(td)
     td["status"] = "aborted"
-    td["remarks"] = POWER_INTERRUPTION_REMARKS
-    # Clear any draft pass/fail so power-loss path never asks for approval of FAIL.
+    td["remarks"] = remarks
+    td["abortCause"] = abort_cause
+    # Clear any draft pass/fail so recovery path never asks for approval of FAIL.
     for k in ("approvalPassFail", "drumPassFail"):
         td.pop(k, None)
     results = td.get("stepResults")
@@ -320,12 +402,13 @@ def _apply_power_loss_abort_to_report(report: dict) -> dict:
             val_runs[idx] = run
         td["validationRuns"] = val_runs
     report["testData"] = td
-    report["remarks"] = POWER_INTERRUPTION_REMARKS
+    report["remarks"] = remarks
     report["status"] = "Aborted"
-    report["approvalRemarks"] = POWER_INTERRUPTION_REMARKS
+    report["approvalRemarks"] = remarks
+    report["abortCause"] = abort_cause
     # Persist as aborted (visible in report history) without Pass/Fail approval.
     report["reportApprovalStatus"] = "aborted"
-    report["approvedBy"] = "System (power interruption)"
+    report["approvedBy"] = approved_by
     report["approvedByUsername"] = "system"
     report["approvedAt"] = _utc_now_iso()
     for k in ("approvalPassFail", "drumPassFail"):
@@ -344,9 +427,53 @@ def _apply_power_loss_abort_to_report(report: dict) -> dict:
     return report
 
 
-def _persist_power_loss_aborted_report(report: dict) -> dict:
-    """Save power-loss aborted report and write print artifacts (no Pass/Fail)."""
-    report = _apply_power_loss_abort_to_report(report)
+def _apply_power_loss_abort_to_report(report: dict) -> dict:
+    """Mark a report aborted after power loss with mandatory power-interruption remarks.
+
+    Used when power cuts mid-test or while a completed report awaits approval.
+    No Pass/Fail is assigned — approval UI is not used for power-loss recovery.
+    """
+    return _apply_unclean_shutdown_abort_fields(
+        report,
+        remarks=POWER_INTERRUPTION_REMARKS,
+        approved_by="System (power interruption)",
+        abort_cause=ABORT_CAUSE_POWER,
+    )
+
+
+def _apply_operator_abort_finalize_to_report(report: dict) -> dict:
+    """Finalize an operator-aborted pending report after unclean shutdown.
+
+    Keeps Test Status / remarks as Aborted — never relabels as power interruption.
+    """
+    td = report.get("testData") if isinstance((report or {}).get("testData"), dict) else {}
+    existing = str(
+        (report or {}).get("remarks")
+        or (td or {}).get("remarks")
+        or ""
+    ).strip()
+    if existing and POWER_INTERRUPTION_REMARKS not in existing.lower():
+        remarks = existing
+    else:
+        remarks = OPERATOR_ABORT_REMARKS
+    return _apply_unclean_shutdown_abort_fields(
+        report,
+        remarks=remarks,
+        approved_by="System",
+        abort_cause=ABORT_CAUSE_OPERATOR,
+    )
+
+
+def _persist_unclean_shutdown_aborted_report(report: dict, *, force_power_interruption: bool = False) -> dict:
+    """Save unclean-shutdown aborted report and write print artifacts (no Pass/Fail).
+
+    Operator-aborted pending reports stay labeled Aborted.
+    Power interruption is only for mid-test loss or completed-report-before-approval.
+    """
+    if force_power_interruption or _report_abort_cause(report) != ABORT_CAUSE_OPERATOR:
+        report = _apply_power_loss_abort_to_report(report)
+    else:
+        report = _apply_operator_abort_finalize_to_report(report)
     report_id = report.get("id")
     if report_id is None:
         report_id = data_service.save_report(report)
@@ -356,32 +483,51 @@ def _persist_power_loss_aborted_report(report: dict) -> dict:
     try:
         print_service.save_report_text_files(report, int(report_id), REPORTS_DIR)
     except Exception:
-        app.logger.exception("Failed to save report text files after power-loss abort for id %s", report_id)
+        app.logger.exception("Failed to save report text files after unclean-shutdown abort for id %s", report_id)
     try:
         _generate_report_pdf_file(int(report_id), write_audit=False)
     except Exception:
-        app.logger.exception("Failed to generate PDF after power-loss abort for id %s", report_id)
+        app.logger.exception("Failed to generate PDF after unclean-shutdown abort for id %s", report_id)
     return report
 
 
-def _audit_power_loss_aborted_report(report: dict) -> None:
-    """Audit row for a report saved as power-loss aborted."""
+def _persist_power_loss_aborted_report(report: dict) -> dict:
+    """Backward-compatible alias: choose operator vs power-interruption labeling."""
+    return _persist_unclean_shutdown_aborted_report(report)
+
+
+def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
+    """Audit row for a report finalized after unclean shutdown."""
     rid = report.get("id")
     if rid is None:
         return
     ctx = _format_report_audit_details(int(rid), report)
+    cause = _report_abort_cause(report) or ABORT_CAUSE_POWER
+    remarks = str(report.get("approvalRemarks") or report.get("remarks") or "").strip()
+    if cause == ABORT_CAUSE_OPERATOR:
+        detail = "{} | unclean shutdown | status: aborted | remarks: {}".format(
+            ctx,
+            remarks or OPERATOR_ABORT_REMARKS,
+        )
+        _audit(None, None, "Report aborted", detail)
+        return
     pl_detail = "{} | unclean shutdown | status: aborted | remarks: {}".format(
         ctx,
-        POWER_INTERRUPTION_REMARKS,
+        remarks or POWER_INTERRUPTION_REMARKS,
     )
     _audit(None, None, "Report aborted (power loss)", pl_detail)
 
 
-def _abort_pending_reports_after_power_loss(session_username=None):
-    """Mark pending test/validation reports as aborted after unclean shutdown (power loss).
+def _audit_power_loss_aborted_report(report: dict) -> None:
+    """Backward-compatible alias."""
+    _audit_unclean_shutdown_aborted_report(report)
 
-    No Pass/Fail is requested — remarks are set to power interruption.
-    Aborts every pending test/validation report (machine-wide power loss).
+
+def _abort_pending_reports_after_power_loss(session_username=None):
+    """Finalize pending test/validation reports after unclean shutdown.
+
+    - Operator already aborted → keep Aborted (not power interruption).
+    - Completed test/validation awaiting approval → power interruption.
     """
     aborted = 0
     for report in data_service.list_reports("all", include_pending=True) or []:
@@ -390,14 +536,18 @@ def _abort_pending_reports_after_power_loss(session_username=None):
             continue
         if (report.get("reportApprovalStatus") or "").strip().lower() != "pending":
             continue
-        report = _persist_power_loss_aborted_report(report)
-        _audit_power_loss_aborted_report(report)
+        report = _persist_unclean_shutdown_aborted_report(report)
+        _audit_unclean_shutdown_aborted_report(report)
         aborted += 1
     return aborted
 
 
 def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
-    """If a test/validation was in progress (checkpoint) but no pending report existed, save an aborted report."""
+    """If a test/validation was in progress (checkpoint) but no pending report existed, save an aborted report.
+
+    Mid-test power cut → power interruption.
+    Checkpoint already marked operator-aborted → Aborted (not power interruption).
+    """
     cp = data_service.get_test_run_data()
     if not isinstance(cp, dict) or not cp:
         return 0
@@ -410,8 +560,8 @@ def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
         except Exception:
             existing = None
         if existing and str(existing.get("reportApprovalStatus") or "").strip().lower() == "pending":
-            report = _persist_power_loss_aborted_report(existing)
-            _audit_power_loss_aborted_report(report)
+            report = _persist_unclean_shutdown_aborted_report(existing)
+            _audit_unclean_shutdown_aborted_report(report)
             data_service.clear_test_run_data()
             return 1
         if existing and str(existing.get("reportApprovalStatus") or "").strip().lower() == "aborted":
@@ -432,8 +582,14 @@ def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
         factory_settings=report_data.get("factorySettings"),
     )
     enriched = _stamp_report_operator(enriched)
-    enriched = _persist_power_loss_aborted_report(enriched)
-    _audit_power_loss_aborted_report(enriched)
+    # Mid-test cut (still running / completed checkpoint) → power interruption.
+    # Operator-abort checkpoint (status already aborted) → keep Aborted.
+    force_power = _report_abort_cause(enriched) != ABORT_CAUSE_OPERATOR
+    enriched = _persist_unclean_shutdown_aborted_report(
+        enriched,
+        force_power_interruption=force_power,
+    )
+    _audit_unclean_shutdown_aborted_report(enriched)
     data_service.clear_test_run_data()
     return 1
 
@@ -615,6 +771,15 @@ def _approval_verifier_eligible_for_user_admin(verifier: dict) -> bool:
     if role == "factory":
         return True
     return rbac_service.member_has_internal(vm, "user-manage")
+
+
+def _approval_verifier_eligible_for_calibration(verifier: dict) -> bool:
+    """Calibration e-sign: verifier must have calibration-menu permission (Factory bypass)."""
+    vm = _approval_verifier_member(verifier)
+    role = str(vm.get("role") or "").strip().lower()
+    if role == "factory":
+        return True
+    return rbac_service.member_has_internal(vm, "calibration-menu")
 
 
 def _utc_now_iso():
@@ -898,19 +1063,66 @@ def _require_user_manage_or_self(member_id: int):
 
 
 def _self_profile_payload_from_request(existing: dict, payload: dict) -> dict:
-    """Self-service profile: only display name and password may change."""
+    """Self-service profile: only display name may change here.
+
+    Password changes must use POST /api/data/auth/change-password (current + new).
+    """
     out = dict(existing)
     if "name" in payload:
         name = str(payload.get("name") or "").strip()
         if name:
             out["name"] = name
-    new_pwd = payload.get("password")
-    if new_pwd is not None and str(new_pwd).strip():
-        pwd_err = _password_strength_error(str(new_pwd))
-        if pwd_err:
-            raise ValueError(pwd_err)
-        out["password"] = str(new_pwd)
+    if payload.get("password") is not None and str(payload.get("password") or "").strip():
+        raise ValueError("Use Change Password (current password required) to update your password.")
     return out
+
+
+@app.route("/api/data/auth/change-password", methods=["POST"])
+def change_password():
+    """Logged-in user changes password with current + new (profile Edit Password)."""
+    try:
+        gate = _require_auth()
+        if gate:
+            return gate
+        payload = request.get_json(force=True, silent=True) or {}
+        old_password = str(payload.get("oldPassword") or "")
+        new_password = str(payload.get("newPassword") or "")
+        if not old_password or not new_password:
+            return jsonify({"ok": False, "error": "oldPassword and newPassword are required"}), 400
+        member, cur = _resolve_session_member_record()
+        if not member:
+            return jsonify({"ok": False, "error": "Factory account cannot change password here."}), 403
+        username = str(member.get("username") or cur.get("username") or "").strip()
+        if not username:
+            return jsonify({"ok": False, "error": "Not logged in"}), 401
+        auth_user = data_service.authenticate_user(username, old_password)
+        if not auth_user:
+            return jsonify({"ok": False, "error": "Current password is incorrect"}), 401
+        pwd_err = _password_strength_error(new_password)
+        if pwd_err:
+            return jsonify({"ok": False, "error": pwd_err}), 400
+        if old_password == new_password:
+            return jsonify({"ok": False, "error": "New password must be different from your current password."}), 400
+        mid = int(member.get("id"))
+        updated_member = data_service.set_member_password(mid, new_password)
+        data_service.clear_mandatory_password_reset_flags(mid)
+        updated_member = data_service.get_member(mid) or updated_member
+        safe_member = data_service.sanitize_member_for_client(updated_member) or dict(updated_member)
+        _audit_event(
+            action="Password changed",
+            outcome="success",
+            entity_type="member",
+            entity_id=updated_member.get("id"),
+            entity_name=updated_member.get("username") or updated_member.get("name") or "",
+            details="Password changed from profile",
+            target_user=updated_member.get("username") or "",
+        )
+        return jsonify({"ok": True, "member": safe_member}), 200
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error changing password")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 def _resolve_session_member_record():
@@ -1164,6 +1376,9 @@ def _consume_approval_verify_token(expected_purpose):
     elif exp == "export":
         if not _verifier_payload_has_internal(payload, "export-approve"):
             return None, "Verifier does not have export approval permission."
+    elif exp == "calibration":
+        if not _verifier_payload_has_internal(payload, "calibration-menu"):
+            return None, "Verifier does not have calibration permission."
     else:
         return None, "Invalid approval purpose."
     return payload, None
@@ -1675,6 +1890,7 @@ def approve_report(report_id):
                     {"ok": False, "error": "Approval verification was issued for a different report type."}
                 ), 401
         verified_username = _norm_username(verified.get("username"))
+        verified_username_raw = str(verified.get("username") or "").strip()
         st_raw = report.get("reportApprovalStatus")
         st = str(st_raw or "").strip().lower()
         if st_raw is None:
@@ -1699,7 +1915,8 @@ def approve_report(report_id):
         report["drumPassFail"] = {"drum1": drum1_pf, "drum2": drum2_pf}
         report["approvalRemarks"] = remarks
         report["approvedBy"] = by_line
-        report["approvedByUsername"] = verified_username
+        # Preserve original username casing for display; comparisons use verified_username (lower).
+        report["approvedByUsername"] = verified_username_raw or verified_username
         report["approvedAt"] = _utc_now_iso()
         td = report.get("testData")
         if isinstance(td, dict):
@@ -2644,8 +2861,8 @@ def approval_verify():
         payload = request.get_json(force=True, silent=True) or {}
         method = str(payload.get("method") or "credentials").strip().lower()
         purpose = str(payload.get("purpose") or "recipe").strip().lower()
-        if purpose not in ("recipe", "report", "user_admin", "export", "recipe_disable"):
-            return jsonify({"ok": False, "error": "purpose must be recipe, report, user_admin, export, or recipe_disable"}), 400
+        if purpose not in ("recipe", "report", "user_admin", "export", "recipe_disable", "calibration"):
+            return jsonify({"ok": False, "error": "purpose must be recipe, report, user_admin, export, recipe_disable, or calibration"}), 400
         verifier = None
         username = (payload.get("username") or "").strip()
 
@@ -2733,6 +2950,27 @@ def approval_verify():
             eligible = _approval_verifier_eligible_for_recipe_disable(verifier)
         elif purpose == "export":
             eligible = _approval_verifier_eligible_for_export(verifier)
+            # Same person who is exporting cannot approve their own export.
+            if eligible:
+                cur = data_service.get_current_user() or {}
+                exporter_un = _norm_username(cur.get("username") or cur.get("name"))
+                verifier_un = _norm_username(verifier.get("username") or username)
+                if exporter_un and verifier_un and exporter_un == verifier_un:
+                    _audit_event(
+                        action="Approval verification",
+                        outcome="denied",
+                        entity_type="verification",
+                        entity_name=purpose,
+                        details="Exporter cannot approve their own export",
+                        target_user=verifier.get("username") or username,
+                        extra={"purpose": purpose, "method": method},
+                    )
+                    return jsonify({
+                        "ok": False,
+                        "error": "You cannot approve your own export. Another user with export approval permission must verify.",
+                    }), 403
+        elif purpose == "calibration":
+            eligible = _approval_verifier_eligible_for_calibration(verifier)
         else:
             eligible = _approval_verifier_eligible_for_user_admin(verifier)
         if not eligible:
@@ -2895,20 +3133,179 @@ def update_own_profile():
 
 
 def _require_export_usb_and_verification_json():
+    """Return (error_response_or_None, export_approval_verifier_payload_or_None)."""
     cur = data_service.get_current_user()
     if not cur:
-        return jsonify({"success": False, "error": "Unauthorized"}), 401
+        return (jsonify({"success": False, "error": "Unauthorized"}), 401), None
     data_service.refresh_current_user_from_member()
     if not _session_has_internal("export-usb"):
-        return jsonify({"success": False, "error": "Forbidden. Export to USB is not permitted for this account."}), 403
+        return (
+            jsonify({"success": False, "error": "Forbidden. Export to USB is not permitted for this account."}),
+            403,
+        ), None
     role = str(cur.get("role") or "").strip().lower()
+    verifier = None
     if role != "factory":
         _verified, verify_err = _consume_approval_verify_token("export")
         if verify_err:
-            return jsonify({"success": False, "error": verify_err}), 401
-    return None
+            return (jsonify({"success": False, "error": verify_err}), 401), None
+        # Same person who is exporting cannot approve their own export.
+        exporter_un = _norm_username(cur.get("username") or cur.get("name"))
+        verifier_un = _norm_username((_verified or {}).get("username") or (_verified or {}).get("name"))
+        if exporter_un and verifier_un and exporter_un == verifier_un:
+            return (
+                jsonify({
+                    "success": False,
+                    "error": "You cannot approve your own export. Another user with export approval permission must verify.",
+                }),
+                403,
+            ), None
+        verifier = _verified
+    return None, verifier
 
 
+def _resolve_employee_id(username: str, role: str = "") -> str:
+    uname = str(username or "").strip()
+    if not uname:
+        return "--"
+    member = data_service.get_member_by_username(uname)
+    if member:
+        emp = member.get("employeeId") or member.get("employee_id")
+        if emp is not None and str(emp).strip():
+            return str(emp).strip()
+    return uname
+
+
+def _export_actor_snapshot(user_dict: dict) -> dict:
+    username = str(user_dict.get("username") or user_dict.get("name") or "").strip() or "--"
+    role = str(user_dict.get("role") or "").strip() or "--"
+    return {
+        "username": username,
+        "employee_id": _resolve_employee_id(username, role),
+        "role": role,
+    }
+
+
+def _export_actor_from_verifier(verifier: dict) -> dict:
+    if not verifier:
+        return {}
+    return _export_actor_snapshot(
+        {
+            "username": verifier.get("username") or verifier.get("name"),
+            "role": verifier.get("role"),
+        }
+    )
+
+
+def _stage_report_usb_export(cur, verifier, exported_report_ids):
+    ids = []
+    for rid in exported_report_ids or []:
+        try:
+            n = int(rid)
+            if n > 0:
+                ids.append(n)
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return None, None, None
+    export_id = secrets.token_urlsafe(16)
+    exported_by = _export_actor_snapshot(cur or {})
+    approved_by = _export_actor_from_verifier(verifier) if verifier else dict(exported_by)
+    data_service.stage_report_export_pending(
+        export_id=export_id,
+        report_ids=ids,
+        exported_by=exported_by,
+        approved_by=approved_by,
+    )
+    return export_id, exported_by, approved_by
+
+
+def _stage_audit_usb_export(cur, verifier, entry_ids, pdf_path=""):
+    ids = []
+    for eid in entry_ids or []:
+        try:
+            n = int(eid)
+            if n > 0:
+                ids.append(n)
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return None, None, None
+    export_id = secrets.token_urlsafe(16)
+    exported_by = _export_actor_snapshot(cur or {})
+    approved_by = _export_actor_from_verifier(verifier) if verifier else dict(exported_by)
+    audit_service.stage_audit_export_pending(
+        export_id=export_id,
+        entry_ids=ids,
+        exported_by=exported_by,
+        approved_by=approved_by,
+        pdf_path=str(pdf_path or ""),
+    )
+    return export_id, exported_by, approved_by
+
+
+def _format_export_actors_detail(exported_by, approved_by):
+    ex_u = (exported_by or {}).get("username") or "--"
+    ex_e = (exported_by or {}).get("employee_id") or "--"
+    ap_u = (approved_by or {}).get("username") or "--"
+    ap_e = (approved_by or {}).get("employee_id") or "--"
+    return "exported by {} ({}) | approved by {} ({})".format(ex_u, ex_e, ap_u, ap_e)
+
+
+def _maybe_purge_scheduled_report_export() -> None:
+    try:
+        purged = data_service.run_due_report_export_purge(REPORTS_DIR)
+    except Exception:
+        app.logger.exception("Report export purge check failed")
+        return
+    if not purged:
+        return
+    exported = purged.get("exported_by") if isinstance(purged.get("exported_by"), dict) else {}
+    approved = purged.get("approved_by") if isinstance(purged.get("approved_by"), dict) else {}
+    details = (
+        "Report cycle started | Exported by: {} ({}) | Approved by: {} ({})"
+    ).format(
+        exported.get("username") or "--",
+        exported.get("employee_id") or "--",
+        approved.get("username") or "--",
+        approved.get("employee_id") or "--",
+    )
+    _audit(None, None, "Report cycle started", details)
+
+
+def _maybe_purge_scheduled_audit_export() -> None:
+    try:
+        purged = audit_service.run_due_audit_export_purge()
+    except Exception:
+        app.logger.exception("Audit export purge check failed")
+        return
+    if not purged:
+        return
+    exported = purged.get("exported_by") if isinstance(purged.get("exported_by"), dict) else {}
+    approved = purged.get("approved_by") if isinstance(purged.get("approved_by"), dict) else {}
+    details = (
+        "Audit cycle started | Exported by: {} ({}) | Approved by: {} ({})"
+    ).format(
+        exported.get("username") or "--",
+        exported.get("employee_id") or "--",
+        approved.get("username") or "--",
+        approved.get("employee_id") or "--",
+    )
+    _audit(None, None, "Audit cycle started", details)
+
+
+def _maybe_purge_scheduled_exports() -> None:
+    _maybe_purge_scheduled_audit_export()
+    _maybe_purge_scheduled_report_export()
+
+
+# =================== DATA: AUDIT LOG ==========================
+
+
+def _legacy_require_export_usb_gate_only():
+    """Deprecated single-value gate; prefer _require_export_usb_and_verification_json."""
+    gate, _verifier = _require_export_usb_and_verification_json()
+    return gate
 @app.route("/api/data/audit-log", methods=["GET"])
 def get_audit_log():
     """Return audit log entries. Requires audit-view permission (Factory bypass in RBAC)."""
@@ -3396,7 +3793,7 @@ def export_audit_trails():
     """
     mounted_now = None
     try:
-        gate = _require_export_usb_and_verification_json()
+        gate, verifier = _require_export_usb_and_verification_json()
         if gate is not None:
             return gate
         audit_gate = _require_session_internal(
@@ -3451,8 +3848,6 @@ def export_audit_trails():
         timestamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime())
         out_path = export_dir / "audit_trail_{}.pdf".format(timestamp)
         pdf_generator.render_html_to_pdf(html, out_path)
-        # Make the file read-only on the filesystem if the target FS supports it.
-        # vfat ignores chmod, but ext4 / exfat-utils etc. will keep it.
         try:
             os.chmod(out_path, 0o444)
         except OSError:
@@ -3463,22 +3858,22 @@ def export_audit_trails():
             power_off = bool(data.get("power_off") or False)
             unmount_detail = usb_export.sync_and_unmount_pendrive(mounted_now, power_off=power_off)
 
-        batch_id = (data.get("batch_id") or data.get("batchId") or "").strip()
-        if batch_id:
-            audit_service.confirm_audit_export_batch(batch_id, str(out_path))
-            _audit(
-                cur.get("username") or cur.get("name"),
-                cur.get("role"),
-                "Audit export cycle started",
-                "exporter={} | entries={} | batch={}".format(
-                    cur.get("username") or cur.get("name"), len(entries), batch_id
-                ),
-            )
+        entry_ids = []
+        for e in entries or []:
+            if isinstance(e, dict) and e.get("id") is not None:
+                entry_ids.append(e.get("id"))
+        export_id, exported_by, approved_by = _stage_audit_usb_export(
+            cur, verifier, entry_ids, pdf_path=str(out_path)
+        )
+        actors = _format_export_actors_detail(exported_by, approved_by) if export_id else ""
+        audit_detail = "pdf {} | entries {}".format(out_path, len(entries))
+        if actors:
+            audit_detail = "{} | {}".format(audit_detail, actors)
         _audit(
-            cur.get("username") or cur.get("name"),
-            cur.get("role"),
+            cur.get("username") or cur.get("name") if cur else None,
+            cur.get("role") if cur else None,
             "Audit trail exported",
-            "pdf {} | entries {}".format(out_path, len(entries)),
+            audit_detail,
         )
         return jsonify({
             "success": True,
@@ -3487,8 +3882,9 @@ def export_audit_trails():
             "format": "pdf",
             "entries": len(entries),
             "unmount_detail": unmount_detail,
-            "batchId": batch_id or None,
-            "retentionNote": "Exported audit rows will be purged from the device 24 hours after successful export.",
+            "export_id": export_id,
+            "entries_staged": len(entry_ids) if export_id else 0,
+            "retentionNote": "After you verify the USB copy, exported audit rows are purged from this device after 24 hours.",
         }), 200
     except Exception as e:
         if mounted_now:
@@ -3498,6 +3894,86 @@ def export_audit_trails():
                 pass
         app.logger.exception("Error exporting audit trails")
         return jsonify({"success": False, "error": _friendly_export_error(e)}), 500
+
+
+@app.route("/api/audit/export/confirm", methods=["POST"])
+def confirm_audit_export():
+    """Operator confirmed USB audit export; starts 24h retention timer."""
+    try:
+        _maybe_purge_scheduled_audit_export()
+        cur = data_service.get_current_user()
+        if not cur:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        if not _session_has_internal("export-usb"):
+            return jsonify({"success": False, "error": "Forbidden."}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        export_id = (data.get("export_id") or "").strip()
+        verified = bool(data.get("verified"))
+        if not verified:
+            return jsonify({"success": True, "verified": False, "scheduled": False}), 200
+        if not export_id:
+            return jsonify({"success": False, "error": "Missing export_id"}), 400
+        scheduled = audit_service.confirm_audit_export_verified(export_id)
+        if not scheduled:
+            return jsonify({"success": False, "error": "Export session expired or invalid. Export again."}), 400
+        _audit(
+            cur.get("username") or cur.get("name"),
+            cur.get("role"),
+            "Audit export verified",
+            "USB export verified; {} entries scheduled for removal after 24 hours".format(
+                len(scheduled.get("entry_ids") or [])
+            ),
+        )
+        return jsonify({
+            "success": True,
+            "verified": True,
+            "scheduled": True,
+            "purge_at_ms": int(scheduled.get("purge_at_ms") or 0),
+            "entries_scheduled": len(scheduled.get("entry_ids") or []),
+        }), 200
+    except Exception as e:
+        app.logger.exception("Error confirming audit export")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/reports/export/confirm", methods=["POST"])
+def confirm_report_export():
+    """Operator confirmed USB report export; starts 24h retention timer."""
+    try:
+        _maybe_purge_scheduled_report_export()
+        cur = data_service.get_current_user()
+        if not cur:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        if not _session_has_internal("export-usb"):
+            return jsonify({"success": False, "error": "Forbidden."}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        export_id = (data.get("export_id") or "").strip()
+        verified = bool(data.get("verified"))
+        if not verified:
+            return jsonify({"success": True, "verified": False, "scheduled": False}), 200
+        if not export_id:
+            return jsonify({"success": False, "error": "Missing export_id"}), 400
+        scheduled = data_service.confirm_report_export_verified(export_id)
+        if not scheduled:
+            return jsonify({"success": False, "error": "Export session expired or invalid. Export again."}), 400
+        _audit(
+            cur.get("username") or cur.get("name"),
+            cur.get("role"),
+            "Report export verified",
+            "USB export verified; {} report(s) scheduled for removal after 24 hours".format(
+                len(scheduled.get("report_ids") or [])
+            ),
+        )
+        return jsonify({
+            "success": True,
+            "verified": True,
+            "scheduled": True,
+            "purge_at_ms": int(scheduled.get("purge_at_ms") or 0),
+            "reports_scheduled": len(scheduled.get("report_ids") or []),
+        }), 200
+    except Exception as e:
+        app.logger.exception("Error confirming report export")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # =================== CALCULATE ==========================
@@ -3590,8 +4066,17 @@ def _remove_report_pdf_file(report_id: int) -> None:
         pass
 
 
-def _generate_report_pdf_file(report_id: int, write_audit: bool = True) -> bool:
-    """Render report PDF from A4 plain-text layout (same as dot-matrix print). Overwrites any existing file."""
+def _generate_report_pdf_file(
+    report_id: int,
+    write_audit: bool = True,
+    *,
+    timestamp_kind: Optional[str] = None,
+) -> bool:
+    """Render report PDF from A4 plain-text layout (same as dot-matrix print). Overwrites any existing file.
+
+    timestamp_kind=None → no Printed/Exported footer (preview/storage).
+    timestamp_kind='printed'|'exported' → footer stamped at generation time.
+    """
     report = data_service.get_report(report_id)
     if not report:
         return False
@@ -3600,7 +4085,12 @@ def _generate_report_pdf_file(report_id: int, write_audit: bool = True) -> bool:
         return False
     try:
         # CFR 21: always use server A4 text formatter (====, ----, ****), never UI preview HTML.
-        html = report_service.build_report_pdf_html(report)
+        include_ts = bool(timestamp_kind)
+        html = report_service.build_report_pdf_html(
+            report,
+            include_printed_timestamp=include_ts,
+            timestamp_kind=(timestamp_kind or "printed"),
+        )
         out_path = _report_pdf_path(report_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         pdf_generator.render_html_to_pdf(html, out_path)
@@ -3723,10 +4213,10 @@ def export_reports():
                 continue
         if not report_ids:
             return jsonify({"success": False, "error": "No report IDs provided"}), 400
-        gate = _require_export_usb_and_verification_json()
+        gate, verifier = _require_export_usb_and_verification_json()
         if gate is not None:
             return gate
-        batch_id = str(data.get("batch_id") or data.get("batchId") or "").strip()
+        cur = data_service.get_current_user()
         device_path = (data.get("device_path") or "").strip() or None
         requested_export_path = (data.get("export_path") or "").strip() or None
 
@@ -3740,7 +4230,7 @@ def export_reports():
                 if st == "pending":
                     missing.append(rid)
                     continue
-            if _generate_report_pdf_file(rid):
+            if _generate_report_pdf_file(rid, timestamp_kind="exported"):
                 generated.append(rid)
             else:
                 missing.append(rid)
@@ -3768,6 +4258,7 @@ def export_reports():
         export_dir.mkdir(parents=True, exist_ok=True)
 
         exported_files = []
+        exported_report_ids = []
         failed = []
         for rid in report_ids:
             src = _report_pdf_path(rid)
@@ -3789,6 +4280,7 @@ def export_reports():
                             break
                         fout.write(chunk)
                 exported_files.append(str(dest))
+                exported_report_ids.append(int(rid))
             except Exception as e:
                 failed.append({"id": rid, "error": str(e)})
 
@@ -3800,15 +4292,24 @@ def export_reports():
             unmount_detail = usb_export.sync_and_unmount_pendrive(mounted_now, power_off=power_off)
 
         ok_count = len(exported_files)
-        _audit(
-            None, None,
-            "Reports exported",
-            "Exported {} report{} to USB".format(
+        export_id = None
+        if exported_report_ids:
+            export_id, exported_by, approved_by = _stage_report_usb_export(cur, verifier, exported_report_ids)
+            actors = _format_export_actors_detail(exported_by, approved_by)
+            ids_label = ", ".join(str(i) for i in exported_report_ids)
+            audit_detail = "Exported {} report{} to USB (ids: {}) | {}".format(
+                ok_count, "" if ok_count == 1 else "s", ids_label, actors
+            )
+        else:
+            audit_detail = "Exported {} report{} to USB".format(
                 ok_count, "" if ok_count == 1 else "s"
-            ),
+            )
+        _audit(
+            cur.get("username") or cur.get("name") if cur else None,
+            cur.get("role") if cur else None,
+            "Reports exported",
+            audit_detail,
         )
-        if batch_id and exported_files and not failed:
-            data_service.confirm_report_export_batch(batch_id)
         return jsonify({
             "success": (len(failed) == 0),
             "count": len(exported_files),
@@ -3818,7 +4319,8 @@ def export_reports():
             "generated_pdfs_now": generated,
             "unmount_detail": unmount_detail,
             "device_path": device_path or (devices[0]["path"] if len(devices) == 1 else None),
-            "batchId": batch_id or None,
+            "export_id": export_id,
+            "reports_staged": len(exported_report_ids),
         }), 200
     except Exception as e:
         if mounted_now:
@@ -3845,7 +4347,6 @@ def export_reports_stream():
     report PDF is rendered + copied, instead of a static spinner.
     """
     data = request.get_json(force=True, silent=True) or {}
-    batch_id = (data.get("batch_id") or data.get("batchId") or "").strip()
     raw_ids = data.get("report_ids", [])
     report_ids = []
     for rid in raw_ids:
@@ -3859,9 +4360,10 @@ def export_reports_stream():
     requested_export_path = (data.get("export_path") or "").strip() or None
     power_off = bool(data.get("power_off") or False)
 
-    gate = _require_export_usb_and_verification_json()
+    gate, verifier = _require_export_usb_and_verification_json()
     if gate is not None:
         return gate
+    cur = data_service.get_current_user()
     for rid in report_ids:
         blocked = _check_report_approved_for_print_export(report_id=rid)
         if blocked is not None:
@@ -3882,6 +4384,7 @@ def export_reports_stream():
             "ok": False,
             "count": 0,
             "exported_files": [],
+            "exported_report_ids": [],
             "failed": [],
             "export_directory": None,
             "device_path": None,
@@ -3931,7 +4434,7 @@ def export_reports_stream():
                              "percent": int(this_progress_at + per_report_pct * 0.3), "id": rid,
                              "status": "generating",
                              "message": "Generating PDF for report {} of {}...".format(i, total)})
-                if not _generate_report_pdf_file(rid):
+                if not _generate_report_pdf_file(rid, timestamp_kind="exported"):
                     result["failed"].append({"id": rid, "reason": "render"})
                     yield _emit({"event": "report", "current": i, "total": total,
                                  "percent": int(next_progress_at), "id": rid,
@@ -3952,6 +4455,7 @@ def export_reports_stream():
                 try:
                     pdf_generator._copy_to_destination(pdf_src, dest)  # robust chunked copy
                     result["exported_files"].append(str(dest))
+                    result["exported_report_ids"].append(int(rid))
                     result["count"] += 1
                     yield _emit({"event": "report", "current": i, "total": total,
                                  "percent": int(next_progress_at), "id": rid,
@@ -3971,17 +4475,28 @@ def export_reports_stream():
                 mounted_now = None
 
             ok_count = result["count"]
-            _audit(
-                None, None,
-                "Reports exported",
-                "Exported {} report{} to USB".format(
+            export_id = None
+            if result["exported_report_ids"]:
+                export_id, exported_by, approved_by = _stage_report_usb_export(
+                    cur, verifier, result["exported_report_ids"]
+                )
+                actors = _format_export_actors_detail(exported_by, approved_by)
+                ids_label = ", ".join(str(i) for i in result["exported_report_ids"])
+                audit_detail = "Exported {} report{} to USB (ids: {}) | {}".format(
+                    ok_count, "" if ok_count == 1 else "s", ids_label, actors
+                )
+            else:
+                audit_detail = "Exported {} report{} to USB".format(
                     ok_count, "" if ok_count == 1 else "s"
-                ),
+                )
+            _audit(
+                cur.get("username") or cur.get("name") if cur else None,
+                cur.get("role") if cur else None,
+                "Reports exported",
+                audit_detail,
             )
 
             result["ok"] = (len(result["failed"]) == 0 and result["count"] > 0)
-            if batch_id and result["ok"]:
-                data_service.confirm_report_export_batch(batch_id)
             yield _emit({
                 "event": "done",
                 "percent": 100,
@@ -3992,7 +4507,8 @@ def export_reports_stream():
                 "export_directory": result["export_directory"],
                 "device_path": result["device_path"],
                 "unmount_detail": unmount_detail,
-                "batchId": batch_id or None,
+                "export_id": export_id,
+                "reports_staged": len(result["exported_report_ids"]),
             })
         except Exception as e:
             app.logger.exception("[EXPORT-STREAM] Unexpected failure")
@@ -4186,7 +4702,7 @@ def print_status():
         return jsonify({"error": str(e)}), 500
 
 
-# =================== HARDWARE ==========================
+# =================== HARDWARE (DT) ==========================
 
 
 @app.route("/api/hardware/stream", methods=["GET"])
@@ -4202,7 +4718,6 @@ def hardware_stream():
 
 @app.route("/api/hardware/log", methods=["GET"])
 def hardware_log_read():
-    """Return tail of ESP↔Pi communication log for mapping / debug."""
     gate = _require_any_session_internal(
         ["quick-test", "recipe-test", "validation-test", "calibration-menu"],
         "Forbidden. You do not have permission to use hardware controls.",
@@ -4242,9 +4757,6 @@ def hardware_command():
     if not cmd:
         return jsonify({"error": "No command provided"}), 400
     result = hardware_service.send_command(cmd)
-    c = str(cmd).strip()
-    if len(c) > 120:
-        c = c[:117] + "…"
     return jsonify(result)
 
 
@@ -4256,172 +4768,406 @@ def hardware_status():
     )
     if gate:
         return gate
-    result = hardware_service.cmd_status()
-    return jsonify(result)
+    return jsonify(hardware_service.cmd_status())
 
 
-@app.route("/api/hardware/calibrate/tare", methods=["POST"])
-def calibrate_tare():
-    return jsonify({"ok": False, "error": "Tare command is not supported by current ESP firmware"}), 400
-
-
-
-
-@app.route("/api/hardware/friability/start", methods=["POST"])
-def friability_start():
+@app.route("/api/hardware/dt/temps", methods=["GET"])
+@app.route("/api/hardware/dt/live", methods=["GET"])
+def dt_live():
     gate = _require_any_session_internal(
-        ["quick-test", "recipe-test", "validation-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    data = request.get_json(force=True, silent=True) or {}
-    rpm = data.get("rpm", 25)
-    mode = str(data.get("mode") or "start").strip().lower()
-    if mode in ("val", "validation"):
-        result = hardware_service.cmd_start_validation(rpm)
-    else:
-        result = hardware_service.cmd_start_friability(rpm)
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.route("/api/hardware/friability/pause", methods=["POST"])
-def friability_pause():
-    gate = _require_any_session_internal(
-        ["quick-test", "recipe-test", "validation-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    result = hardware_service.cmd_pause_friability()
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.route("/api/hardware/friability/resume", methods=["POST"])
-def friability_resume():
-    gate = _require_any_session_internal(
-        ["quick-test", "recipe-test", "validation-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    result = hardware_service.cmd_resume_friability()
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.route("/api/hardware/friability/live", methods=["GET"])
-def friability_live():
-    """Latest rotation count and RPM parsed from ESP stream."""
-    gate = _require_any_session_internal(
-        ["quick-test", "recipe-test", "validation-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    state = hardware_service.get_live_state()
-    return jsonify({"ok": True, **state})
-
-
-@app.route("/api/hardware/friability/stop", methods=["POST"])
-def friability_stop():
-    gate = _require_any_session_internal(
-        ["quick-test", "recipe-test", "validation-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    return jsonify(hardware_service.cmd_stop_friability())
-
-
-@app.route("/api/hardware/friability/initialise", methods=["POST"])
-@app.route("/api/hardware/friability/initialize", methods=["POST"])
-def friability_initialise():
-    gate = _require_any_session_internal(
-        ["quick-test", "recipe-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    result = hardware_service.cmd_initialise()
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.route("/api/hardware/friability/dispense", methods=["POST"])
-def friability_dispense():
-    gate = _require_any_session_internal(
-        ["quick-test", "recipe-test"],
-        "Forbidden. You do not have permission to run hardware tests.",
-    )
-    if gate:
-        return gate
-    result = hardware_service.cmd_dispense()
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.route("/api/hardware/validation/load/start", methods=["POST"])
-def validation_load_start():
-    """Deprecated — use /api/hardware/friability/start with mode validation."""
-    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
-    if gate:
-        return gate
-    data = request.get_json(force=True, silent=True) or {}
-    rpm = data.get("rpm", 25)
-    result = hardware_service.cmd_start_validation(rpm)
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.route("/api/hardware/validation/load/stop", methods=["POST"])
-def validation_load_stop():
-    """Deprecated — use /api/hardware/friability/stop."""
-    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
-    if gate:
-        return gate
-    return jsonify(hardware_service.cmd_stop_friability())
-
-
-@app.route("/api/hardware/validation/rpm", methods=["GET"])
-def validation_current_rpm():
-    """Deprecated — RPM is derived from rotation timing on the client."""
-    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
-    if gate:
-        return gate
-    return jsonify({"ok": True, "rpm": None, "deprecated": True}), 200
-
-
-@app.route("/api/hardware/adapter/check", methods=["POST"])
-def hardware_check_adapter():
-    """Deprecated — Friability has no adapter pre-check."""
-    gate = _require_any_session_internal(
-        ["validation-test", "quick-test", "recipe-test"],
+        ["quick-test", "recipe-test", "validation-test", "calibration-menu"],
         "Forbidden. You do not have permission to use hardware controls.",
     )
     if gate:
         return gate
-    return jsonify({"ok": False, "error": "adapter_check_not_supported", "deprecated": True}), 410
+    return jsonify({
+        "ok": True,
+        "temps": hardware_service.get_latest_temps(),
+        "live": hardware_service.get_live_state(),
+        "heater": hardware_service.get_heater_state(),
+        "mock": hardware_service.is_mock_mode(),
+    })
 
 
-@app.route("/api/hardware/tap/start", methods=["POST"])
-def hardware_tap_start():
-    """Deprecated — Tap Density commands are not used on the Friability kiosk."""
+@app.route("/api/hardware/dt/preheat", methods=["POST"])
+def dt_preheat():
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test", "validation-test"],
+        "Forbidden. You do not have permission to run hardware tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    t1 = float(data.get("t1") or data.get("temp1") or 0)
+    t2 = float(data.get("t2") or data.get("temp2") or 0)
+    if data.get("basket") in (1, "1"):
+        t1 = float(data.get("temp") or data.get("setTemperature") or t1)
+    elif data.get("basket") in (2, "2"):
+        t2 = float(data.get("temp") or data.get("setTemperature") or t2)
+    result = hardware_service.cmd_preheat(t1=t1, t2=t2)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/hardware/dt/start", methods=["POST"])
+def dt_start():
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test", "validation-test"],
+        "Forbidden. You do not have permission to run hardware tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    basket = data.get("basket")
+    temp = float(data.get("temp") or data.get("setTemperature") or 37.0)
+    if basket in (3, "3", "both"):
+        t1 = float(data.get("t1") or temp)
+        t2 = float(data.get("t2") or temp)
+        result = hardware_service.cmd_start_b3(t1, t2)
+    elif basket in (2, "2"):
+        result = hardware_service.cmd_start_b2(temp)
+    else:
+        result = hardware_service.cmd_start_b1(temp)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/hardware/dt/stop", methods=["POST"])
+def dt_stop():
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test", "validation-test", "calibration-menu"],
+        "Forbidden. You do not have permission to run hardware tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    basket = data.get("basket")
+    b = int(basket) if basket in (1, 2, "1", "2") else None
+    result = hardware_service.cmd_stop(b)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/hardware/dt/calibrate", methods=["POST"])
+def dt_calibrate_raw():
+    """Low-level CAL (prefer /api/data/calibration which requires e-sign)."""
+    gate = _require_session_internal("calibration-menu", "Forbidden. You do not have permission to calibrate.")
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    sensor = data.get("sensor")
+    temp = data.get("temp") or data.get("temperature") or data.get("setTemperature")
+    result = hardware_service.cmd_calibrate(sensor, temp)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+# =================== DT TEST RUN ==========================
+
+
+def _session_operator():
+    cur = data_service.get_current_user() or {}
+    return {
+        "name": cur.get("name") or cur.get("username") or "",
+        "employeeId": cur.get("employeeId") or cur.get("id") or "",
+        "id": cur.get("employeeId") or cur.get("id") or "",
+        "username": cur.get("username") or "",
+    }
+
+
+@app.route("/api/data/dt/runs", methods=["GET"])
+def dt_runs_get():
     gate = _require_any_session_internal(
         ["quick-test", "recipe-test"],
         "Forbidden. You do not have permission to run tests.",
     )
     if gate:
         return gate
-    return jsonify({"ok": False, "error": "tap_commands_not_supported", "deprecated": True}), 410
+    return jsonify(dt_test_service.get_all_runs())
 
 
-@app.route("/api/hardware/tap/stop", methods=["POST"])
-def hardware_tap_stop():
-    """Deprecated — use /api/hardware/friability/stop."""
+@app.route("/api/data/dt/runs/<int:basket>", methods=["GET"])
+def dt_run_get(basket):
     gate = _require_any_session_internal(
         ["quick-test", "recipe-test"],
         "Forbidden. You do not have permission to run tests.",
     )
     if gate:
         return gate
-    return jsonify(hardware_service.cmd_stop_friability())
+    return jsonify({"ok": True, "run": dt_test_service.get_run(basket)})
+
+
+@app.route("/api/data/dt/runs/<int:basket>/preheat", methods=["POST"])
+def dt_run_preheat(basket):
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test"],
+        "Forbidden. You do not have permission to run tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    op = _session_operator()
+    result = dt_test_service.start_preheat(
+        basket,
+        set_temperature=data.get("setTemperature") or data.get("temp"),
+        mode=data.get("mode") or "manual",
+        duration_minutes=data.get("durationMinutes") or data.get("duration"),
+        basket_config=data.get("basketConfig") or data.get("tubeCount") or 6,
+        product_name=data.get("productName") or data.get("name") or "",
+        batch_number=data.get("batchNumber") or data.get("batch") or "",
+        recipe_id=data.get("recipeId"),
+        recipe_name=data.get("recipeName") or data.get("productName") or "",
+        operator_name=op["name"],
+        operator_id=op["employeeId"],
+        operator_username=op["username"],
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/data/dt/runs/<int:basket>/confirm", methods=["POST"])
+def dt_run_confirm(basket):
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test"],
+        "Forbidden. You do not have permission to run tests.",
+    )
+    if gate:
+        return gate
+    result = dt_test_service.confirm_start(basket)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/data/dt/runs/<int:basket>/tap", methods=["POST"])
+def dt_run_tap(basket):
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test"],
+        "Forbidden. You do not have permission to run tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    vessel = data.get("vessel") or data.get("hole") or data.get("tube")
+    result = dt_test_service.tap_vessel(basket, int(vessel))
+    # If complete, auto-save pending report
+    if result.get("ok") and result.get("report"):
+        try:
+            report = dict(result["report"])
+            report["reportApprovalStatus"] = "pending"
+            for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+                report.pop(k, None)
+            saved_id = data_service.save_report(report)
+            saved = data_service.get_report(saved_id) or report
+            result["savedReport"] = saved
+            _audit_event(
+                action="Report saved",
+                outcome="success",
+                details=f"Pending test report basket {basket}",
+                entity_type="report",
+                entity_id=str(saved_id or ""),
+                entity_name=(saved or {}).get("name") or "",
+                extra={"basket": basket, "mock": report.get("mock")},
+            )
+            dt_test_service.clear_run(basket)
+        except Exception as e:
+            app.logger.exception("auto-save report failed")
+            result["saveError"] = str(e)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/data/dt/runs/<int:basket>/stop", methods=["POST"])
+def dt_run_stop(basket):
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test"],
+        "Forbidden. You do not have permission to run tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    aborted = bool(data.get("aborted"))
+    reason = str(data.get("reason") or ("operator_abort" if aborted else "completed"))
+    result = dt_test_service.stop_test(basket, aborted=aborted, reason=reason)
+    if result.get("ok") and result.get("report"):
+        try:
+            report = dict(result["report"])
+            report["reportApprovalStatus"] = "pending"
+            for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+                report.pop(k, None)
+            saved_id = data_service.save_report(report)
+            saved = data_service.get_report(saved_id) or report
+            result["savedReport"] = saved
+            _audit_event(
+                action="Report saved",
+                outcome="success",
+                details=f"{'Aborted' if aborted else 'Completed'} test report basket {basket}",
+                entity_type="report",
+                entity_id=str(saved_id or ""),
+                entity_name=(saved or {}).get("name") or "",
+                extra={"basket": basket, "aborted": aborted, "mock": report.get("mock")},
+            )
+            dt_test_service.clear_run(basket)
+        except Exception as e:
+            app.logger.exception("save report on stop failed")
+            result["saveError"] = str(e)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+# =================== DT VALIDATION ==========================
+
+
+@app.route("/api/data/dt/validation", methods=["GET"])
+def dt_validation_status():
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    return jsonify(dt_validation_service.get_all())
+
+
+@app.route("/api/data/dt/validation/stroke/<int:basket>/start", methods=["POST"])
+def dt_stroke_start(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    result = dt_validation_service.start_stroke_validation(basket, operator=_session_operator())
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/data/dt/validation/stroke/<int:basket>", methods=["GET"])
+def dt_stroke_get(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    session = dt_validation_service.get_session("stroke", basket)
+    return jsonify({"ok": True, "session": session})
+
+
+@app.route("/api/data/dt/validation/stroke/<int:basket>/abort", methods=["POST"])
+def dt_stroke_abort(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    return jsonify(dt_validation_service.abort_stroke_validation(basket))
+
+
+@app.route("/api/data/dt/validation/stroke/<int:basket>/save", methods=["POST"])
+def dt_stroke_save(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    report = dt_validation_service.consume_report("stroke", basket)
+    if not report:
+        session = dt_validation_service.get_session("stroke", basket)
+        if session and session.get("report"):
+            report = session["report"]
+        else:
+            return jsonify({"ok": False, "error": "No completed stroke validation report"}), 400
+    report = dict(report)
+    report["reportApprovalStatus"] = "pending"
+    for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+        report.pop(k, None)
+    saved_id = data_service.save_report(report)
+    saved = data_service.get_report(saved_id) or report
+    _audit_event(
+        action="Report saved",
+        outcome="success",
+        details=f"Pending stroke validation basket {basket}",
+        entity_type="report",
+        entity_id=str(saved_id or ""),
+        entity_name=(saved or {}).get("name") or "",
+    )
+    return jsonify({"ok": True, "report": saved})
+
+
+@app.route("/api/data/dt/validation/temp/<int:basket>/start", methods=["POST"])
+def dt_temp_start(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    result = dt_validation_service.start_temp_validation(
+        basket,
+        set_temperature=data.get("setTemperature") or data.get("temp") or 37.0,
+        operator=_session_operator(),
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/data/dt/validation/temp/<int:basket>", methods=["GET"])
+def dt_temp_get(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    session = dt_validation_service.get_session("temp", basket)
+    return jsonify({"ok": True, "session": session})
+
+
+@app.route("/api/data/dt/validation/temp/<int:basket>/abort", methods=["POST"])
+def dt_temp_abort(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    return jsonify(dt_validation_service.abort_temp_validation(basket))
+
+
+@app.route("/api/data/dt/validation/temp/<int:basket>/save", methods=["POST"])
+def dt_temp_save(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    report = dt_validation_service.consume_report("temp", basket)
+    if not report:
+        session = dt_validation_service.get_session("temp", basket)
+        if session and session.get("report"):
+            report = session["report"]
+        else:
+            return jsonify({"ok": False, "error": "No completed temp validation report"}), 400
+    report = dict(report)
+    report["reportApprovalStatus"] = "pending"
+    for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+        report.pop(k, None)
+    saved_id = data_service.save_report(report)
+    saved = data_service.get_report(saved_id) or report
+    _audit_event(
+        action="Report saved",
+        outcome="success",
+        details=f"Pending temp validation basket {basket}",
+        entity_type="report",
+        entity_id=str(saved_id or ""),
+        entity_name=(saved or {}).get("name") or "",
+    )
+    return jsonify({"ok": True, "report": saved})
+
+
+# =================== DT CALIBRATION ==========================
+
+
+@app.route("/api/data/calibration", methods=["POST"])
+def dt_calibration():
+    """Calibrate sensor — requires calibration-menu + X-Approval-Verify-Token (purpose=calibration)."""
+    gate = _require_session_internal("calibration-menu", "Forbidden. You do not have permission to calibrate.")
+    if gate:
+        return gate
+    verified, verify_err = _consume_approval_verify_token("calibration")
+    if verify_err:
+        return jsonify({"ok": False, "error": verify_err}), 403
+    data = request.get_json(force=True, silent=True) or {}
+    result = dt_calibration_service.calibrate(
+        sensor=data.get("sensor"),
+        beaker=data.get("beaker") or data.get("basket"),
+        probe=data.get("probe") or "IR",
+        temperature=data.get("temperature") or data.get("temp") or data.get("setTemperature"),
+        operator=_session_operator(),
+        verifier=verified,
+    )
+    if result.get("ok") and result.get("report") and data.get("saveReport", True):
+        try:
+            report = dict(result["report"])
+            # Calibration reports are already signed; mark approved
+            report["reportApprovalStatus"] = "approved"
+            report["approvalPassFail"] = "PASS"
+            report["approvedBy"] = (verified or {}).get("name") or (verified or {}).get("username")
+            report["approvedByUsername"] = (verified or {}).get("username")
+            report["approvedAt"] = report.get("completedAt")
+            saved_id = data_service.save_report(report)
+            result["savedReport"] = data_service.get_report(saved_id) or report
+        except Exception as e:
+            app.logger.exception("save calibration report failed")
+            result["saveError"] = str(e)
+    return jsonify(result), (200 if result.get("ok") else 400)
 
 
 # =================== BIOMETRIC ==========================
@@ -4771,15 +5517,10 @@ def set_rtc_date_route():
 def _export_purge_loop():
     while True:
         try:
-            audit_removed = audit_service.purge_due_audit_exports()
-            report_removed = data_service.purge_due_report_exports(REPORTS_DIR)
-            if audit_removed or report_removed:
-                app.logger.info(
-                    "Export purge: audit_rows=%s reports=%s", audit_removed, report_removed
-                )
+            _maybe_purge_scheduled_exports()
         except Exception:
             app.logger.exception("Export purge loop error")
-        time.sleep(300)
+        time.sleep(60)
 
 
 def _start_export_purge_thread():

@@ -1,84 +1,88 @@
 #!/usr/bin/env python3
 """
-calculation_service.py - Friability Tester recipe validation and form processing.
+calculation_service.py - Disintegration Tester recipe validation and form processing.
+
+Recipe fields (minimal, per plan):
+  name, temp (set temperature °C), duration (minutes, timer mode only), mode (manual|timer)
 """
 
 from datetime import datetime
-from typing import Dict, Any
+from typing import Any, Dict, Optional
+
+MAX_TEMP_C = 55.0
+MIN_TEMP_C = 20.0
 
 
 def init():
     pass
 
 
+def _parse_duration_minutes(recipe_data: Dict[str, Any]) -> Optional[float]:
+    """Accept duration as minutes (number) or MM:SS string."""
+    if "duration" in recipe_data and recipe_data.get("duration") is not None:
+        d = recipe_data.get("duration")
+        if isinstance(d, (int, float)):
+            return float(d)
+        s = str(d).strip()
+        if ":" in s:
+            parts = s.split(":")
+            try:
+                if len(parts) == 2:
+                    return int(parts[0]) + int(parts[1]) / 60.0
+                if len(parts) == 3:
+                    return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 60.0
+            except (TypeError, ValueError):
+                return None
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+    if recipe_data.get("timeMinutes") is not None:
+        try:
+            return float(recipe_data.get("timeMinutes"))
+        except (TypeError, ValueError):
+            return None
+    if recipe_data.get("timeSeconds") is not None:
+        try:
+            return float(recipe_data.get("timeSeconds")) / 60.0
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def validate_recipe(recipe_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Validate friability recipe.
-    Required: productName, drumCount (1|2), speed (RPM).
-    Batch number is collected when loading a recipe for a test run.
-    USP mode: 25 RPM, 4 min, 100 rotations.
-    Custom mode: COUNT -> tabletCount; TIME -> timeMinutes.
+    Validate DT recipe.
+    Required: name, temp, mode.
+    Timer mode also requires duration > 0.
     Returns { "valid": bool, "error": str }.
     """
     errors = []
     name = (recipe_data.get("productName") or recipe_data.get("name") or "").strip()
     if not name:
-        errors.append("Product name is required")
+        errors.append("Recipe name is required")
 
+    mode = str(recipe_data.get("mode") or "manual").strip().lower()
+    if mode not in ("manual", "timer"):
+        errors.append("Mode must be 'manual' or 'timer'")
+        mode = "manual"
+
+    temp_raw = recipe_data.get("temp")
+    if temp_raw is None:
+        temp_raw = recipe_data.get("setTemperature")
     try:
-        drum_count = int(recipe_data.get("drumCount", 2))
-        if drum_count not in (1, 2):
-            errors.append("Drum count must be 1 or 2")
+        temp = float(temp_raw)
+        if temp < MIN_TEMP_C or temp > MAX_TEMP_C:
+            errors.append(f"Temperature must be between {MIN_TEMP_C:.0f} and {MAX_TEMP_C:.0f}°C")
     except (TypeError, ValueError):
-        errors.append("Invalid drum count")
+        errors.append("Temperature is required")
+        temp = None
 
-    mode = str(recipe_data.get("uspMode") or recipe_data.get("usp") or "").strip().upper()
-    if "CUSTOM" in mode:
-        mode = "CUSTOM"
-    else:
-        mode = "USP"
-
-    speed = recipe_data.get("speed")
-    if mode == "USP":
-        speed = 25
-    else:
-        try:
-            speed = int(speed)
-            if speed < 20 or speed > 70:
-                errors.append("Speed must be between 20 and 70 RPM")
-        except (TypeError, ValueError):
-            errors.append("Speed (RPM) is required for custom mode")
-
-    completion = str(recipe_data.get("customCompletionMode") or "COUNT").strip().upper()
-    if mode == "USP":
-        completion = "TIME"
-    if completion == "TIME":
-        ts = recipe_data.get("timeSeconds") or recipe_data.get("targetSeconds")
-        tm = recipe_data.get("timeMinutes")
-        if ts is None and tm is None:
-            errors.append("Time (MM:SS) is required when completion mode is Time")
-        else:
-            try:
-                seconds = int(float(ts)) if ts is not None else int(round(float(tm) * 60))
-                if seconds < 1:
-                    errors.append("Time (MM:SS) must be at least 00:01")
-            except (TypeError, ValueError):
-                errors.append("Invalid time (MM:SS)")
-    else:
-        count = recipe_data.get("tabletCount")
-        if count is None and recipe_data.get("customTotalTaps") is not None:
-            count = recipe_data.get("customTotalTaps")
-        if mode == "USP":
-            count = 100
-        elif count is None:
-            errors.append("Rotation count is required when completion mode is Count")
-        else:
-            try:
-                n = int(count)
-                if n < 1 or n > 10000:
-                    errors.append("Rotation count must be between 1 and 10000")
-            except (TypeError, ValueError):
-                errors.append("Invalid rotation count")
+    duration = None
+    if mode == "timer":
+        duration = _parse_duration_minutes(recipe_data)
+        if duration is None or duration <= 0:
+            errors.append("Duration is required for timer mode and must be greater than 0")
 
     if errors:
         return {"valid": False, "error": "; ".join(errors)}
@@ -87,7 +91,52 @@ def validate_recipe(recipe_data: Dict[str, Any]) -> Dict[str, Any]:
 
 def process_recipe_form_data(form_data: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize recipe form data for storage."""
-    recipe = dict(form_data)
+    recipe = dict(form_data or {})
+    name = (recipe.get("productName") or recipe.get("name") or "").strip()
+    recipe["name"] = name
+    recipe["productName"] = name
+
+    mode = str(recipe.get("mode") or "manual").strip().lower()
+    if mode not in ("manual", "timer"):
+        mode = "manual"
+    recipe["mode"] = mode
+
+    temp_raw = recipe.get("temp")
+    if temp_raw is None:
+        temp_raw = recipe.get("setTemperature")
+    try:
+        temp = round(float(temp_raw), 1)
+    except (TypeError, ValueError):
+        temp = MIN_TEMP_C
+    recipe["temp"] = temp
+    recipe["setTemperature"] = temp
+
+    if mode == "timer":
+        duration = _parse_duration_minutes(recipe)
+        recipe["duration"] = round(float(duration), 3) if duration is not None else None
+        # Prefer HH:MM:SS display string when provided
+        set_dur = recipe.get("setDuration")
+        if not set_dur and duration is not None:
+            total_sec = int(round(float(duration) * 60))
+            hh, rem = divmod(total_sec, 3600)
+            mm, ss = divmod(rem, 60)
+            recipe["setDuration"] = f"{hh:02d}:{mm:02d}:{ss:02d}"
+    else:
+        recipe["duration"] = None
+        recipe["setDuration"] = None
+
+    media = (recipe.get("media") or "").strip()
+    mesh = (recipe.get("mesh") or "").strip()
+    recipe["media"] = media or None
+    recipe["mesh"] = mesh or None
+
+    # Strip friability leftovers if present
+    for k in (
+        "drumCount", "speed", "uspMode", "usp", "customCompletionMode",
+        "tabletCount", "customTotalTaps", "timeSeconds", "timeMinutes", "targetSeconds",
+    ):
+        recipe.pop(k, None)
+
     if "createdAt" not in recipe:
         recipe["createdAt"] = datetime.utcnow().isoformat() + "Z"
     if "lastUsed" not in recipe:

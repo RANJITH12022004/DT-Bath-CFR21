@@ -778,9 +778,10 @@ body {
 #page-home.active {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    align-items: stretch;
+    justify-content: flex-start;
     height: 100%;
+    overflow: hidden;
 }
 
 .test-options {
@@ -1345,7 +1346,6 @@ body {
     0%, 100% { transform: translate(-50%, -80%); opacity: 0.45; }
     50% { transform: translate(-50%, -110%); opacity: 0; }
 }
-
 
 .biometric-progress-spinner {
     width: 42px;
@@ -2273,12 +2273,6 @@ body {
     font-size: 14px;
 }
 
-/* Friability validation run — drum + stats panel */
-.val-run-panel-inner--friability {
-    gap: 28px;
-    padding: 16px 24px;
-}
-
 .val-run-visual-col {
     display: flex;
     flex-direction: column;
@@ -2287,20 +2281,6 @@ body {
     gap: 10px;
     flex-shrink: 0;
     min-width: 0;
-}
-
-.val-run-drum-compact .tr-drum-shell {
-    width: clamp(148px, 22vmin, 178px);
-    height: clamp(148px, 22vmin, 178px);
-}
-
-.val-run-drum-compact .tr-drum-label {
-    margin-top: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-muted);
 }
 
 .val-run-elapsed-block {
@@ -3369,7 +3349,6 @@ body {
     display: grid;
     gap: 10px;
 }
-
 
 .report-approve-method-label {
     font-weight: 600;
@@ -5676,7 +5655,6 @@ input[type="number"] {
     opacity: 0.6;
 }
 
-
 /* ===== Friability Tester styles ===== */
 .test-run-page {
     width: 100%;
@@ -5723,114 +5701,6 @@ input[type="number"] {
     margin-top: 1px;
 }
 
-.tr-drums-row {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    min-height: 0;
-}
-
-.tr-drums-row.one-drum {
-    justify-content: center;
-    gap: 24px;
-}
-
-.tr-drums-row.one-drum #tr-drum-wrapper-1 {
-    flex: 0 0 auto;
-}
-
-.tr-drums-row.one-drum #tr-drum-wrapper-2 {
-    display: none;
-}
-
-.tr-drum-wrapper {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 5px;
-    flex: 1;
-    min-width: 0;
-}
-
-/* Timer displayed ABOVE the drum */
-.tr-drum-timer {
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--icon-profile);
-    letter-spacing: 1px;
-    font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
-    margin-bottom: 2px;
-}
-
-/* Outer shell — clear front lens (static), glass-like stack */
-.tr-drum-shell {
-    width: 200px;
-    height: 200px;
-    border-radius: 50%;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    isolation: isolate;
-    background:
-        radial-gradient(ellipse 85% 55% at 28% 22%, rgba(255, 255, 255, 0.72) 0%, transparent 42%),
-        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.58) 0%, transparent 38%),
-        radial-gradient(circle at 78% 82%, rgba(100, 115, 135, 0.1) 0%, transparent 46%),
-        linear-gradient(168deg, rgba(255, 255, 255, 0.52) 0%, rgba(255, 255, 255, 0.12) 45%, rgba(200, 210, 224, 0.26) 100%);
-    border: 1px solid rgba(255, 255, 255, 0.58);
-    box-shadow:
-        inset 0 2px 0 rgba(255, 255, 255, 0.82),
-        inset 0 -6px 18px rgba(55, 65, 82, 0.12),
-        0 6px 22px rgba(15, 23, 42, 0.2),
-        0 0 0 1px rgba(180, 192, 208, 0.45);
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-}
-
-.tr-drum-shell::before {
-    content: none;
-}
-
-/* Minimal technical drum appearance */
-.tr-drum-inner {
-    width: 174px;
-    height: 174px;
-    border-radius: 50%;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    z-index: 1;
-    isolation: isolate;
-    background: #1f2633;
-    border: none;
-    box-shadow: none;
-}
-
-.tr-drum-inner::before {
-    content: none;
-}
-
-.tr-drum-tech-svg {
-    width: 100%;
-    height: 100%;
-    display: block;
-}
-
-.drum-line,
-.drum-bolt {
-    fill: none;
-    stroke: #e9edf2;
-    stroke-width: 2.2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-
 /* Spin animation — JS adds/removes .tr-spinning */
 @keyframes trSpin {
     from {
@@ -5844,55 +5714,6 @@ input[type="number"] {
 .tr-spinning {
     animation: trSpin linear infinite;
     will-change: transform;
-}
-
-/* Rotation count above each drum */
-.tr-drum-count {
-    font-size: clamp(28px, 4.5vmin, 44px);
-    font-weight: 800;
-    color: var(--icon-profile);
-    letter-spacing: 0.04em;
-    font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-    line-height: 1.1;
-}
-
-.tr-drum-label {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: 0.4px;
-}
-
-.tr-drum-status {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    padding: 2px 12px;
-    border-radius: 20px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--glass-border);
-    transition: var(--transition-fast);
-}
-
-.tr-drum-status.tr-running {
-    color: var(--color-success);
-    border-color: color-mix(in srgb, var(--color-success) 35%, transparent);
-    background: color-mix(in srgb, var(--color-success) 8%, transparent);
-}
-
-.tr-drum-status.tr-paused {
-    color: var(--color-warning);
-    border-color: color-mix(in srgb, var(--color-warning) 35%, transparent);
-    background: color-mix(in srgb, var(--color-warning) 8%, transparent);
-}
-
-.tr-drum-status.tr-done {
-    color: var(--icon-profile);
-    border-color: color-mix(in srgb, var(--icon-profile) 35%, transparent);
-    background: color-mix(in srgb, var(--icon-profile) 8%, transparent);
 }
 
 /* Center controls column */
@@ -6056,85 +5877,6 @@ input[type="number"] {
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
 }
 
-#page-test-run .tr-drums-row {
-    flex: 1;
-    min-height: min(410px, 56vh);
-    justify-content: center;
-    gap: 14px;
-}
-
-#page-test-run .tr-drum-wrapper {
-    flex: 1 1 0;
-    gap: 8px;
-}
-
-#page-test-run .tr-drum-timer {
-    color: #ffffff;
-    font-size: clamp(28px, 4.4vmin, 42px);
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.65);
-}
-
-/* Full drum stays visible, but with translucent grey style like reference */
-#page-test-run .tr-drum-shell {
-    width: min(300px, 40vmin);
-    height: min(300px, 40vmin);
-    background:
-        radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.08) 34%, transparent 58%),
-        radial-gradient(circle at 72% 82%, rgba(126, 140, 158, 0.14) 0%, transparent 52%),
-        linear-gradient(165deg, rgba(205, 216, 230, 0.24) 0%, rgba(172, 186, 205, 0.14) 45%, rgba(124, 138, 156, 0.2) 100%);
-    border: 1px solid rgba(198, 212, 230, 0.38);
-    box-shadow:
-        inset 0 2px 0 rgba(255, 255, 255, 0.32),
-        inset 0 -8px 18px rgba(70, 84, 104, 0.22),
-        0 6px 20px rgba(2, 6, 14, 0.35);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
-}
-
-#page-test-run .tr-drum-shell::before {
-    border-color: rgba(224, 235, 248, 0.35);
-    box-shadow:
-        inset 0 0 0 1px rgba(0, 0, 0, 0.08),
-        inset 0 1px 9px rgba(255, 255, 255, 0.2);
-}
-
-#page-test-run .tr-drum-inner {
-    width: 87%;
-    height: 87%;
-    background:
-        radial-gradient(ellipse 92% 56% at 50% 78%, rgba(145, 160, 179, 0.36) 0%, transparent 60%),
-        radial-gradient(circle at 38% 30%, rgba(243, 247, 252, 0.7) 0%, rgba(215, 224, 236, 0.52) 48%, rgba(166, 179, 197, 0.46) 100%);
-    border: 1px solid rgba(202, 214, 232, 0.35);
-    box-shadow:
-        inset 0 4px 14px rgba(255, 255, 255, 0.3),
-        inset 0 -10px 22px rgba(76, 90, 110, 0.24);
-}
-
-#page-test-run .tr-drum-inner::before {
-    background: radial-gradient(circle at 50% 50%, transparent 34%, rgba(32, 40, 54, 0.14) 100%);
-}
-
-#page-test-run .tr-drum-count {
-    color: #ffffff;
-    font-size: clamp(24px, 3.7vmin, 36px);
-    text-shadow:
-        0 0 12px rgba(0, 0, 0, 0.7),
-        0 2px 7px rgba(0, 0, 0, 0.85);
-}
-
-#page-test-run .tr-drum-label {
-    color: rgba(232, 240, 252, 0.95);
-    font-size: 16px;
-    font-weight: 800;
-}
-
-#page-test-run .tr-drum-status {
-    font-size: 12px;
-    font-weight: 700;
-}
-
 #page-test-run .tr-progress-label {
     font-size: 13px;
     font-weight: 700;
@@ -6215,35 +5957,6 @@ input[type="number"] {
     line-height: 1.25;
 }
 
-#page-test-run .tr-drums-row {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: auto;
-    gap: 14px;
-    align-items: center;
-    justify-content: center;
-}
-
-#page-test-run .tr-drum-wrapper {
-    flex: 1 1 0;
-    gap: 8px;
-    justify-content: center;
-}
-
-#page-test-run .tr-drum-shell {
-    width: clamp(258px, 43vmin, 370px);
-    height: clamp(258px, 43vmin, 370px);
-}
-
-#page-test-run .tr-drum-inner {
-    width: 88%;
-    height: 88%;
-}
-
-#page-test-run .tr-drum-count {
-    display: none !important;
-}
-
 #page-test-run .tr-footer {
     flex-shrink: 0;
     display: flex;
@@ -6260,14 +5973,6 @@ input[type="number"] {
     color: rgba(232, 240, 252, 0.98);
     line-height: 1.35;
     text-align: center;
-}
-
-#page-test-run .tr-drum-label {
-    font-size: 18px;
-}
-
-#page-test-run .tr-drum-status {
-    font-size: 14px;
 }
 
 #page-test-run .tr-controls {
@@ -6331,44 +6036,6 @@ input[type="number"] {
         width: clamp(238px, 39vmin, 310px);
         height: clamp(238px, 39vmin, 310px);
     }
-}
-
-/* Match validation drum appearance to test page drum */
-#page-validation-run .val-run-drum-compact .tr-drum-shell {
-    background:
-        radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.08) 34%, transparent 58%),
-        radial-gradient(circle at 72% 82%, rgba(126, 140, 158, 0.14) 0%, transparent 52%),
-        linear-gradient(165deg, rgba(205, 216, 230, 0.24) 0%, rgba(172, 186, 205, 0.14) 45%, rgba(124, 138, 156, 0.2) 100%);
-    border: 1px solid rgba(198, 212, 230, 0.38);
-    box-shadow:
-        inset 0 2px 0 rgba(255, 255, 255, 0.32),
-        inset 0 -8px 18px rgba(70, 84, 104, 0.22),
-        0 6px 20px rgba(2, 6, 14, 0.35);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
-}
-
-#page-validation-run .val-run-drum-compact .tr-drum-shell::before {
-    border-color: rgba(224, 235, 248, 0.35);
-    box-shadow:
-        inset 0 0 0 1px rgba(0, 0, 0, 0.08),
-        inset 0 1px 9px rgba(255, 255, 255, 0.2);
-}
-
-#page-validation-run .val-run-drum-compact .tr-drum-inner {
-    width: 87%;
-    height: 87%;
-    background:
-        radial-gradient(ellipse 92% 56% at 50% 78%, rgba(145, 160, 179, 0.36) 0%, transparent 60%),
-        radial-gradient(circle at 38% 30%, rgba(243, 247, 252, 0.7) 0%, rgba(215, 224, 236, 0.52) 48%, rgba(166, 179, 197, 0.46) 100%);
-    border: 1px solid rgba(202, 214, 232, 0.35);
-    box-shadow:
-        inset 0 4px 14px rgba(255, 255, 255, 0.3),
-        inset 0 -10px 22px rgba(76, 90, 110, 0.24);
-}
-
-#page-validation-run .val-run-drum-compact .tr-drum-inner::before {
-    background: radial-gradient(circle at 50% 50%, transparent 34%, rgba(32, 40, 54, 0.14) 100%);
 }
 
 /* Validation page fit tuning — modern layout */
@@ -6544,29 +6211,10 @@ input[type="number"] {
     display: none !important;
 }
 
-
 .validation-run-drum-wrap {
     display: flex;
     justify-content: center;
     margin: 0 0 6px;
-}
-
-.validation-drum-wrapper {
-    flex: 0 0 auto;
-}
-
-.validation-run-drum-wrap .tr-drum-shell {
-    width: 170px;
-    height: 170px;
-}
-
-.validation-run-drum-wrap .tr-drum-inner {
-    width: 144px;
-    height: 144px;
-}
-
-.validation-run-drum-wrap .tr-drum-count {
-    font-size: 22px;
 }
 
 .validation-run-cards {
@@ -7041,7 +6689,6 @@ input[type="number"] {
 .reports-filter-recipes:hover {
     background: #047857;
 }
-
 
 #audit-filters-bar.audit-filters-bar {
     display: flex;
@@ -9091,114 +8738,6 @@ body.keyboard-open {
     margin-top: 1px;
 }
 
-.tr-drums-row {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    min-height: 0;
-}
-
-.tr-drums-row.one-drum {
-    justify-content: center;
-    gap: 24px;
-}
-
-.tr-drums-row.one-drum #tr-drum-wrapper-1 {
-    flex: 0 0 auto;
-}
-
-.tr-drums-row.one-drum #tr-drum-wrapper-2 {
-    display: none;
-}
-
-.tr-drum-wrapper {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 5px;
-    flex: 1;
-    min-width: 0;
-}
-
-/* Timer displayed ABOVE the drum */
-.tr-drum-timer {
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--icon-profile);
-    letter-spacing: 1px;
-    font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
-    margin-bottom: 2px;
-}
-
-/* Outer shell — clear front lens (static), glass-like stack */
-.tr-drum-shell {
-    width: 200px;
-    height: 200px;
-    border-radius: 50%;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    isolation: isolate;
-    background:
-        radial-gradient(ellipse 85% 55% at 28% 22%, rgba(255, 255, 255, 0.72) 0%, transparent 42%),
-        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.58) 0%, transparent 38%),
-        radial-gradient(circle at 78% 82%, rgba(100, 115, 135, 0.1) 0%, transparent 46%),
-        linear-gradient(168deg, rgba(255, 255, 255, 0.52) 0%, rgba(255, 255, 255, 0.12) 45%, rgba(200, 210, 224, 0.26) 100%);
-    border: 1px solid rgba(255, 255, 255, 0.58);
-    box-shadow:
-        inset 0 2px 0 rgba(255, 255, 255, 0.82),
-        inset 0 -6px 18px rgba(55, 65, 82, 0.12),
-        0 6px 22px rgba(15, 23, 42, 0.2),
-        0 0 0 1px rgba(180, 192, 208, 0.45);
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-}
-
-.tr-drum-shell::before {
-    content: none;
-}
-
-/* Minimal technical drum appearance */
-.tr-drum-inner {
-    width: 174px;
-    height: 174px;
-    border-radius: 50%;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    z-index: 1;
-    isolation: isolate;
-    background: #1f2633;
-    border: none;
-    box-shadow: none;
-}
-
-.tr-drum-inner::before {
-    content: none;
-}
-
-.tr-drum-tech-svg {
-    width: 100%;
-    height: 100%;
-    display: block;
-}
-
-.drum-line,
-.drum-bolt {
-    fill: none;
-    stroke: #e9edf2;
-    stroke-width: 2.2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-
 /* Spin animation — JS adds/removes .tr-spinning */
 @keyframes trSpin {
     from {
@@ -9212,55 +8751,6 @@ body.keyboard-open {
 .tr-spinning {
     animation: trSpin linear infinite;
     will-change: transform;
-}
-
-/* Rotation count above each drum */
-.tr-drum-count {
-    font-size: clamp(28px, 4.5vmin, 44px);
-    font-weight: 800;
-    color: var(--icon-profile);
-    letter-spacing: 0.04em;
-    font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-    line-height: 1.1;
-}
-
-.tr-drum-label {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: 0.4px;
-}
-
-.tr-drum-status {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    padding: 2px 12px;
-    border-radius: 20px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--glass-border);
-    transition: var(--transition-fast);
-}
-
-.tr-drum-status.tr-running {
-    color: var(--color-success);
-    border-color: color-mix(in srgb, var(--color-success) 35%, transparent);
-    background: color-mix(in srgb, var(--color-success) 8%, transparent);
-}
-
-.tr-drum-status.tr-paused {
-    color: var(--color-warning);
-    border-color: color-mix(in srgb, var(--color-warning) 35%, transparent);
-    background: color-mix(in srgb, var(--color-warning) 8%, transparent);
-}
-
-.tr-drum-status.tr-done {
-    color: var(--icon-profile);
-    border-color: color-mix(in srgb, var(--icon-profile) 35%, transparent);
-    background: color-mix(in srgb, var(--icon-profile) 8%, transparent);
 }
 
 /* Center controls column */
@@ -9424,85 +8914,6 @@ body.keyboard-open {
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
 }
 
-#page-test-run .tr-drums-row {
-    flex: 1;
-    min-height: min(410px, 56vh);
-    justify-content: center;
-    gap: 14px;
-}
-
-#page-test-run .tr-drum-wrapper {
-    flex: 1 1 0;
-    gap: 8px;
-}
-
-#page-test-run .tr-drum-timer {
-    color: #ffffff;
-    font-size: clamp(28px, 4.4vmin, 42px);
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.65);
-}
-
-/* Full drum stays visible, but with translucent grey style like reference */
-#page-test-run .tr-drum-shell {
-    width: min(300px, 40vmin);
-    height: min(300px, 40vmin);
-    background:
-        radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.08) 34%, transparent 58%),
-        radial-gradient(circle at 72% 82%, rgba(126, 140, 158, 0.14) 0%, transparent 52%),
-        linear-gradient(165deg, rgba(205, 216, 230, 0.24) 0%, rgba(172, 186, 205, 0.14) 45%, rgba(124, 138, 156, 0.2) 100%);
-    border: 1px solid rgba(198, 212, 230, 0.38);
-    box-shadow:
-        inset 0 2px 0 rgba(255, 255, 255, 0.32),
-        inset 0 -8px 18px rgba(70, 84, 104, 0.22),
-        0 6px 20px rgba(2, 6, 14, 0.35);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
-}
-
-#page-test-run .tr-drum-shell::before {
-    border-color: rgba(224, 235, 248, 0.35);
-    box-shadow:
-        inset 0 0 0 1px rgba(0, 0, 0, 0.08),
-        inset 0 1px 9px rgba(255, 255, 255, 0.2);
-}
-
-#page-test-run .tr-drum-inner {
-    width: 87%;
-    height: 87%;
-    background:
-        radial-gradient(ellipse 92% 56% at 50% 78%, rgba(145, 160, 179, 0.36) 0%, transparent 60%),
-        radial-gradient(circle at 38% 30%, rgba(243, 247, 252, 0.7) 0%, rgba(215, 224, 236, 0.52) 48%, rgba(166, 179, 197, 0.46) 100%);
-    border: 1px solid rgba(202, 214, 232, 0.35);
-    box-shadow:
-        inset 0 4px 14px rgba(255, 255, 255, 0.3),
-        inset 0 -10px 22px rgba(76, 90, 110, 0.24);
-}
-
-#page-test-run .tr-drum-inner::before {
-    background: radial-gradient(circle at 50% 50%, transparent 34%, rgba(32, 40, 54, 0.14) 100%);
-}
-
-#page-test-run .tr-drum-count {
-    color: #ffffff;
-    font-size: clamp(24px, 3.7vmin, 36px);
-    text-shadow:
-        0 0 12px rgba(0, 0, 0, 0.7),
-        0 2px 7px rgba(0, 0, 0, 0.85);
-}
-
-#page-test-run .tr-drum-label {
-    color: rgba(232, 240, 252, 0.95);
-    font-size: 16px;
-    font-weight: 800;
-}
-
-#page-test-run .tr-drum-status {
-    font-size: 12px;
-    font-weight: 700;
-}
-
 #page-test-run .tr-progress-label {
     font-size: 13px;
     font-weight: 700;
@@ -9583,35 +8994,6 @@ body.keyboard-open {
     line-height: 1.25;
 }
 
-#page-test-run .tr-drums-row {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: auto;
-    gap: 14px;
-    align-items: center;
-    justify-content: center;
-}
-
-#page-test-run .tr-drum-wrapper {
-    flex: 1 1 0;
-    gap: 8px;
-    justify-content: center;
-}
-
-#page-test-run .tr-drum-shell {
-    width: clamp(258px, 43vmin, 370px);
-    height: clamp(258px, 43vmin, 370px);
-}
-
-#page-test-run .tr-drum-inner {
-    width: 88%;
-    height: 88%;
-}
-
-#page-test-run .tr-drum-count {
-    display: none !important;
-}
-
 #page-test-run .tr-footer {
     flex-shrink: 0;
     display: flex;
@@ -9628,14 +9010,6 @@ body.keyboard-open {
     color: rgba(232, 240, 252, 0.98);
     line-height: 1.35;
     text-align: center;
-}
-
-#page-test-run .tr-drum-label {
-    font-size: 18px;
-}
-
-#page-test-run .tr-drum-status {
-    font-size: 14px;
 }
 
 #page-test-run .tr-controls {
@@ -9701,48 +9075,414 @@ body.keyboard-open {
     }
 }
 
-/* Match validation drum appearance to test page drum */
-#page-validation-run .val-run-drum-compact .tr-drum-shell {
-    background:
-        radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.08) 34%, transparent 58%),
-        radial-gradient(circle at 72% 82%, rgba(126, 140, 158, 0.14) 0%, transparent 52%),
-        linear-gradient(165deg, rgba(205, 216, 230, 0.24) 0%, rgba(172, 186, 205, 0.14) 45%, rgba(124, 138, 156, 0.2) 100%);
-    border: 1px solid rgba(198, 212, 230, 0.38);
-    box-shadow:
-        inset 0 2px 0 rgba(255, 255, 255, 0.32),
-        inset 0 -8px 18px rgba(70, 84, 104, 0.22),
-        0 6px 20px rgba(2, 6, 14, 0.35);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
-}
-
-#page-validation-run .val-run-drum-compact .tr-drum-shell::before {
-    border-color: rgba(224, 235, 248, 0.35);
-    box-shadow:
-        inset 0 0 0 1px rgba(0, 0, 0, 0.08),
-        inset 0 1px 9px rgba(255, 255, 255, 0.2);
-}
-
-#page-validation-run .val-run-drum-compact .tr-drum-inner {
-    width: 87%;
-    height: 87%;
-    background:
-        radial-gradient(ellipse 92% 56% at 50% 78%, rgba(145, 160, 179, 0.36) 0%, transparent 60%),
-        radial-gradient(circle at 38% 30%, rgba(243, 247, 252, 0.7) 0%, rgba(215, 224, 236, 0.52) 48%, rgba(166, 179, 197, 0.46) 100%);
-    border: 1px solid rgba(202, 214, 232, 0.35);
-    box-shadow:
-        inset 0 4px 14px rgba(255, 255, 255, 0.3),
-        inset 0 -10px 22px rgba(76, 90, 110, 0.24);
-}
-
-#page-validation-run .val-run-drum-compact .tr-drum-inner::before {
-    background: radial-gradient(circle at 50% 50%, transparent 34%, rgba(32, 40, 54, 0.14) 100%);
-}
-
 /* Validation page fit tuning: fixed layout inside non-scrolling page-content */
 #page-validation-run .validation-test-page.validation-run-page {
     padding: 4px 8px 6px;
     box-sizing: border-box;
     gap: 2px;
     overflow: visible;
+}
+
+
+/* Home page: tighten chrome so dashboard fits 1024x600 cleanly */
+.page-content:has(#page-home.active) {
+    padding: 4px 8px 6px !important;
+}
+.app-container:has(#page-home.active) .app-header {
+    min-height: 52px;
+    padding: 4px 16px;
+}
+.app-container:has(#page-home.active) .company-logo {
+    height: 44px;
+}
+.app-container:has(#page-home.active) .page-title {
+    font-size: 22px;
+}
+
+/* ===== DT Dashboard — 1024x600 landscape (Dt_Dr_Reddy) ===== */
+.dt-dashboard {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 0 4px 2px;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+.dt-dash-product-names {
+    text-align: center;
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 1.2;
+    min-height: 0;
+    max-height: 18px;
+    margin: 0;
+    flex-shrink: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.dt-dash-main {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: 1fr 120px 1fr;
+    align-items: start;
+    gap: 0 4px;
+    min-height: 0;
+    width: 100%;
+    padding-top: 2px;
+}
+.dt-basket-side {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 2px;
+    min-width: 0;
+    min-height: 0;
+}
+.dt-basket-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 380px;
+    flex-shrink: 0;
+    height: 40px;
+}
+.dt-mode-btn {
+    width: 108px;
+    height: 38px;
+    border-radius: 25px;
+    border: 3px solid #6b7280;
+    background: #374151;
+    color: #9ca3af;
+    font-size: 16px;
+    font-weight: 700;
+    box-shadow: 0 3px 10px rgba(0,0,0,.3);
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+}
+.dt-mode-btn.is-active {
+    background: #2563eb;
+    border-color: #1d4ed8;
+    color: #fff;
+}
+.dt-runtime {
+    text-align: center;
+    min-width: 96px;
+}
+.dt-runtime-label {
+    color: #9ca3af;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 1px;
+}
+.dt-runtime-value {
+    color: #fff;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    line-height: 1.1;
+}
+.glow { text-shadow: 0 0 8px #60a5fa; }
+
+.dt-basket-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    position: relative;
+    flex: 0 0 auto;
+    margin: 2px 0;
+}
+.dt-probe {
+    display: flex;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.probe-circle {
+    width: 56px;
+    height: 56px;
+    background: #f97316;
+    border: 2px solid #ea580c;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(249,115,22,.5);
+    color: #fff;
+    font-weight: 700;
+}
+.probe-temp { font-size: 13px; line-height: 1.05; }
+.probe-text { font-size: 8px; color: #fed7aa; margin-top: 1px; }
+
+/* Larger baskets for operator visibility on 7" */
+.basket-container {
+    width: 260px;
+    height: 260px;
+    border-radius: 50%;
+    background: #4b5563;
+    border: 4px solid #6b7280;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    position: relative;
+    flex-shrink: 0;
+}
+.basket-hole {
+    width: 58px;
+    height: 58px;
+    background: #9ca3af;
+    border-radius: 50%;
+    position: absolute;
+    box-shadow: 0 4px 8px rgba(0,0,0,.3);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: #fff;
+    font-size: 1.1rem;
+    z-index: 3;
+}
+.basket-hole.completed { background: #10b981 !important; }
+.basket-hole:active { transform: scale(.95); }
+.center-temp {
+    width: 78px;
+    height: 78px;
+    background: #4b5563;
+    border: 2px solid #9ca3af;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: #fff;
+    font-size: 1.15rem;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%,-50%);
+    box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    z-index: 2;
+}
+.dt-basket-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    flex-shrink: 0;
+    min-height: 48px;
+}
+.dt-basket-label {
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.dt-heater-ind {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    opacity: 0.9;
+    color: #6b7280;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.1;
+}
+.dt-heater-ind svg { width: 22px; height: 22px; }
+.dt-heater-ind.is-off span { color: #f59e0b; }
+.dt-heater-ind.is-on { opacity: 1; color: #f59e0b; }
+.dt-heater-ind.is-on span { color: #f59e0b; }
+
+.dt-dash-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+    padding: 0;
+    align-self: center;
+    height: 100%;
+    padding-top: 48px; /* sit beside baskets, not topbars */
+}
+.recipe-button-main {
+    padding: 10px 22px 8px;
+    border-radius: 50px;
+    background: #0891b2;
+    color: #fff;
+    font-weight: 700;
+    font-size: 15px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.3);
+    border: 3px solid #0e7490;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+/* Bottom row: Start | SET TEMP | Start — shared baseline */
+.dt-dash-bottom {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    width: 100%;
+    min-height: 52px;
+    padding: 2px 8px 4px;
+    box-sizing: border-box;
+}
+.dt-dash-bottom > .dt-start-btn:first-child {
+    justify-self: center;
+}
+.dt-dash-bottom > .dt-start-btn:last-child {
+    justify-self: center;
+}
+.dt-dash-bottom > .dt-set-temp-panel {
+    justify-self: center;
+}
+.dt-start-btn {
+    margin: 0;
+    padding: 8px 40px 7px;
+    border-radius: 50px;
+    background: #10b981;
+    color: #fff;
+    font-weight: 700;
+    font-size: 15px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.3);
+    border: 3px solid #059669;
+    cursor: pointer;
+    min-width: 120px;
+}
+.dt-start-btn.is-stop { background: #ef4444; border-color: #b91c1c; }
+.dt-start-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* SET TEMP — half previous width (~150px), matches reference min-width ~200 scaled down */
+.dt-set-temp-panel {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 6px 10px 7px;
+    border-radius: 28px;
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    color: #fff;
+    font-weight: 700;
+    font-size: 11px;
+    box-shadow: 0 4px 14px rgba(245,158,11,0.45), inset 0 1px 0 rgba(255,255,255,0.2);
+    border: 2px solid #fbbf24;
+    width: 150px;
+    min-width: 150px;
+    max-width: 150px;
+    pointer-events: none;
+    z-index: 6;
+    box-sizing: border-box;
+}
+.dt-set-temp-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    text-align: center;
+    margin-bottom: 2px;
+    opacity: 0.95;
+    font-weight: 700;
+}
+.dt-set-temp-row { display: flex; width: 100%; }
+.dt-set-temp-cell {
+    flex: 1;
+    text-align: center;
+    padding: 0 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    min-width: 0;
+}
+.dt-set-temp-cell + .dt-set-temp-cell {
+    border-left: 1px solid rgba(255,255,255,0.35);
+}
+.dt-set-temp-sub {
+    font-size: 7px;
+    opacity: 0.9;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+.dt-set-temp-val {
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    white-space: nowrap;
+}
+.basket-inactive { opacity: 0.4; filter: blur(1.5px); pointer-events: none; }
+.basket-active-ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%,-50%);
+    width: 286px;
+    height: 286px;
+    border: 4px solid #10b981;
+    border-radius: 50%;
+    animation: dt-pulse-ring 2s infinite;
+    pointer-events: none;
+    z-index: 0;
+}
+@keyframes dt-pulse-ring {
+    0% { transform: translate(-50%,-50%) scale(1); opacity: 1; }
+    100% { transform: translate(-50%,-50%) scale(1.1); opacity: 0; }
+}
+.dt-beaker-select-grid {
+    display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;
+}
+.beaker-select-btn {
+    width: 150px; height: 150px; border-radius: 24px; border: 4px solid #6b7280;
+    background: #374151; color: #fff; font-size: 18px; font-weight: 700; cursor: pointer;
+}
+.beaker-select-btn.selected,
+.beaker-select-btn.is-selected {
+    border-color: #10b981; background: rgba(16,185,129,0.25);
+}
+.dt-basket-config-grid {
+    display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-top: 24px;
+}
+.dt-basket-cfg-btn {
+    width: 160px; height: 160px; border-radius: 24px; border: 4px solid #6b7280;
+    background: #374151; color: #fff; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-weight: 700;
+}
+.dt-basket-cfg-btn .dt-cfg-num { font-size: 48px; line-height: 1; }
+.dt-heater-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 720px; margin: 20px auto;
+}
+.dt-heater-card {
+    background: #1f2937; border: 4px solid #4b5563; border-radius: 20px; padding: 20px; text-align: center;
+}
+.dt-heater-card h3 { color: #fff; margin-bottom: 12px; font-size: 18px; }
+.dt-heater-temp-row {
+    display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 14px; color: #fff; font-size: 20px; font-weight: 700;
+}
+.dt-heater-temp-row .input-field { width: 110px; text-align: center; font-size: 20px; }
+.dt-recipe-mode-row { display: flex; gap: 16px; }
+.recipe-mode-btn {
+    flex: 1; min-height: 88px; border-radius: 16px; border: 4px solid #6b7280;
+    background: #374151; color: #fff; font-size: 22px; font-weight: 700; cursor: pointer;
+}
+.recipe-mode-btn.is-active { border-color: #3b82f6; background: #1e3a5f; }
+.dt-cal-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; max-width: 700px; margin: 0 auto;
+}
+.dt-cal-grid .input-field { text-align: center; font-size: 22px; font-weight: 700; min-height: 56px; }
+#page-validate .validation-settings-grid {
+    grid-template-columns: repeat(2, minmax(200px, 1fr));
+    max-width: 640px;
+    margin: 0 auto;
 }

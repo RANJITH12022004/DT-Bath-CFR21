@@ -730,75 +730,105 @@ def export_entries(filters: Optional[Dict[str, Any]] = None, path_or_fd=None):
 
 
 AUDIT_EXPORT_SCHEDULE_FILE = "audit_export_schedule.json"
-EXPORT_PURGE_AFTER_MS = 24 * 60 * 60 * 1000
+AUDIT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000
+EXPORT_PURGE_AFTER_MS = AUDIT_EXPORT_RETENTION_MS
 
 
-def _audit_export_schedule_path() -> pathlib.Path:
+def _audit_export_schedule_path() -> Optional[pathlib.Path]:
+    if not _storage_dir:
+        return None
     return _storage_dir / AUDIT_EXPORT_SCHEDULE_FILE
 
 
-def read_audit_export_schedule() -> List[Dict[str, Any]]:
+def _load_audit_export_schedule() -> Dict[str, Any]:
     path = _audit_export_schedule_path()
-    if not path.exists():
-        return []
+    if not path or not path.is_file():
+        return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return []
+        return {}
 
 
-def write_audit_export_schedule(batches: List[Dict[str, Any]]) -> None:
+def _save_audit_export_schedule(data: Dict[str, Any]) -> None:
     path = _audit_export_schedule_path()
+    if not path:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(batches, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def stage_audit_export(entry_ids: List[int], exporter_username: str, approver_username: str) -> Dict[str, Any]:
-    """Create a pending export batch; returns batch dict with id."""
-    ids = []
-    for eid in entry_ids or []:
+def clear_audit_export_schedule() -> None:
+    path = _audit_export_schedule_path()
+    if path and path.exists():
         try:
-            n = int(eid)
+            path.unlink()
+        except Exception:
+            pass
+
+
+def stage_audit_export_pending(
+    *,
+    export_id: str,
+    entry_ids: List[Any],
+    exported_by: Dict[str, Any],
+    approved_by: Dict[str, Any],
+    pdf_path: str = "",
+) -> None:
+    """Store a successful USB audit export awaiting operator verification (no purge yet)."""
+    now_ms = int(time.time() * 1000)
+    ids = []
+    for x in entry_ids or []:
+        try:
+            n = int(x)
             if n > 0:
                 ids.append(n)
         except (TypeError, ValueError):
-            continue
-    batch_id = secrets.token_hex(8)
-    batch = {
-        "id": batch_id,
-        "entryIds": ids,
-        "exporterUsername": (exporter_username or "").strip(),
-        "approverUsername": (approver_username or "").strip(),
-        "stagedAt": int(time.time() * 1000),
-        "confirmedAt": None,
-        "purged": False,
-        "pdfPath": None,
+            s = str(x).strip()
+            if s:
+                ids.append(s)
+    state = _load_audit_export_schedule()
+    state["staged"] = {
+        "export_id": str(export_id or "").strip(),
+        "entry_ids": ids,
+        "exported_by": dict(exported_by or {}),
+        "approved_by": dict(approved_by or {}),
+        "exported_at_ms": now_ms,
+        "pdf_path": str(pdf_path or "").strip(),
     }
-    batches = read_audit_export_schedule()
-    batches.append(batch)
-    write_audit_export_schedule(batches)
-    return batch
+    _save_audit_export_schedule(state)
 
 
-def confirm_audit_export_batch(batch_id: str, pdf_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    batches = read_audit_export_schedule()
-    found = None
-    for b in batches:
-        if str(b.get("id")) == str(batch_id):
-            b["confirmedAt"] = int(time.time() * 1000)
-            if pdf_path:
-                b["pdfPath"] = str(pdf_path)
-            found = b
-            break
-    if found:
-        write_audit_export_schedule(batches)
-    return found
+def confirm_audit_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
+    """Operator confirmed USB PDF OK: schedule purge in 24h."""
+    want = str(export_id or "").strip()
+    if not want:
+        return None
+    state = _load_audit_export_schedule()
+    staged = state.get("staged") if isinstance(state.get("staged"), dict) else {}
+    if str(staged.get("export_id") or "").strip() != want:
+        return None
+    now_ms = int(time.time() * 1000)
+    scheduled = {
+        "export_id": want,
+        "entry_ids": list(staged.get("entry_ids") or []),
+        "exported_by": dict(staged.get("exported_by") or {}),
+        "approved_by": dict(staged.get("approved_by") or {}),
+        "exported_at_ms": int(staged.get("exported_at_ms") or now_ms),
+        "pdf_path": str(staged.get("pdf_path") or "").strip(),
+        "confirmed_at_ms": now_ms,
+        "purge_at_ms": now_ms + AUDIT_EXPORT_RETENTION_MS,
+    }
+    state["scheduled"] = scheduled
+    state.pop("staged", None)
+    _save_audit_export_schedule(state)
+    return scheduled
 
 
-def delete_entries_by_ids(entry_ids: List[int]) -> int:
+def delete_entries_by_ids(entry_ids: List[Any]) -> int:
     """Delete audit rows with matching primary keys only."""
     if not entry_ids or not _audit_db_path or not _audit_db_path.exists():
         return 0
@@ -835,31 +865,62 @@ def delete_entries_by_ids(entry_ids: List[int]) -> int:
         conn.close()
 
 
+def run_due_audit_export_purge() -> Optional[Dict[str, Any]]:
+    """If a confirmed audit export purge is due, delete only its entry_ids."""
+    state = _load_audit_export_schedule()
+    scheduled = state.get("scheduled") if isinstance(state.get("scheduled"), dict) else {}
+    purge_at = scheduled.get("purge_at_ms")
+    if purge_at is None:
+        return None
+    try:
+        purge_at_ms = int(purge_at)
+    except (TypeError, ValueError):
+        return None
+    now_ms = int(time.time() * 1000)
+    if now_ms < purge_at_ms:
+        return None
+    entry_ids = list(scheduled.get("entry_ids") or [])
+    delete_entries_by_ids(entry_ids)
+    state.pop("scheduled", None)
+    _save_audit_export_schedule(state)
+    out = dict(scheduled)
+    out["purged_at_ms"] = now_ms
+    out["rows_removed"] = len(entry_ids)
+    return out
+
+
+# ---- Backward-compatible wrappers ----
+
+def stage_audit_export(entry_ids: List[int], exporter_username: str, approver_username: str) -> Dict[str, Any]:
+    export_id = secrets.token_urlsafe(16)
+    exported_by = {"username": (exporter_username or "").strip() or "--", "employee_id": "--", "role": "--"}
+    approved_by = {"username": (approver_username or "").strip() or "--", "employee_id": "--", "role": "--"}
+    stage_audit_export_pending(
+        export_id=export_id,
+        entry_ids=entry_ids or [],
+        exported_by=exported_by,
+        approved_by=approved_by,
+    )
+    return {"id": export_id, "export_id": export_id, "entryIds": entry_ids or []}
+
+
+def confirm_audit_export_batch(batch_id: str, pdf_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    scheduled = confirm_audit_export_verified(batch_id)
+    if scheduled and pdf_path:
+        state = _load_audit_export_schedule()
+        sched = state.get("scheduled") if isinstance(state.get("scheduled"), dict) else {}
+        if str(sched.get("export_id") or "") == str(batch_id):
+            sched["pdf_path"] = str(pdf_path)
+            state["scheduled"] = sched
+            _save_audit_export_schedule(state)
+    return scheduled
+
+
 def purge_due_audit_exports(now_ms: Optional[int] = None) -> int:
-    """Purge exported audit rows 24h after confirm. Returns rows removed."""
-    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-    batches = read_audit_export_schedule()
-    if not batches:
+    purged = run_due_audit_export_purge()
+    if not purged:
         return 0
-    total_removed = 0
-    changed = False
-    for b in batches:
-        if b.get("purged"):
-            continue
-        confirmed = b.get("confirmedAt")
-        if not confirmed:
-            continue
-        try:
-            confirmed_ms = int(confirmed)
-        except (TypeError, ValueError):
-            continue
-        if now_ms - confirmed_ms < EXPORT_PURGE_AFTER_MS:
-            continue
-        ids = b.get("entryIds") or []
-        total_removed += delete_entries_by_ids(ids)
-        b["purged"] = True
-        b["purgedAt"] = now_ms
-        changed = True
-    if changed:
-        write_audit_export_schedule(batches)
-    return total_removed
+    try:
+        return int(purged.get("rows_removed") or 0)
+    except (TypeError, ValueError):
+        return 0

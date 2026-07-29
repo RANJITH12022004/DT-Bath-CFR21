@@ -31,12 +31,19 @@ def generate_report(
 ) -> Dict[str, Any]:
     report = dict(test_data)
     if recipe:
+        # Keep speed/USP/drums on the stub — print/preview derived RPM reads these.
+        # Full recipe also remains under testData.recipe from the client payload.
         report["recipe"] = {
             "id": recipe.get("id"),
             "name": recipe.get("name") or recipe.get("productName"),
             "productName": recipe.get("productName"),
             "batchNumber": recipe.get("batchNumber"),
             "unit": recipe.get("unit"),
+            "speed": recipe.get("speed"),
+            "usp": recipe.get("usp"),
+            "uspMode": recipe.get("uspMode"),
+            "drumCount": recipe.get("drumCount"),
+            "quickTest": recipe.get("quickTest"),
         }
     if not factory_settings:
         factory_settings = data_service.get_factory_settings()
@@ -340,86 +347,57 @@ def _drop_height_display(recipe: Dict[str, Any], td: Dict[str, Any]) -> str:
         return str(dh)
 
 
+def _merge_recipe_for_derived(
+    td: Dict[str, Any], recipe: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Prefer full embedded testData.recipe when top-level recipe was stripped."""
+    recipe = recipe if isinstance(recipe, dict) else {}
+    td_recipe = td.get("recipe") if isinstance(td.get("recipe"), dict) else {}
+    if td_recipe:
+        merged = dict(td_recipe)
+        for k, v in recipe.items():
+            if v not in (None, ""):
+                merged[k] = v
+        return merged
+    return dict(recipe)
+
+
+def _resolve_report_rpm(recipe: Dict[str, Any], td: Dict[str, Any]) -> Any:
+    """RPM from recipe.speed, testData.speed/rpm, or first step speed (quick + saved recipes)."""
+    speed = recipe.get("speed")
+    if speed in (None, ""):
+        speed = td.get("speed")
+    if speed in (None, ""):
+        speed = td.get("rpm")
+    steps = recipe.get("steps") or td.get("steps") or []
+    if speed in (None, "") and isinstance(steps, list) and steps and isinstance(steps[0], dict):
+        speed = steps[0].get("speed")
+    return speed
+
+
 def build_test_report_derived(
     td: Optional[Dict[str, Any]],
     recipe: Optional[Dict[str, Any]] = None,
     report_id: Any = None,
 ) -> Dict[str, Any]:
-    """Classic tap-density report fields (W/V0, W/Vf, readings, test metadata)."""
+    """Disintegration test report fields (basket, temp, mode, vessel times)."""
     td = td if isinstance(td, dict) else {}
-    recipe = recipe if isinstance(recipe, dict) else {}
-    if not recipe and isinstance(td.get("recipe"), dict):
-        recipe = td.get("recipe") or {}
+    recipe = _merge_recipe_for_derived(td, recipe)
 
-    results = td.get("stepResults") or []
-    if not isinstance(results, list):
-        results = []
-    steps = recipe.get("steps") or td.get("steps") or []
-    if not isinstance(steps, list):
-        steps = []
-
-    weight = _parse_float(td.get("initialWeightG"))
-    initial_vol = resolve_initial_volume_ml(td)
-    final_vol = None
-    if results:
-        final_vol = _parse_float(results[-1].get("volumeMl") if isinstance(results[-1], dict) else None)
-
-    diff_last_two = None
-    if len(results) >= 2:
-        v1 = _parse_float(results[-2].get("volumeMl") if isinstance(results[-2], dict) else None)
-        v2 = _parse_float(results[-1].get("volumeMl") if isinstance(results[-1], dict) else None)
-        if v1 is not None and v2 is not None:
-            diff_last_two = abs(v1 - v2)
-    elif len(results) == 1 and isinstance(results[0], dict):
-        diff_last_two = _parse_float(results[0].get("volumeDeltaMl"))
-
-    initial_density = None
-    tapped_density = None
-    if weight is not None and initial_vol is not None and initial_vol > 0:
-        initial_density = round(weight / initial_vol, 3)
-    if weight is not None and final_vol is not None and final_vol > 0:
-        tapped_density = round(weight / final_vol, 3)
-
-    compressibility = None
-    hausner = None
-    if initial_vol is not None and final_vol is not None and initial_vol > 0 and final_vol > 0:
-        compressibility = round((1.0 - (final_vol / initial_vol)) * 100.0, 2)
-        hausner = round(initial_vol / final_vol, 3)
-
-    test_type = _test_type_label(recipe, td)
-    test_method = _test_method_label(recipe, td, test_type)
-
-    speed = recipe.get("speed")
-    if speed is None and steps and isinstance(steps[0], dict):
-        speed = steps[0].get("speed")
-
-    total_drops = performed_total_drops(td, recipe)
-    step_drop_counts = completed_step_drop_counts(td, recipe)
-
-    readings: List[Dict[str, Any]] = []
-    for i, row in enumerate(results):
-        if not isinstance(row, dict):
-            continue
-        count = None
-        if i < len(steps) and isinstance(steps[i], dict):
-            count = steps[i].get("tapCount")
-        vol = row.get("volumeMl", "--")
-        dvol = row.get("volumeDeltaMl")
-        if dvol in (None, "", "__"):
-            dvol_str = "--"
-        else:
-            try:
-                dvol_str = f"{float(dvol):.4f}"
-            except (TypeError, ValueError):
-                dvol_str = str(dvol)
-        readings.append(
-            {
-                "step": i + 1,
-                "count": count,
-                "volume": vol,
-                "volumeDiff": dvol_str,
-            }
-        )
+    basket = td.get("basket") or td.get("beaker") or 1
+    mode = td.get("mode") or recipe.get("mode") or "manual"
+    set_temp = td.get("setTemperature")
+    if set_temp in (None, ""):
+        set_temp = recipe.get("temp") or recipe.get("setTemperature")
+    duration_sec = td.get("durationSeconds")
+    if duration_sec in (None, ""):
+        duration_sec = test_duration_seconds(td)
+    set_dur = td.get("setDuration") or td.get("setDurationMinutes")
+    if set_dur in (None, "") and recipe.get("duration") not in (None, ""):
+        try:
+            set_dur = float(recipe.get("duration")) * 60
+        except (TypeError, ValueError):
+            set_dur = recipe.get("duration")
 
     test_no = "--"
     if report_id is not None:
@@ -428,70 +406,71 @@ def build_test_report_derived(
         except (TypeError, ValueError):
             test_no = str(report_id)
 
+    ts = _report_print_timestamp()
     return {
+        **ts,
         "testNumber": test_no,
-        "testType": test_type,
-        "testMethod": test_method,
-        "dropsPerMin": speed if speed is not None else "--",
-        "dropHeight": _drop_height_display(recipe, td),
-        "totalDrops": total_drops,
-        "totalTaps": total_drops,
-        "stepDropCounts": step_drop_counts,
-        "stepTapCounts": step_drop_counts,
-        "sampleWeightG": weight,
-        "initialVolumeMl": initial_vol,
-        "finalVolumeMl": final_vol,
-        "diffLastTwoVolumesMl": diff_last_two,
-        "initialDensityGPerMl": initial_density,
-        "tappedDensityGPerMl": tapped_density,
-        "compressibilityIndexPct": compressibility,
-        "hausnerRatio": hausner,
-        "readings": readings,
+        "testType": "Disintegration",
+        "testMethod": str(mode).upper(),
+        "mode": mode,
+        "basket": basket,
+        "beaker": basket,
+        "basketConfig": td.get("basketConfig") or 6,
+        "setTemperature": set_temp if set_temp not in (None, "") else "--",
+        "minTemp": td.get("minTemp"),
+        "maxTemp": td.get("maxTemp"),
+        "setDuration": set_dur,
+        "durationSeconds": duration_sec,
+        "durationFormatted": td.get("duration") or format_duration_hhmmss(duration_sec),
+        "vesselTimes": td.get("vesselTimes") or {},
+        "batchNumber": td.get("batchNumber") or recipe.get("batchNumber") or td.get("batch1") or td.get("batch2"),
+        "productName": recipe.get("productName") or recipe.get("name") or td.get("productName") or td.get("name"),
     }
 
 
 def compute_test_report_statistics(test_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Option A: Hausner = tap/bulk; CI% = (tap-bulk)/tap*100; agg over completed steps; final-step CI/Hausner."""
+    """Disintegration statistics from test/report data."""
     if not isinstance(test_data, dict):
         return None
-    if str(test_data.get("status") or "").strip().lower() == "aborted":
-        return None
-    results = test_data.get("stepResults") or []
-    if not isinstance(results, list) or not results:
-        return None
-
-    bulk_vals: List[float] = []
-    tap_vals: List[float] = []
-    for row in results:
-        if not isinstance(row, dict):
-            continue
-        b = _parse_density_number(row.get("bulkDensity"))
-        t = _parse_density_number(row.get("tapDensity"))
-        if b is not None:
-            bulk_vals.append(b)
-        if t is not None:
-            tap_vals.append(t)
 
     stats: Dict[str, Any] = {}
-    bulk_agg = _agg_mean_min_max(bulk_vals)
-    tap_agg = _agg_mean_min_max(tap_vals)
-    if bulk_agg:
-        stats["Bulk density (g/mL)"] = bulk_agg
-    if tap_agg:
-        stats["Tap density (g/mL)"] = tap_agg
+    min_t = _parse_density_number(test_data.get("minTemp"))
+    max_t = _parse_density_number(test_data.get("maxTemp"))
+    set_t = _parse_density_number(test_data.get("setTemperature"))
+    if set_t is not None:
+        stats["Set temperature (°C)"] = {"value": round(set_t, 2)}
+    if min_t is not None:
+        stats["Min temperature (°C)"] = {"value": round(min_t, 2)}
+    if max_t is not None:
+        stats["Max temperature (°C)"] = {"value": round(max_t, 2)}
 
-    last = results[-1] if isinstance(results[-1], dict) else {}
-    bulk_f = _parse_density_number(last.get("bulkDensity"))
-    tap_f = _parse_density_number(last.get("tapDensity"))
-    if bulk_f is None and bulk_vals:
-        bulk_f = bulk_vals[0]
-    if tap_f is None and tap_vals:
-        tap_f = tap_vals[-1]
-    if bulk_f is not None and tap_f is not None and tap_f > 0 and bulk_f > 0:
-        stats["Compressibility index (%)"] = {
-            "value": round(((tap_f - bulk_f) / tap_f) * 100.0, 2)
-        }
-        stats["Hausner ratio"] = {"value": round(tap_f / bulk_f, 3)}
+    basket = test_data.get("basket") or test_data.get("beaker")
+    if basket is not None:
+        try:
+            stats["Basket"] = {"value": int(basket)}
+        except (TypeError, ValueError):
+            pass
+    cfg = test_data.get("basketConfig")
+    if cfg is not None:
+        try:
+            stats["Tube count"] = {"value": int(cfg)}
+        except (TypeError, ValueError):
+            pass
+    mode = test_data.get("mode")
+    if mode:
+        stats["Mode"] = {"value": str(mode)}
+    dur = test_data.get("durationSeconds")
+    if dur is not None:
+        try:
+            stats["Duration (s)"] = {"value": int(dur)}
+        except (TypeError, ValueError):
+            pass
+    strokes = _parse_density_number(test_data.get("strokesPerMin"))
+    if strokes is not None:
+        stats["Strokes/min"] = {"value": round(strokes, 1)}
+    max_dev = _parse_density_number(test_data.get("maxDeviation"))
+    if max_dev is not None:
+        stats["Max deviation (°C)"] = {"value": round(max_dev, 3)}
 
     return stats if stats else None
 
@@ -662,6 +641,8 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
         "reportApprovalStatus": report.get("reportApprovalStatus"),
         "approvalPassFail": report.get("approvalPassFail"),
         "approvalRemarks": report.get("approvalRemarks"),
+        "abortCause": report.get("abortCause")
+        or (td.get("abortCause") if isinstance(td, dict) else None),
         "operatedByUsername": report.get("operatedByUsername")
         or (td.get("operatedByUsername") if isinstance(td, dict) else None)
         or (td.get("employeeId") if isinstance(td, dict) else None),
@@ -682,7 +663,20 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
         preview["tapsMin"] = report.get("tapsMin")
         preview["dropHeight"] = report.get("dropHeight")
         preview["expectedTapCount"] = report.get("expectedTapCount")
+        if preview["expectedTapCount"] in (None, ""):
+            preview["expectedTapCount"] = report.get("expectedRotationCount")
+        if preview["expectedTapCount"] in (None, "") and isinstance(td, dict):
+            preview["expectedTapCount"] = td.get("expectedTapCount") or td.get("expectedRotationCount")
         preview["actualTapCount"] = report.get("actualTapCount")
+        if preview["actualTapCount"] in (None, ""):
+            preview["actualTapCount"] = report.get("actualRotationCount")
+        if preview["actualTapCount"] in (None, "") and isinstance(td, dict):
+            preview["actualTapCount"] = td.get("actualTapCount") or td.get("actualRotationCount")
+        preview["expectedRotationCount"] = report.get("expectedRotationCount") or preview.get("expectedTapCount")
+        preview["actualRotationCount"] = report.get("actualRotationCount") or preview.get("actualTapCount")
+        preview["validationStartTime"] = report.get("validationStartTime") or report.get("testStartTime")
+        if preview["validationStartTime"] in (None, "") and isinstance(td, dict):
+            preview["validationStartTime"] = td.get("validationStartTime") or td.get("testStartTime")
         runs = report.get("validationRuns")
         if not runs and isinstance(td, dict):
             runs = td.get("validationRuns")
@@ -692,7 +686,9 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
     try:
         import print_service
 
-        preview["a4Text"] = print_service.format_for_a4_printer(report).rstrip()
+        preview["a4Text"] = print_service.format_for_a4_printer(
+            report, include_printed_timestamp=False
+        ).rstrip()
     except Exception:
         preview["a4Text"] = ""
     return preview
@@ -869,15 +865,25 @@ def _derived_test_result_html(derived: Dict[str, Any]) -> str:
     )
 
 
-def build_report_pdf_html(report: Dict[str, Any]) -> str:
+def build_report_pdf_html(
+    report: Dict[str, Any],
+    *,
+    include_printed_timestamp: bool = False,
+    timestamp_kind: str = "printed",
+) -> str:
     """
     Build PDF HTML from the A4 text formatter output (====, ----, ****).
-    Printed date/time appears only in the footer (same as dot-matrix A4 print).
+    Default has no Printed/Exported footer (preview/storage). Pass
+    include_printed_timestamp=True with timestamp_kind printed|exported for live print/export.
     """
     import print_service
 
     enriched = enrich_report_context(dict(report or {}))
-    a4_text = print_service.format_for_a4_printer(enriched).rstrip()
+    a4_text = print_service.format_for_a4_printer(
+        enriched,
+        include_printed_timestamp=include_printed_timestamp,
+        timestamp_kind=timestamp_kind,
+    ).rstrip()
     escaped = html_module.escape(a4_text)
 
     css = (
