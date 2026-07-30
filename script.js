@@ -1524,8 +1524,12 @@ var PAGE_TITLES = {
     'distance-validation': 'USP 1',
     'add-member': 'Add New Member',
     'validate': 'Validation & Calibration',
+    'validate-beaker': 'Select Beaker',
     'validate-type-select': 'Select Validation Type',
+    'stroke-validation': 'Stroke Validation',
+    'temp-validation': 'Temperature Validation',
     'calibration-type-select': 'Temperature Calibration',
+    'approval-verify': 'Approval',
     'load-calibration': 'Load Calibration',
     'distance-zero-calibration': 'Distance Calibration',
     'settings': 'Settings',
@@ -1561,7 +1565,11 @@ var PAGE_AUDIT_LABELS = {
     'distance-validation': 'USP 1 Validation',
     'add-member': 'Add New Member',
     validate: 'Validation',
+    'validate-beaker': 'Select Beaker',
     'validate-type-select': 'Select Validation Type',
+    'stroke-validation': 'Stroke Validation',
+    'temp-validation': 'Temperature Validation',
+    'approval-verify': 'Approval',
     'calibration-type-select': 'Select Calibration Type',
     'load-calibration': 'Load Calibration',
     'distance-zero-calibration': 'Distance Calibration',
@@ -1765,8 +1773,12 @@ function applyWallClockToTopBar(parts) {
     lastKnownDateTime = { timeString: fmt.timeString, dateString: fmt.dateString };
     var timeEl = document.getElementById('current-time');
     var dateEl = document.getElementById('current-date');
+    var dashTimeEl = document.getElementById('dashboard-current-time');
+    var dashDateEl = document.getElementById('dashboard-current-date');
     if (timeEl) timeEl.textContent = fmt.timeString;
     if (dateEl) dateEl.textContent = fmt.dateString;
+    if (dashTimeEl) dashTimeEl.textContent = fmt.timeString;
+    if (dashDateEl) dashDateEl.textContent = fmt.dateString;
 }
 
 function wallClockPartsFromLocalDate(d) {
@@ -1845,8 +1857,12 @@ function updateDateTime() {
         if (!document.getElementById('current-time') || !lastKnownDateTime) {
             var timeEl = document.getElementById('current-time');
             var dateEl = document.getElementById('current-date');
+            var dashTimeEl = document.getElementById('dashboard-current-time');
+            var dashDateEl = document.getElementById('dashboard-current-date');
             if (timeEl && timeString) timeEl.textContent = timeString;
             if (dateEl && dateString) dateEl.textContent = dateString;
+            if (dashTimeEl && timeString) dashTimeEl.textContent = timeString;
+            if (dashDateEl && dateString) dashDateEl.textContent = dateString;
         }
     });
 }
@@ -2084,13 +2100,12 @@ function goToPage(pageName) {
     }
     if (pageName === 'validate-type-select') {
         setTimeout(function () {
-            // Clear selection when entering the validation type page.
-            // This prevents retaining the previous selection.
             lastValidationType = null;
-            var r1 = document.querySelector('input[name="val-type"][value="distance"]');
-            var r2 = document.querySelector('input[name="val-type"][value="load"]');
-            if (r1) r1.checked = false;
-            if (r2) r2.checked = false;
+            var radios = document.querySelectorAll('input[name="val-type"]');
+            for (var i = 0; i < radios.length; i++) radios[i].checked = false;
+            document.querySelectorAll('#page-validate-type-select .validation-type-btn').forEach(function (el) {
+                el.classList.remove('selected');
+            });
         }, 0);
     }
     if (pageName === 'quick-test') {
@@ -2212,16 +2227,26 @@ function goBack() {
     } else if (pageId === 'page-validation-run') {
         if (typeof goBackFromValidationRun === 'function') goBackFromValidationRun();
         return;
-    } else if (pageId === 'page-validate-type-select' || pageId === 'page-validate') {
+    } else if (pageId === 'page-validate-type-select' || pageId === 'page-validate' || pageId === 'page-validate-beaker') {
         if (isValidationPartiallyCompleted() && !isValidationFullyCompleted()) {
             showAppModal('Complete both USP 1 and USP 2 validation before exiting Validation.', 'Validation');
             return;
         }
         if (pageId === 'page-validate-type-select') {
+            goToPage('validate-beaker');
+        } else if (pageId === 'page-validate-beaker') {
             goToPage('validate');
         } else {
             goToPage('home');
         }
+        return;
+    } else if (pageId === 'page-stroke-validation' || pageId === 'page-temp-validation') {
+        if (typeof stopValidation === 'function') stopValidation({ stay: true });
+        goToPage('validate-type-select');
+        return;
+    } else if (pageId === 'page-approval-verify') {
+        if (typeof cancelApprovalVerifyModal === 'function') cancelApprovalVerifyModal();
+        else if (typeof cancelAdminApprovalVerifyModal === 'function') cancelAdminApprovalVerifyModal();
         return;
     } else if (pageId === 'page-calibration-type-select') {
         goToPage('validate');
@@ -4647,7 +4672,7 @@ function selectOperation(type) {
         }
         validationCompletion = { usp: false };
         validationSessionResults = { usp: null };
-        goToPage('validate-type-select');
+        goToPage('validate-beaker');
     } else if (type === 'calibrate') {
         if (typeof canAccess === 'function' && window.currentUser && !canAccess(window.currentUser, 'calibration-menu')) {
             showAppModal('You do not have permission to run calibration.', 'Permission');

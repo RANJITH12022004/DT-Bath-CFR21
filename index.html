@@ -7,8 +7,8 @@
     <meta name="viewport"
         content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Tablet Disintegration Tester</title>
-    <link rel="stylesheet" href="/styles.css?v=36" id="app-main-css"
-        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=36&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
+    <link rel="stylesheet" href="/styles.css?v=41" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=41&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -293,105 +293,98 @@
                                                                 <!-- Home Page: DT Test Dashboard — 1024x600 landscape -->
                 <div class="page active" id="page-home">
                     <div class="dt-dashboard" id="dt-dashboard">
-                        <div class="dt-dash-product-names" id="dashboard-product-names"></div>
+                        <div style="position:absolute;left:0;right:0;top:0;display:flex;align-items:center;justify-content:space-between;padding:12px 16px 0;pointer-events:none;">
+                            <img src="./assets/rle_logo.png" alt="Logo" style="height:48px;width:auto;pointer-events:auto;cursor:pointer;" onclick="goToPage('home')">
+                            <div style="text-align:center;flex:1;">
+                                <div class="dt-dash-product-names" id="dashboard-product-names"></div>
+                            </div>
+                            <div id="dashboard-datetime" style="color:#fff;font-weight:700;display:flex;align-items:center;gap:8px;">
+                                <span id="dashboard-current-time">--:--:--</span>
+                                <span style="opacity:0.5;">|</span>
+                                <span id="dashboard-current-date">--/--/----</span>
+                            </div>
+                        </div>
 
-                        <div class="dt-dash-main">
-                            <!-- Basket 1 -->
-                            <div class="dt-basket-side" id="basket1-wrapper">
-                                <div class="dt-basket-topbar">
-                                    <button type="button" id="timer-btn-1" class="dt-mode-btn" onclick="dtSelectMode(1,'timer')">Timer</button>
-                                    <div class="dt-runtime">
-                                        <div class="dt-runtime-label">Run Time</div>
-                                        <div id="timer1" class="dt-runtime-value glow">00:00:00</div>
-                                    </div>
-                                    <button type="button" id="manual-btn-1" class="dt-mode-btn is-active" onclick="dtSelectMode(1,'manual')">Manual</button>
-                                </div>
+                        <div style="position:absolute;left:50%;top:84px;transform:translateX(calc(-50% - 240px));z-index:10;display:flex;gap:147px;">
+                            <button type="button" id="timer-btn-1" class="dt-mode-btn" onclick="dtSelectMode(1,'timer')">Timer</button>
+                            <button type="button" id="manual-btn-1" class="dt-mode-btn is-active" onclick="dtSelectMode(1,'manual')" style="margin-left:-20px;">Manual</button>
+                        </div>
 
-                                <div class="dt-basket-stage">
-                                    <div class="dt-probe dt-probe-left" id="probe-1">
-                                        <div class="probe-circle">
-                                            <div class="probe-temp" id="dash-ext1">--</div>
-                                            <div class="probe-text">External</div>
+                        <div style="position:absolute;left:50%;top:84px;transform:translateX(calc(-50% + 207px));z-index:10;display:flex;gap:147px;">
+                            <button type="button" id="timer-btn-2" class="dt-mode-btn" onclick="dtSelectMode(2,'timer')">Timer</button>
+                            <button type="button" id="manual-btn-2" class="dt-mode-btn is-active" onclick="dtSelectMode(2,'manual')" style="margin-left:-20px;">Manual</button>
+                        </div>
+
+                        <div id="probe-1" style="position:absolute;left:30px;top:70%;transform:translateY(-50%);z-index:5;">
+                            <div class="probe-circle">
+                                <div class="probe-temp" id="dash-ext1">--</div>
+                                <div class="probe-text" style="font-weight:700;">External</div>
+                            </div>
+                        </div>
+
+                        <div id="basket1-wrapper" style="position:absolute;left:70px;top:62%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;">
+                            <div style="text-align:center;margin-top:-80px;margin-bottom:5px;">
+                                <div style="color:#9ca3af;font-size:16px;margin-bottom:2px;font-weight:700;">Run Time</div>
+                                <div id="timer1" class="glow" style="color:#fff;font-size:24px;letter-spacing:0.5px;font-weight:700;line-height:1.1;">00:00:00</div>
+                            </div>
+                            <div class="basket-container" id="basket1-container" style="position:relative;" onclick="dtHandleBasketTap(1, event)">
+                                <div class="center-temp" id="temp1">--</div>
+                            </div>
+                            <div style="color:#fff;font-size:18px;margin-top:12px;font-weight:700;">Basket 1</div>
+                            <div id="heater1" class="dt-heater-ind is-off" style="pointer-events:none;opacity:0.6;margin-top:8px;">
+                                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+                                <span style="font-size:11px;color:#6b7280;margin-top:2px;font-weight:700;">Heater Off</span>
+                            </div>
+                            <button type="button" id="start1" class="dt-start-btn" onclick="dtDashboardStart(1)">Start</button>
+                        </div>
+
+                        <div id="dashboard-mode-wrapper" style="position:absolute;left:50%;top:62%;transform:translate(calc(-50% - 40px), calc(-50% + 50px));z-index:10;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:auto;">
+                            <button type="button" id="dashboard-mode-btn" class="recipe-button-main" onclick="showRecipeModeMenu()" style="margin-top:10px;transform:translateX(27px);">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
+                                <span>Recipe</span>
+                            </button>
+                            <div id="dashboard-temp-btn" class="recipe-button-main" style="padding:4px 0 0 0;background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%);border:3px solid #fbbf24;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translate(33px, 90px);min-width:200px;overflow:hidden;pointer-events:none;cursor:default;box-shadow:0 4px 15px rgba(245,158,11,0.4), inset 0 1px 0 rgba(255,255,255,0.2);">
+                                <div style="font-size:11px;opacity:0.95;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600;">Set Temp</div>
+                                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:0 12px;">
+                                    <div style="flex:1;text-align:center;padding:2px 8px;border-right:2px solid rgba(255,255,255,0.3);display:flex;flex-direction:column;align-items:center;gap:2px;">
+                                        <div style="font-size:9px;opacity:0.85;text-transform:uppercase;letter-spacing:0.5px;">Basket 1</div>
+                                        <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:3px;">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path></svg>
+                                            <span id="dashboard-temp-1">--</span>
                                         </div>
                                     </div>
-                                    <div class="basket-container" id="basket1-container" onclick="dtHandleBasketTap(1, event)">
-                                        <div class="center-temp" id="temp1">--</div>
-                                    </div>
-                                </div>
-
-                                <div class="dt-basket-meta">
-                                    <div class="dt-basket-label">Basket 1</div>
-                                    <div id="heater1" class="dt-heater-ind is-off">
-                                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
-                                        <span>Heater Off</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Center: Recipe -->
-                            <div class="dt-dash-center" id="dashboard-mode-wrapper">
-                                <button type="button" id="dashboard-mode-btn" class="recipe-button-main" onclick="showRecipeModeMenu()">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-                                    <span>Recipe</span>
-                                </button>
-                            </div>
-
-                            <!-- Basket 2 -->
-                            <div class="dt-basket-side" id="basket2-wrapper">
-                                <div class="dt-basket-topbar">
-                                    <button type="button" id="timer-btn-2" class="dt-mode-btn" onclick="dtSelectMode(2,'timer')">Timer</button>
-                                    <div class="dt-runtime">
-                                        <div class="dt-runtime-label">Run Time</div>
-                                        <div id="timer2" class="dt-runtime-value glow">00:00:00</div>
-                                    </div>
-                                    <button type="button" id="manual-btn-2" class="dt-mode-btn is-active" onclick="dtSelectMode(2,'manual')">Manual</button>
-                                </div>
-
-                                <div class="dt-basket-stage">
-                                    <div class="basket-container" id="basket2-container" onclick="dtHandleBasketTap(2, event)">
-                                        <div class="center-temp" id="temp2">--</div>
-                                    </div>
-                                    <div class="dt-probe dt-probe-right" id="probe-2">
-                                        <div class="probe-circle">
-                                            <div class="probe-temp" id="dash-ext2">--</div>
-                                            <div class="probe-text">External</div>
+                                    <div style="flex:1;text-align:center;padding:2px 8px;display:flex;flex-direction:column;align-items:center;gap:2px;">
+                                        <div style="font-size:9px;opacity:0.85;text-transform:uppercase;letter-spacing:0.5px;">Basket 2</div>
+                                        <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:3px;">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path></svg>
+                                            <span id="dashboard-temp-2">--</span>
                                         </div>
-                                    </div>
-                                </div>
-
-                                <div class="dt-basket-meta">
-                                    <div class="dt-basket-label">Basket 2</div>
-                                    <div id="heater2" class="dt-heater-ind is-off">
-                                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
-                                        <span>Heater Off</span>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Bottom row: Start | SET TEMP | Start — same baseline -->
-                        <div class="dt-dash-bottom">
-                            <button type="button" id="start1" class="dt-start-btn" onclick="dtDashboardStart(1)">Start</button>
-                            <div id="dashboard-temp-btn" class="dt-set-temp-panel">
-                                <div class="dt-set-temp-title">SET TEMP</div>
-                                <div class="dt-set-temp-row">
-                                    <div class="dt-set-temp-cell">
-                                        <div class="dt-set-temp-sub">BASKET 1</div>
-                                        <div class="dt-set-temp-val">
-                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
-                                            <span id="dashboard-temp-1">37.0</span>°C
-                                        </div>
-                                    </div>
-                                    <div class="dt-set-temp-cell">
-                                        <div class="dt-set-temp-sub">BASKET 2</div>
-                                        <div class="dt-set-temp-val">
-                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
-                                            <span id="dashboard-temp-2">37.0</span>°C
-                                        </div>
-                                    </div>
-                                </div>
+                        <div id="basket2-wrapper" style="position:absolute;left:520px;top:62%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;">
+                            <div style="text-align:center;margin-top:-80px;margin-bottom:5px;">
+                                <div style="color:#9ca3af;font-size:16px;margin-bottom:2px;font-weight:700;">Run Time</div>
+                                <div id="timer2" class="glow" style="color:#fff;font-size:24px;letter-spacing:0.5px;font-weight:700;line-height:1.1;">00:00:00</div>
+                            </div>
+                            <div class="basket-container" id="basket2-container" style="position:relative;" onclick="dtHandleBasketTap(2, event)">
+                                <div class="center-temp" id="temp2">--</div>
+                            </div>
+                            <div style="color:#fff;font-size:18px;margin-top:12px;font-weight:700;">Basket 2</div>
+                            <div id="heater2" class="dt-heater-ind is-off" style="pointer-events:none;opacity:0.6;margin-top:8px;">
+                                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+                                <span style="font-size:11px;color:#6b7280;margin-top:2px;font-weight:700;">Heater Off</span>
                             </div>
                             <button type="button" id="start2" class="dt-start-btn" onclick="dtDashboardStart(2)">Start</button>
+                        </div>
+
+                        <div id="probe-2" style="position:absolute;right:50px;top:70%;transform:translateY(-50%);z-index:5;">
+                            <div class="probe-circle">
+                                <div class="probe-temp" id="dash-ext2">--</div>
+                                <div class="probe-text" style="font-weight:700;">External</div>
+                            </div>
                         </div>
                     </div>
 
@@ -535,51 +528,85 @@
                     </div>
                 </div>
 
-                                <!-- Create Recipe (Dt_Dr_Reddy layout) -->
+                                <!-- Create Recipe — single scroll (CFR compact) -->
                 <div class="page" id="page-create-recipe-step1">
-                    <div class="validation-type-page create-recipe-step1-page dt-create-recipe-page">
-                        <div class="create-recipe-form-fields form-grid create-recipe-form-grid" style="max-width:720px;margin:0 auto;">
-                            <div class="form-group full-width">
-                                <label>Recipe Name</label>
-                                <input type="text" id="dt-recipe-name" class="input-field" placeholder="e.g., Standard Dissolution"
+                    <div class="dt-recipe-shell create-recipe-step1-page dt-create-recipe-page">
+                        <div class="dt-recipe-scroll" id="dt-recipe-scroll">
+                            <div class="dt-recipe-block">
+                                <label class="dt-recipe-label" for="dt-recipe-name">Recipe name</label>
+                                <input type="text" id="dt-recipe-name" class="input-field dt-recipe-name-input"
+                                    placeholder="e.g. Paracetamol 500 mg"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                             </div>
-                            <div class="form-group full-width">
-                                <label>Mode</label>
-                                <div class="dt-recipe-mode-row">
-                                    <button type="button" id="recipe-mode-manual" class="recipe-mode-btn is-active" onclick="dtSelectRecipeMode('manual')">
-                                        <span>Manual</span>
-                                    </button>
-                                    <button type="button" id="recipe-mode-timer" class="recipe-mode-btn" onclick="dtSelectRecipeMode('timer')">
-                                        <span>Timer</span>
-                                    </button>
+
+                            <div class="dt-recipe-block">
+                                <div class="dt-recipe-label-row">
+                                    <span class="dt-recipe-label">Test mode</span>
+                                    <span class="dt-recipe-label-hint">How the run ends</span>
+                                </div>
+                                <div class="dt-recipe-mode-grid" role="radiogroup" aria-label="Test mode">
+                                    <label class="dt-recipe-mode-card is-active" data-mode="manual" id="recipe-mode-manual">
+                                        <input type="radio" name="recipe-mode-ui" id="recipe-mode-manual-radio" value="manual" checked
+                                            onchange="dtSelectRecipeMode('manual')">
+                                        <span class="dt-recipe-mode-copy">
+                                            <strong>Manual</strong>
+                                            <small>Operator stops</small>
+                                        </span>
+                                    </label>
+                                    <label class="dt-recipe-mode-card" data-mode="timer" id="recipe-mode-timer">
+                                        <input type="radio" name="recipe-mode-ui" id="recipe-mode-timer-radio" value="timer"
+                                            onchange="dtSelectRecipeMode('timer')">
+                                        <span class="dt-recipe-mode-copy">
+                                            <strong>Timer</strong>
+                                            <small>Auto-stop</small>
+                                        </span>
+                                    </label>
                                 </div>
                                 <input type="hidden" id="dt-recipe-mode" value="manual">
                             </div>
-                            <div class="form-group">
-                                <label>Temperature (°C)</label>
-                                <input type="number" id="dt-recipe-temp" class="input-field" min="20" max="55" step="0.1" value="37"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+
+                            <div class="dt-recipe-block">
+                                <div class="dt-recipe-label-row">
+                                    <span class="dt-recipe-label">Parameters</span>
+                                    <span class="dt-recipe-label-hint">20–55 °C</span>
+                                </div>
+                                <div class="dt-recipe-params-grid create-recipe-form-fields">
+                                    <div class="form-group">
+                                        <label for="dt-recipe-temp">Temperature (°C)</label>
+                                        <input type="text" id="dt-recipe-temp" class="input-field recipe-param-input"
+                                            value="37.0" placeholder="37.0" inputmode="decimal"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
+                                    <div class="form-group" id="dt-recipe-duration-row" style="display:none;">
+                                        <label for="dt-recipe-duration">Duration (HH:MM:SS)</label>
+                                        <input type="text" id="dt-recipe-duration" class="input-field recipe-param-input"
+                                            value="00:30:00" placeholder="00:30:00"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                        <input type="hidden" id="dt-recipe-dur-min" value="30">
+                                        <input type="hidden" id="dt-recipe-dur-sec" value="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="dt-recipe-media">Media</label>
+                                        <input type="text" id="dt-recipe-media" class="input-field recipe-param-input"
+                                            placeholder="Optional"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="dt-recipe-mesh">Mesh</label>
+                                        <input type="text" id="dt-recipe-mesh" class="input-field recipe-param-input"
+                                            placeholder="Optional"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
+                                </div>
                             </div>
-                            <div class="form-group" id="dt-recipe-duration-row" style="display:none;">
-                                <label>Set Duration (HH:MM:SS)</label>
-                                <input type="text" id="dt-recipe-duration" class="input-field" placeholder="00:30:00" value="00:30:00"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                                <input type="hidden" id="dt-recipe-dur-min" value="30">
-                                <input type="hidden" id="dt-recipe-dur-sec" value="0">
-                            </div>
-                            <div class="form-group">
-                                <label>Media</label>
-                                <input type="text" id="dt-recipe-media" class="input-field" placeholder="Alphanumeric"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                            </div>
-                            <div class="form-group">
-                                <label>Mesh</label>
-                                <input type="text" id="dt-recipe-mesh" class="input-field" placeholder="Alphanumeric"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                            </div>
+
+                            <p class="dt-recipe-hint">Save requires QA or Admin e-signature.</p>
                         </div>
-                        <button type="button" class="btn btn-primary validation-start-btn" onclick="dtSaveRecipe()">SAVE</button>
+
+                        <footer class="dt-recipe-footer quick-test-actions">
+                            <button type="button" class="btn btn-secondary" onclick="goToPage('manage-recipes')">Back</button>
+                            <button type="button" class="btn btn-primary" id="create-recipe-save-btn" onclick="dtSaveRecipe()">Save Recipe</button>
+                        </footer>
                     </div>
                 </div>
 
@@ -1338,29 +1365,131 @@
                 </div>
 
 
-                <!-- Validation type select -->
+                <!-- Validate: select beaker -->
+                <div class="page" id="page-validate-beaker">
+                    <div class="validation-main-container">
+                        <div class="text-center" style="margin-bottom:18px;">
+                            <h2 class="section-title" style="margin-bottom:6px;">Select Beaker to Validate</h2>
+                            <p class="section-subtitle">Choose basket 1 or 2 for validation</p>
+                        </div>
+                        <div class="validation-settings-grid dt-validate-beaker-grid">
+                            <button type="button" class="settings-card settings-validate" onclick="selectBeakerForValidation(1)">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </div>
+                                <h3>Beaker 1</h3>
+                                <p>Basket 1</p>
+                            </button>
+                            <button type="button" class="settings-card settings-calibrate" onclick="selectBeakerForValidation(2)">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </div>
+                                <h3>Beaker 2</h3>
+                                <p>Basket 2</p>
+                            </button>
+                        </div>
+                        <input type="hidden" id="dt-val-basket" value="1">
+                    </div>
+                </div>
+
+                <!-- Validation type select (Stroke / Temperature cards) -->
                 <div class="page" id="page-validate-type-select">
                     <div class="validation-type-page">
-                        <div class="form-grid" style="max-width:640px;margin:0 auto;">
-                            <div class="form-group">
-                                <label>Basket</label>
-                                <select id="dt-val-basket" class="input-field">
-                                    <option value="1">Basket 1</option>
-                                    <option value="2">Basket 2</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Temp validation setpoint (°C)</label>
-                                <input type="number" id="dt-val-temp" class="input-field" value="37" min="20" max="55" step="0.1"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                            </div>
-                            <div class="form-group full-width">
-                                <p id="dt-val-status" class="section-subtitle">Idle</p>
-                            </div>
+                        <p class="section-subtitle text-center" style="margin-bottom:16px;">
+                            Beaker <span id="val-beaker-num" class="text-accent">1</span> selected — choose validation type
+                        </p>
+                        <div class="validation-type-grid create-recipe-grid--pair dt-val-type-cards">
+                            <label class="validation-type-settings-card validation-type-btn dt-val-card-stroke" id="val-stroke">
+                                <input type="radio" name="val-type" value="stroke" onchange="updateValidationSelection(); startValidationProcess();">
+                                <h3>Stroke Validation</h3>
+                                <p class="step1-card-sublabel">29–32 strokes/min · 60s</p>
+                            </label>
+                            <label class="validation-type-settings-card validation-type-btn dt-val-card-temp" id="val-temp">
+                                <input type="radio" name="val-type" value="temp" onchange="updateValidationSelection(); startValidationProcess();">
+                                <h3>Temperature Validation</h3>
+                                <p class="step1-card-sublabel">Hold ±0.5°C · 2 min</p>
+                            </label>
                         </div>
-                        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:16px;">
-                            <button type="button" class="btn btn-primary" onclick="dtStartStrokeValidation()">Stroke Validation (60s, 29–32/min)</button>
-                            <button type="button" class="btn btn-primary" onclick="dtStartTempValidation()">Temperature Hold (2 min, ±0.5°C)</button>
+                        <p id="dt-val-status" class="section-subtitle" style="display:none;">Idle</p>
+                        <input type="hidden" id="dt-val-temp" value="37">
+                    </div>
+                </div>
+
+                <!-- Stroke Validation test page -->
+                <div class="page" id="page-stroke-validation">
+                    <div class="validation-type-page dt-stroke-validation-page">
+                        <div class="dt-val-test-header">
+                            <button type="button" class="btn btn-secondary dt-val-stop-btn" onclick="stopValidation()">Stop</button>
+                            <h2 class="section-title">Stroke Validation — Beaker <span id="stroke-beaker">1</span></h2>
+                        </div>
+                        <div class="dt-stroke-center">
+                            <p class="section-subtitle">Required: 29–32 strokes/min</p>
+                            <p class="dt-stroke-counter" id="stroke-counter">0</p>
+                            <p class="section-subtitle">strokes/min</p>
+                            <div id="stroke-validation-status-card" class="dt-val-status-card" style="display:none;">
+                                <p id="stroke-validation-status-text" class="dt-val-status-text">VALIDATION PASSED</p>
+                            </div>
+                            <button type="button" id="stroke-complete-btn" class="btn btn-primary" onclick="completeValidation('stroke')" disabled style="opacity:0.5;cursor:not-allowed;">
+                                Complete &amp; Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Temperature Validation test page -->
+                <div class="page" id="page-temp-validation">
+                    <div class="validation-type-page dt-temp-validation-page">
+                        <div class="dt-val-test-header">
+                            <h2 class="section-title">Temperature Validation — Beaker <span id="temp-beaker">1</span></h2>
+                        </div>
+                        <div class="dt-temp-validation-content">
+                            <div class="dt-temp-set-row" id="temp-validation-set-temp-container">
+                                <label for="temp-validation-set-temp-input">Set Temp (°C)</label>
+                                <input type="text" id="temp-validation-set-temp-input" class="input-field validation-temp-input" value="37.0" inputmode="decimal"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                <button type="button" class="btn btn-secondary" onclick="applyValidationSetTemp()">Apply</button>
+                            </div>
+                            <div class="dt-temp-stats-grid">
+                                <div class="dt-temp-stat dt-temp-stat-set">
+                                    <p class="dt-temp-stat-label">Set</p>
+                                    <p class="dt-temp-stat-value" id="set-temp-display">37.0</p>
+                                    <p class="dt-temp-stat-unit">°C</p>
+                                </div>
+                                <div class="dt-temp-stat dt-temp-stat-meas">
+                                    <p class="dt-temp-stat-label">Measured</p>
+                                    <p class="dt-temp-stat-value" id="measured-temp-display">0.0</p>
+                                    <p class="dt-temp-stat-unit">°C</p>
+                                </div>
+                                <div class="dt-temp-stat">
+                                    <p class="dt-temp-stat-label">Max Deviation</p>
+                                    <p class="dt-temp-stat-value dt-temp-stat-value--sm" id="deviation-display">±0.0°C</p>
+                                </div>
+                                <div class="dt-temp-stat">
+                                    <p class="dt-temp-stat-label">Holding</p>
+                                    <p class="dt-temp-stat-value dt-temp-stat-value--sm" id="temp-validation-elapsed">02:00</p>
+                                </div>
+                            </div>
+                            <div id="validation-result-card" class="dt-val-status-card">
+                                <p class="section-subtitle" id="validation-message">Ready to Validate</p>
+                                <p class="dt-val-status-text" id="validation-status">-</p>
+                            </div>
+                            <div class="dt-temp-actions">
+                                <button type="button" id="validation-stop-btn" class="btn btn-primary" onclick="toggleTempValidation()">
+                                    <span id="validation-stop-btn-text">START</span>
+                                </button>
+                                <button type="button" id="complete-temp-validation-btn" class="btn btn-primary" onclick="completeValidation('temp')" style="display:none;">
+                                    Complete &amp; Save
+                                </button>
+                                <button type="button" id="temp-validation-exit-btn" class="btn btn-secondary" onclick="exitTempValidation()">Exit</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1834,6 +1963,32 @@
                     </div>
                 </div>
 
+                <!-- Recipe / report / calibration approval verification -->
+                <div class="page" id="page-approval-verify">
+                    <div class="add-member-container approval-verify-page">
+                        <h2 id="approval-verify-title" class="section-title">Approval required</h2>
+                        <p id="approval-verify-subtitle" class="section-subtitle">Enter credentials for a user with approval permission.</p>
+                        <div class="add-member-form form-grid">
+                            <div class="form-group">
+                                <label for="approval-verify-username">Username</label>
+                                <input type="text" id="approval-verify-username" class="input-field" placeholder="Approver username" autocomplete="off"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group">
+                                <label for="approval-verify-password">Password</label>
+                                <input type="password" id="approval-verify-password" class="input-field" placeholder="Password" autocomplete="off"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <p id="approval-verify-error" class="approval-verify-error full-width" style="display: none;"></p>
+                        </div>
+                        <div class="add-member-actions members-actions-row approval-verify-actions">
+                            <button type="button" id="approval-verify-submit-btn" class="btn btn-primary" onclick="submitApprovalVerifyModal()">Verify &amp; Continue</button>
+                            <button type="button" id="approval-verify-biometric-btn" class="btn btn-secondary" onclick="submitApprovalVerifyBiometricModal()">Use Fingerprint</button>
+                            <button type="button" class="btn btn-secondary" onclick="cancelApprovalVerifyModal()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Add Member Page -->
                 <div class="page" id="page-add-member">
                     <div class="add-member-container">
@@ -2168,8 +2323,8 @@
     <script src="/keyboard.js?v=3"></script>
     <script src="/input-focus.js?v=1"></script>
     <script src="/rbac.js?v=7"></script>
-    <script src="/script.js?v=91"></script>
-    <script src="/dt_client.js?v=4"></script>
+    <script src="/script.js?v=93"></script>
+    <script src="/dt_client.js?v=7"></script>
 </body>
 
 </html>

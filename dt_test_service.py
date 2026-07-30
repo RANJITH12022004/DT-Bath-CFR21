@@ -352,33 +352,37 @@ def tap_vessel(basket: int, vessel: int) -> Dict[str, Any]:
         holes = dict(run.get("completedHoles") or {})
         if holes.get(str(vessel)):
             out = dict(run)
-            return {"ok": True, "run": out, "already": True}
-        holes[str(vessel)] = True
-        run["completedHoles"] = holes
-        vt = dict(run.get("vesselTimes") or {})
-        vt[str(vessel)] = formatted
-        run["vesselTimes"] = vt
-        hct = dict(run.get("holeCompletionTimes") or {})
-        hct[str(vessel)] = elapsed
-        run["holeCompletionTimes"] = hct
-        hcts = dict(run.get("holeCompletionTimestamps") or {})
-        hcts[str(vessel)] = _now_iso()
-        run["holeCompletionTimestamps"] = hcts
-        run["updatedAt"] = _now_iso()
-        out = dict(run)
-    _persist()
-    _audit(
-        "Tube completed",
-        f"Basket {basket} tube {vessel} at {formatted}",
-        entity_type="test_run",
-        entity_id=str(basket),
-        extra={"basket": basket, "vessel": vessel, "elapsed": formatted},
-    )
+            already = True
+        else:
+            already = False
+            holes[str(vessel)] = True
+            run["completedHoles"] = holes
+            vt = dict(run.get("vesselTimes") or {})
+            vt[str(vessel)] = formatted
+            run["vesselTimes"] = vt
+            hct = dict(run.get("holeCompletionTimes") or {})
+            hct[str(vessel)] = elapsed
+            run["holeCompletionTimes"] = hct
+            hcts = dict(run.get("holeCompletionTimestamps") or {})
+            hcts[str(vessel)] = _now_iso()
+            run["holeCompletionTimestamps"] = hcts
+            run["updatedAt"] = _now_iso()
+            out = dict(run)
+    if not already:
+        _persist()
+        _audit(
+            "Tube completed",
+            f"Basket {basket} tube {vessel} at {formatted}",
+            entity_type="test_run",
+            entity_id=str(basket),
+            extra={"basket": basket, "vessel": vessel, "elapsed": formatted},
+        )
 
-    # All vessels done?
-    if len(out.get("completedHoles") or {}) >= cfg:
+    # All vessels done? (also on re-tap of an already-marked tube so a missed
+    # auto-stop cannot leave the stroke motor running.)
+    if len(out.get("completedHoles") or {}) >= cfg and out.get("state") == "RUNNING":
         return stop_test(basket, aborted=False, reason="all_tubes_complete")
-    return {"ok": True, "run": out}
+    return {"ok": True, "run": out, "already": already}
 
 
 def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[str, Any]:

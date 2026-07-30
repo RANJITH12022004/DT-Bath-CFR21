@@ -886,8 +886,22 @@ def cmd_stop(basket: Optional[int] = None) -> Dict[str, Any]:
                 _mock_running["1"] = False
                 _mock_running["2"] = False
         set_heater_state(t1=0.0, t2=0.0)
-        with _live_state_lock:
-            _live_state["running"] = False
+
+    # Clear global running when no basket is still stroking (per-basket STOP1/2
+    # previously left live.running stuck true after a completed test).
+    with _mock_lock:
+        any_mock = bool(_mock_running.get("1") or _mock_running.get("2"))
+    if basket not in (1, 2) or not any_mock:
+        # For real hardware, also clear when the peer basket has no active run heater.
+        heater = get_heater_state()
+        peer_active = False
+        if basket == 1:
+            peer_active = float(heater.get("t2") or 0) > 0
+        elif basket == 2:
+            peer_active = float(heater.get("t1") or 0) > 0
+        if not peer_active:
+            with _live_state_lock:
+                _live_state["running"] = False
     return send_command(cmd)
 
 

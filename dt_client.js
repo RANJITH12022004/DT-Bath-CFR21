@@ -8,7 +8,8 @@
   var DT = {
     basketConfig: 6,
     selectedBasket: 1,
-    pollTimer: null,
+    pollTimers: { 1: null, 2: null },
+    pollTimer: null, // legacy alias; prefer pollTimers
     sse: null,
     recipeDraft: null,
     modes: { 1: 'manual', 2: 'manual' },
@@ -223,7 +224,9 @@
       container.appendChild(center);
     }
     var positions = [];
-    if (holeCount === 3) {
+    if (holeCount === 1) {
+      positions = [{ top: '50%', left: '50%', num: 1 }];
+    } else if (holeCount === 3) {
       var r = 33;
       positions = [
         { top: (50 - r) + '%', left: '50%', num: 1 },
@@ -326,9 +329,7 @@
         method: 'POST',
         body: { aborted: true, reason: 'operator_abort' },
       }).then(function () {
-        DT.running[basket] = false;
-        var btn = document.getElementById('start' + basket);
-        if (btn) { btn.textContent = 'Start'; btn.classList.remove('is-stop'); }
+        finishBasketUi(basket);
         var tEl = document.getElementById('timer' + basket);
         if (tEl) tEl.textContent = '00:00:00';
         toast('Basket ' + basket + ' stopped', 'info');
@@ -368,10 +369,16 @@
     if (hidden) hidden.value = mode;
     var man = document.getElementById('recipe-mode-manual');
     var tim = document.getElementById('recipe-mode-timer');
+    var manRadio = document.getElementById('recipe-mode-manual-radio');
+    var timRadio = document.getElementById('recipe-mode-timer-radio');
     if (man) man.classList.toggle('is-active', mode === 'manual');
     if (tim) tim.classList.toggle('is-active', mode === 'timer');
+    if (manRadio) manRadio.checked = mode === 'manual';
+    if (timRadio) timRadio.checked = mode === 'timer';
     var row = document.getElementById('dt-recipe-duration-row');
     if (row) row.style.display = mode === 'timer' ? '' : 'none';
+    var page = document.getElementById('page-create-recipe-step1');
+    if (page) page.classList.toggle('is-timer-mode', mode === 'timer');
   };
 
   window.dtToggleRecipeDuration = function () {
@@ -413,10 +420,15 @@
       });
     }
 
+    var opts = (typeof _approvalVerifyModalOptionsForRecipe === 'function')
+      ? _approvalVerifyModalOptionsForRecipe()
+      : { purpose: 'recipe', titleText: 'Recipe approval required', subtitleText: 'Enter credentials for a user with Recipe approval permission.' };
     if (typeof openApprovalVerifyModal === 'function') {
-      openApprovalVerifyModal({ purpose: 'recipe', title: 'Approve recipe' }).then(function (token) {
+      openApprovalVerifyModal(opts).then(function (token) {
         if (!token) return;
         doSave(token).catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+      }).catch(function (e) {
+        toast((e && e.message) || 'QA verification UI is missing.', 'error');
       });
     } else {
       doSave(null).catch(function (e) { toast(e.message || 'Save failed', 'error'); });
@@ -597,6 +609,31 @@
 
   // -------------------- Test run --------------------
 
+  function finishBasketUi(basket, opts) {
+    opts = opts || {};
+    DT.running[basket] = false;
+    DT.heaterOn[basket] = false;
+    if (DT._confirmPending) DT._confirmPending[basket] = false;
+    stopRunPoll(basket);
+    var startBtn = document.getElementById('start' + basket);
+    if (startBtn) {
+      startBtn.textContent = 'Start';
+      startBtn.classList.remove('is-stop');
+    }
+    var container = document.getElementById('basket' + basket + '-container');
+    if (container) {
+      var ring = container.querySelector('.basket-active-ring');
+      if (ring) ring.remove();
+      if (opts.resetHoles !== false) {
+        container.querySelectorAll('.basket-hole').forEach(function (el) {
+          el.classList.remove('completed');
+        });
+      }
+    }
+    updateHeaterIndicators();
+    updateModeButtonsUI(basket);
+  }
+
   function openTestRun(basket, params) {
     ensureSse();
     DT.selectedBasket = basket;
@@ -701,8 +738,9 @@
   }
 
   function startRunPoll(basket) {
-    stopRunPoll();
-    DT.pollTimer = setInterval(function () {
+    stopRunPoll(basket);
+    DT.pollTimers = DT.pollTimers || { 1: null, 2: null };
+    DT.pollTimers[basket] = setInterval(function () {
       api('/api/data/dt/runs/' + basket).then(function (res) {
         var run = res.run || {};
         var stateEl = document.getElementById('dt-run-state');
@@ -741,28 +779,36 @@
             if (el2) { el2.classList.add('completed'); el2.disabled = true; }
           });
         }
-        if (run.state === 'COMPLETE' || run.state === 'ABORTED' || run.state === 'IDLE') {
-          stopRunPoll();
-          DT.running[basket] = false;
-          var startBtn = document.getElementById('start' + basket);
-          if (startBtn) { startBtn.textContent = 'Start'; startBtn.classList.remove('is-stop'); }
-          var container = document.getElementById('basket' + basket + '-container');
-          if (container) {
-            var ring = container.querySelector('.basket-active-ring');
-            if (ring) ring.remove();
-          }
-          if (run.state !== 'IDLE') {
-            toast(run.status || run.state, run.aborted ? 'error' : 'success');
-          }
+        if (run.state === 'COMPLETE' || run.state === 'ABORTED') {
+          finishBasketUi(basket);
+          toast(run.status || run.state, run.aborted ? 'error' : 'success');
+          if (typeof loadReports === 'function') try { loadReports(); } catch (e) {}
+          setTimeout(function () { go('home'); }, 600);
+        } else if (run.state === 'IDLE' && DT.running[basket]) {
+          // Server cleared the run after auto-save; treat as finished.
+          finishBasketUi(basket);
           if (typeof loadReports === 'function') try { loadReports(); } catch (e) {}
           setTimeout(function () { go('home'); }, 600);
         }
       }).catch(function () {});
     }, 1000);
+    DT.pollTimer = DT.pollTimers[basket];
   }
 
-  function stopRunPoll() {
-    if (DT.pollTimer) { clearInterval(DT.pollTimer); DT.pollTimer = null; }
+  function stopRunPoll(basket) {
+    if (basket == null) {
+      [1, 2].forEach(function (b) { stopRunPoll(b); });
+      if (DT.pollTimer) { clearInterval(DT.pollTimer); DT.pollTimer = null; }
+      return;
+    }
+    DT.pollTimers = DT.pollTimers || { 1: null, 2: null };
+    if (DT.pollTimers[basket]) {
+      clearInterval(DT.pollTimers[basket]);
+      DT.pollTimers[basket] = null;
+    }
+    if (DT.pollTimer && DT.pollTimers[1] == null && DT.pollTimers[2] == null) {
+      DT.pollTimer = null;
+    }
   }
 
   window.dtConfirmStart = function () {
@@ -794,10 +840,19 @@
         dashHoles.forEach(function (node) {
           if (String(node.textContent) === String(hole)) node.classList.add('completed');
         });
-        if (res.savedReport) {
-          toast('Test complete — report pending approval', 'success');
-          DT.running[basket] = false;
-          stopRunPoll();
+        var run = res.run || {};
+        var finished = !!(res.savedReport || res.report ||
+          run.state === 'COMPLETE' || run.state === 'ABORTED' ||
+          (run.state === 'IDLE' && DT.running[basket]));
+        if (finished) {
+          finishBasketUi(basket);
+          toast(
+            (res.savedReport || res.report || run.state === 'COMPLETE')
+              ? 'Test complete — report pending approval'
+              : 'Test stopped',
+            'success'
+          );
+          if (typeof loadReports === 'function') try { loadReports(); } catch (e) {}
           setTimeout(function () { go('home'); }, 600);
         }
       })
@@ -811,9 +866,8 @@
       body: { aborted: !!aborted, reason: aborted ? 'operator_abort' : 'completed' },
     }).then(function (res) {
       if (!res.ok) throw new Error(res.error || 'Stop failed');
+      finishBasketUi(basket);
       toast(aborted ? 'Test aborted' : 'Test stopped', aborted ? 'error' : 'success');
-      DT.running[basket] = false;
-      stopRunPoll();
       setTimeout(function () { go('home'); }, 600);
     }).catch(function (e) { toast(e.message || 'Stop failed', 'error'); });
   };
@@ -826,8 +880,87 @@
 
   // -------------------- Validation --------------------
 
+  var _valPollTimer = null;
+  var _valKind = null;
+  var _valBasket = 1;
+  var _tempValRunning = false;
+
+  function clearValPoll() {
+    if (_valPollTimer) {
+      clearInterval(_valPollTimer);
+      _valPollTimer = null;
+    }
+  }
+
+  function currentValBasket() {
+    var hidden = document.getElementById('dt-val-basket');
+    var n = parseInt((hidden && hidden.value) || String(_valBasket) || '1', 10);
+    return n === 2 ? 2 : 1;
+  }
+
+  window.selectBeakerForValidation = function (beakerId) {
+    _valBasket = beakerId === 2 ? 2 : 1;
+    var hidden = document.getElementById('dt-val-basket');
+    if (hidden) hidden.value = String(_valBasket);
+    var numEl = document.getElementById('val-beaker-num');
+    if (numEl) numEl.textContent = String(_valBasket);
+    go('validate-type-select');
+  };
+
+  window.updateValidationSelection = function () {
+    var selected = document.querySelector('input[name="val-type"]:checked');
+    var stroke = document.getElementById('val-stroke');
+    var temp = document.getElementById('val-temp');
+    if (stroke) stroke.classList.toggle('selected', !!(selected && selected.value === 'stroke'));
+    if (temp) temp.classList.toggle('selected', !!(selected && selected.value === 'temp'));
+  };
+
+  window.startValidationProcess = function () {
+    if (typeof userCanRunValidation === 'function' && !userCanRunValidation()) {
+      if (typeof denyPermission === 'function') denyPermission('run validation');
+      return;
+    }
+    var selected = document.querySelector('input[name="val-type"]:checked');
+    if (!selected) {
+      toast('Please select a validation type', 'error');
+      return;
+    }
+    window.updateValidationSelection();
+    var basket = currentValBasket();
+    if (selected.value === 'stroke') {
+      var strokeBeaker = document.getElementById('stroke-beaker');
+      if (strokeBeaker) strokeBeaker.textContent = String(basket);
+      var counter = document.getElementById('stroke-counter');
+      if (counter) counter.textContent = '0';
+      var statusCard = document.getElementById('stroke-validation-status-card');
+      if (statusCard) statusCard.style.display = 'none';
+      var completeBtn = document.getElementById('stroke-complete-btn');
+      if (completeBtn) {
+        completeBtn.disabled = true;
+        completeBtn.style.opacity = '0.5';
+        completeBtn.style.cursor = 'not-allowed';
+      }
+      go('stroke-validation');
+      window.dtStartStrokeValidation();
+    } else if (selected.value === 'temp') {
+      var tempBeaker = document.getElementById('temp-beaker');
+      if (tempBeaker) tempBeaker.textContent = String(basket);
+      _tempValRunning = false;
+      var msg = document.getElementById('validation-message');
+      var st = document.getElementById('validation-status');
+      if (msg) msg.textContent = 'Ready to Validate';
+      if (st) st.textContent = '-';
+      var completeTemp = document.getElementById('complete-temp-validation-btn');
+      if (completeTemp) completeTemp.style.display = 'none';
+      var startLbl = document.getElementById('validation-stop-btn-text');
+      if (startLbl) startLbl.textContent = 'START';
+      go('temp-validation');
+    }
+  };
+
   window.dtStartStrokeValidation = function () {
-    var basket = parseInt((document.getElementById('dt-val-basket') || {}).value || '1', 10);
+    var basket = currentValBasket();
+    clearValPoll();
     api('/api/data/dt/validation/stroke/' + basket + '/start', { method: 'POST', body: {} })
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Start failed');
@@ -838,35 +971,186 @@
   };
 
   window.dtStartTempValidation = function () {
-    var basket = parseInt((document.getElementById('dt-val-basket') || {}).value || '1', 10);
-    var temp = parseFloat((document.getElementById('dt-val-temp') || {}).value || '37');
+    var basket = currentValBasket();
+    var setInput = document.getElementById('temp-validation-set-temp-input');
+    var hidden = document.getElementById('dt-val-temp');
+    var temp = parseFloat((setInput && setInput.value) || (hidden && hidden.value) || '37');
+    if (isNaN(temp) || temp < 20 || temp > 55) {
+      toast('Set temperature must be 20–55°C', 'error');
+      return;
+    }
+    if (hidden) hidden.value = String(temp);
+    var setDisp = document.getElementById('set-temp-display');
+    if (setDisp) setDisp.textContent = temp.toFixed(1);
+    clearValPoll();
     api('/api/data/dt/validation/temp/' + basket + '/start', {
       method: 'POST',
       body: { setTemperature: temp },
     }).then(function (res) {
       if (!res.ok) throw new Error(res.error || 'Start failed');
+      _tempValRunning = true;
+      var startLbl = document.getElementById('validation-stop-btn-text');
+      if (startLbl) startLbl.textContent = 'STOP';
+      var msg = document.getElementById('validation-message');
+      if (msg) msg.textContent = 'Temperature hold in progress';
       toast('Temp validation started', 'info');
       pollValidation('temp', basket);
     }).catch(function (e) { toast(e.message || 'Failed', 'error'); });
   };
 
+  window.applyValidationSetTemp = function () {
+    var setInput = document.getElementById('temp-validation-set-temp-input');
+    var temp = parseFloat(setInput && setInput.value);
+    if (isNaN(temp) || temp < 20 || temp > 55) {
+      toast('Set temperature must be 20–55°C', 'error');
+      return;
+    }
+    var hidden = document.getElementById('dt-val-temp');
+    if (hidden) hidden.value = String(temp);
+    var setDisp = document.getElementById('set-temp-display');
+    if (setDisp) setDisp.textContent = temp.toFixed(1);
+    toast('Set temperature applied: ' + temp.toFixed(1) + '°C', 'success');
+  };
+
+  window.toggleTempValidation = function () {
+    if (_tempValRunning) {
+      window.stopValidation();
+      return;
+    }
+    window.dtStartTempValidation();
+  };
+
+  window.stopValidation = function (opts) {
+    opts = opts || {};
+    clearValPoll();
+    var basket = currentValBasket();
+    var kind = _valKind;
+    if (kind === 'temp' || _tempValRunning) {
+      api('/api/data/dt/validation/temp/' + basket + '/abort', { method: 'POST', body: {} }).catch(function () {});
+    }
+    if (kind === 'stroke') {
+      api('/api/data/dt/validation/stroke/' + basket + '/abort', { method: 'POST', body: {} }).catch(function () {});
+    }
+    _tempValRunning = false;
+    _valKind = null;
+    var startLbl = document.getElementById('validation-stop-btn-text');
+    if (startLbl) startLbl.textContent = 'START';
+    if (!opts.stay) go('validate-type-select');
+  };
+
+  window.exitTempValidation = function () {
+    window.stopValidation();
+  };
+
+  window.completeValidation = function (kind) {
+    kind = kind === 'temp' ? 'temp' : 'stroke';
+    var basket = currentValBasket();
+    clearValPoll();
+    api('/api/data/dt/validation/' + kind + '/' + basket + '/save', { method: 'POST', body: {} })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.error || 'Save failed');
+        toast('Validation report saved (pending approval)', 'success');
+        _tempValRunning = false;
+        var report = res.report || {};
+        var rid = report.id;
+        if (rid && typeof openReportPreview === 'function') {
+          openReportPreview(rid, { setGate: true });
+        } else {
+          go('reports');
+          if (typeof loadReports === 'function') loadReports();
+        }
+      })
+      .catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+  };
+
+  function formatHoldRemaining(s) {
+    var n = Math.max(0, Math.floor(Number(s) || 0));
+    var m = Math.floor(n / 60);
+    var sec = n % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+
   function pollValidation(kind, basket) {
-    var el = document.getElementById('dt-val-status');
-    var t = setInterval(function () {
+    _valKind = kind;
+    _valBasket = basket;
+    var statusEl = document.getElementById('dt-val-status');
+    clearValPoll();
+    _valPollTimer = setInterval(function () {
       api('/api/data/dt/validation/' + kind + '/' + basket).then(function (res) {
         var s = res.session || {};
-        if (el) {
-          el.textContent = (s.state || '--') +
+        if (statusEl) {
+          statusEl.textContent = (s.state || '--') +
             (s.strokesPerMin != null ? (' | ' + s.strokesPerMin + '/min') : '') +
             (s.maxDeviation != null ? (' | dev=' + s.maxDeviation) : '') +
             (s.status ? (' | ' + s.status) : '');
         }
-        if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
-          clearInterval(t);
-          if (s.state === 'COMPLETE') {
-            api('/api/data/dt/validation/' + kind + '/' + basket + '/save', { method: 'POST', body: {} })
-              .then(function () { toast('Validation report saved (pending approval)', 'success'); })
-              .catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+
+        if (kind === 'stroke') {
+          var counter = document.getElementById('stroke-counter');
+          if (counter && s.strokesPerMin != null) counter.textContent = String(s.strokesPerMin);
+          if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
+            clearValPoll();
+            var card = document.getElementById('stroke-validation-status-card');
+            var text = document.getElementById('stroke-validation-status-text');
+            var btn = document.getElementById('stroke-complete-btn');
+            if (card) {
+              card.style.display = '';
+              card.className = 'dt-val-status-card ' + (s.status === 'PASSED' ? 'is-pass' : 'is-fail');
+            }
+            if (text) text.textContent = s.status === 'PASSED' ? 'VALIDATION PASSED' : 'VALIDATION FAILED';
+            if (btn && s.state === 'COMPLETE') {
+              btn.disabled = false;
+              btn.style.opacity = '1';
+              btn.style.cursor = 'pointer';
+            }
+          }
+        }
+
+        if (kind === 'temp') {
+          var liveTemps = DT.latestTemps || {};
+          var irKey = basket === 2 ? 'IR2' : 'IR1';
+          var liveIr = liveTemps[irKey];
+          var samples = s.samples || [];
+          var lastSample = samples.length ? samples[samples.length - 1].temp : null;
+          var measured = liveIr != null ? liveIr : (lastSample != null ? lastSample : (s.maxTemp != null ? s.maxTemp : null));
+          if (measured != null) {
+            var meas = document.getElementById('measured-temp-display');
+            if (meas) meas.textContent = Number(measured).toFixed(1);
+          }
+          if (s.setTemperature != null || s.setTemp != null) {
+            var setDisp = document.getElementById('set-temp-display');
+            var sv = s.setTemperature != null ? s.setTemperature : s.setTemp;
+            if (setDisp) setDisp.textContent = Number(sv).toFixed(1);
+          }
+          if (s.maxDeviation != null) {
+            var dev = document.getElementById('deviation-display');
+            if (dev) dev.textContent = '±' + Number(s.maxDeviation).toFixed(2) + '°C';
+          }
+          var rem = null;
+          if (s.remainingSec != null) rem = s.remainingSec;
+          else if (s.holdRemaining != null) rem = s.holdRemaining;
+          else if (s.state === 'HOLDING' && s.holdStartedAtEpoch && s.durationSec) {
+            rem = Math.max(0, Number(s.durationSec) - ((Date.now() / 1000) - Number(s.holdStartedAtEpoch)));
+          } else if (s.state === 'PREHEAT') {
+            rem = s.durationSec || 120;
+          }
+          if (rem != null) {
+            var el = document.getElementById('temp-validation-elapsed');
+            if (el) el.textContent = formatHoldRemaining(rem);
+          }
+          var msg = document.getElementById('validation-message');
+          var st = document.getElementById('validation-status');
+          if (msg) msg.textContent = s.state || 'Running';
+          if (st) st.textContent = s.status || '-';
+          if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
+            clearValPoll();
+            _tempValRunning = false;
+            var startLbl = document.getElementById('validation-stop-btn-text');
+            if (startLbl) startLbl.textContent = 'START';
+            var completeTemp = document.getElementById('complete-temp-validation-btn');
+            if (completeTemp && s.state === 'COMPLETE') completeTemp.style.display = '';
+            if (msg) msg.textContent = s.state === 'COMPLETE' ? 'Hold complete' : 'Aborted';
+            if (st) st.textContent = s.status || '-';
           }
         }
       }).catch(function () {});
@@ -904,13 +1188,24 @@
       }).then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Calibration failed');
         toast('Calibrated ' + sensor + ' (before=' + res.beforeValue + ' after=' + res.afterValue + ')', 'success');
+        var rid = (res.report && res.report.id) || res.reportId;
+        if (rid && typeof openReportPreview === 'function') {
+          openReportPreview(rid, { setGate: true });
+        }
       });
     }
 
+    var calOpts = {
+      purpose: 'calibration',
+      titleText: 'Calibration approval required',
+      subtitleText: 'Enter credentials to authorize temperature calibration.',
+    };
     if (typeof openApprovalVerifyModal === 'function') {
-      openApprovalVerifyModal({ purpose: 'calibration', title: 'Approve calibration' }).then(function (token) {
+      openApprovalVerifyModal(calOpts).then(function (token) {
         if (!token) return;
         doCal(token).catch(function (e) { toast(e.message || 'Failed', 'error'); });
+      }).catch(function (e) {
+        toast((e && e.message) || 'QA verification UI is missing.', 'error');
       });
     } else {
       doCal(null).catch(function (e) { toast(e.message || 'Failed', 'error'); });
