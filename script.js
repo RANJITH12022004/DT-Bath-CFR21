@@ -588,6 +588,7 @@ var _approvalVerifyReturnPage = 'home';
 
 function openApprovalVerifyModal(options) {
     return new Promise(function (resolve, reject) {
+        _approvalVerifySubmitInFlight = false;
         _approvalVerifyReturnPage = (typeof getActivePageName === 'function' ? getActivePageName() : '') || 'home';
         if (typeof goToPage === 'function') goToPage('approval-verify');
         var els = _getApprovalVerifyModalElements();
@@ -632,6 +633,7 @@ function closeApprovalVerifyModal() {
 }
 
 function cancelApprovalVerifyModal() {
+    _approvalVerifySubmitInFlight = false;
     closeApprovalVerifyModal();
     _restoreApprovalVerifyModalOriginalUi();
     if (approvalVerifyResolve) {
@@ -641,7 +643,10 @@ function cancelApprovalVerifyModal() {
     if (approvalVerifyReject) approvalVerifyReject = null;
 }
 
+var _approvalVerifySubmitInFlight = false;
+
 function submitApprovalVerifyModal() {
+    if (_approvalVerifySubmitInFlight) return;
     var usernameEl = document.getElementById('approval-verify-username');
     var passwordEl = document.getElementById('approval-verify-password');
     var errEl = document.getElementById('approval-verify-error');
@@ -667,11 +672,13 @@ function submitApprovalVerifyModal() {
             return;
         }
     }
+    _approvalVerifySubmitInFlight = true;
     apiRequest(API_BASE + '/api/data/auth/approval-verify', {
         method: 'POST',
         body: { method: 'credentials', username: username, password: password, purpose: _approvalVerifyPurpose }
     }).then(function (data) {
         if (!data || !data.ok || !data.token) {
+            _approvalVerifySubmitInFlight = false;
             if (errEl) {
                 errEl.textContent = (data && data.error) ? String(data.error) : 'Verification failed.';
                 errEl.style.display = 'block';
@@ -685,7 +692,9 @@ function submitApprovalVerifyModal() {
             approvalVerifyResolve = null;
         }
         if (approvalVerifyReject) approvalVerifyReject = null;
+        _approvalVerifySubmitInFlight = false;
     }).catch(function (err) {
+        _approvalVerifySubmitInFlight = false;
         if (errEl) {
             errEl.textContent = 'Verification failed: ' + (err && err.message ? err.message : 'Error');
             errEl.style.display = 'block';
@@ -4239,8 +4248,9 @@ function saveRecipeFromParams() {
 
     apiRequest(url, { method: method, body: recipe }).then(function (result) {
         window.currentEditingRecipeId = null;
+        // goToPage('manage-recipes') already schedules loadManageRecipes — do not call it again
+        // or overlapping fetches append duplicate rows.
         goToPage('manage-recipes');
-        if (typeof loadManageRecipes === 'function') loadManageRecipes();
         var rid = (result && result.id != null) ? result.id : ((result && result.recipe && result.recipe.id != null) ? result.recipe.id : null);
         if (rid != null) {
             setTimeout(function () {
@@ -8045,16 +8055,22 @@ function formatDisabledRecipeTimestamp(iso) {
     }
 }
 
+var _manageRecipesLoadGen = 0;
+
 function loadManageRecipes() {
     var msgEl = document.getElementById('manage-recipes-message');
     var tableEl = document.querySelector('.manage-recipes-table');
     var tbody = document.getElementById('manage-recipes-table-body');
     if (!tbody) return;
 
+    // Drop stale overlapping renders (goToPage + explicit reload used to append twice).
+    var gen = ++_manageRecipesLoadGen;
     tbody.innerHTML = '';
     refreshActiveQaCount();
 
     getRecipes().then(function (recipes) {
+        if (gen !== _manageRecipesLoadGen) return;
+
         var mode = recipeListMode === 'load' ? 'load' : 'manage';
         var createBtn = document.querySelector('#page-manage-recipes .btn-create-recipe');
         if (createBtn) createBtn.style.display = (mode === 'load') ? 'none' : '';
@@ -8084,6 +8100,9 @@ function loadManageRecipes() {
         if (mode === 'load') {
             recipes = (recipes || []).filter(function (r) { return getEffectiveRecipeApprovalStatus(r) === 'approved'; });
         }
+
+        // Clear again under the generation guard so a late earlier fetch cannot leave rows.
+        tbody.innerHTML = '';
 
         if (!recipes.length) {
             if (msgEl) msgEl.style.display = '';

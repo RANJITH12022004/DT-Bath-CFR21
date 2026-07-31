@@ -2,9 +2,11 @@
 """
 dt_hardware_service.py - Disintegration Tester ESP32 UART protocol + mock backend.
 
-TX: T1, T2, TS, PHW,t1,t2, START,B1/B2/B3, STOP/STOP1/STOP2, CAL,IRx/EXTx
-RX: T1/T2 temp lines, TR1/TR2 ready, S1/S2 stroke counters
+TX: T1, T2, TS, TEMP, PHW,t1,t2, START,B1/B2/B3, START,STROKE,Bx,A,
+    STOP/STOP1/STOP2, CAL,IRx/EXTx
+RX: T1/T2 temp lines, TEMP bulk (IR1:..), TR1/TR2 ready, S1/S2 stroke counters
 
+Aligned with Dt_Dr_Reddy / DisT-Raw bridge_services.py protocol.
 Mock mode: DT_HARDWARE_MOCK=1 (or auto when serial device unavailable).
 """
 
@@ -46,6 +48,10 @@ _uart_owner_lock_fd = None
 _hardware_init_done = False
 _hardware_owner_active = False
 DEFAULT_UART_LOG = "/opt/kiosk/uart_communications.log"
+
+# Preheat cooldown — skip temp polling briefly after PHW (Dt_Dr_Reddy parity)
+_last_preheat_time = 0.0
+_preheat_cooldown = 1.0
 
 _temp_cache_lock = threading.Lock()
 _heater_lock = threading.Lock()
@@ -249,6 +255,27 @@ def parse_t1_t2(line: str, expected_tag: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+def parse_temp_bulk(line: str) -> Optional[Dict[str, float]]:
+    """Parse Dt_Dr_Reddy TEMP reply: IR1:25.3,IR2:25.1,EXT1:24.8,EXT2:24.9"""
+    s = str(line or "").strip()
+    if not s:
+        return None
+    out: Dict[str, float] = {}
+    for part in s.split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        key, val = part.split(":", 1)
+        key_u = key.strip().upper()
+        if key_u not in ("IR1", "IR2", "EXT1", "EXT2"):
+            continue
+        try:
+            out[key_u] = float(val.strip())
+        except ValueError:
+            return None
+    return out if len(out) >= 2 else None
+
+
 def is_ts_response_line(line: str) -> bool:
     parts = [p.strip().upper() for p in line.split(",") if p.strip()]
     if len(parts) < 2:
@@ -280,6 +307,8 @@ def classify_line(line: str) -> str:
     su = s.upper()
     if su.startswith("T1") or su.startswith("T2"):
         return "temps"
+    if parse_temp_bulk(s):
+        return "temps_bulk"
     if is_ts_response_line(s):
         return "ts"
     if parse_strokes(s):
@@ -453,6 +482,10 @@ def build_line_payload(line: str) -> Dict[str, Any]:
                 payload.update({"IR1": ir, "EXT1": ext})
             else:
                 payload.update({"IR2": ir, "EXT2": ext})
+    elif kind == "temps_bulk":
+        bulk = parse_temp_bulk(line) or {}
+        payload.update(bulk)
+        payload["type"] = "temps"
     strokes = parse_strokes(line)
     if strokes:
         payload.update(strokes)
@@ -478,6 +511,15 @@ def _ingest_uart_line(line: str, *, log_tag: str = "RX_STREAM") -> Dict[str, Any
             cache = _update_temps(ir2=payload.get("IR2"), ext2=payload.get("EXT2"))
             _emit_temps_sse(cache)
             return payload
+    if kind == "temps_bulk":
+        cache = _update_temps(
+            ir1=payload.get("IR1"),
+            ir2=payload.get("IR2"),
+            ext1=payload.get("EXT1"),
+            ext2=payload.get("EXT2"),
+        )
+        _emit_temps_sse(cache)
+        return payload
     if kind == "ts":
         _handle_ts_response(line)
         return payload
@@ -680,6 +722,12 @@ def _temperature_polling_thread() -> None:
             if _calibration_in_progress:
                 time.sleep(1.0)
                 continue
+            # Dt_Dr_Reddy: skip poll briefly after PHW to reduce UART contention
+            if (time.time() - _last_preheat_time) < float(
+                _config.get("PREHEAT_COOLDOWN", _preheat_cooldown)
+            ):
+                time.sleep(0.2)
+                continue
 
             def _read_tag(tag: str):
                 if not esp_write_line(tag):
@@ -819,6 +867,7 @@ def _clamp_temp(t: float) -> float:
 
 
 def cmd_preheat(t1: float = 0.0, t2: float = 0.0) -> Dict[str, Any]:
+    global _last_preheat_time
     t1 = _clamp_temp(t1)
     t2 = _clamp_temp(t2)
     set_heater_state(t1=t1, t2=t2)
@@ -827,6 +876,7 @@ def cmd_preheat(t1: float = 0.0, t2: float = 0.0) -> Dict[str, Any]:
         _live_state["TR2"] = False
     cmd = f"PHW,{t1:.1f},{t2:.1f}"
     result = send_command(cmd)
+    _last_preheat_time = time.time()
     result["heater"] = get_heater_state()
     return result
 
@@ -864,6 +914,22 @@ def cmd_start_b3(t1: float, t2: float) -> Dict[str, Any]:
     with _live_state_lock:
         _live_state["running"] = True
     return send_command(f"START,B3,{t1:.1f}W,{t2:.1f}W")
+
+
+def cmd_start_stroke(basket: int = 1) -> Dict[str, Any]:
+    """Dt_Dr_Reddy START,STROKE,Bx,A (stroke-only start)."""
+    b = 1 if int(basket or 1) != 2 else 2
+    if is_mock_mode():
+        with _mock_lock:
+            _mock_running[str(b)] = True
+    with _live_state_lock:
+        _live_state["running"] = True
+    return send_command(f"START,STROKE,B{b},A")
+
+
+def cmd_query_temps_bulk() -> Dict[str, Any]:
+    """Send TEMP (Dt_Dr_Reddy bulk query). Live poller still uses T1/T2."""
+    return send_command("TEMP")
 
 
 def cmd_stop(basket: Optional[int] = None) -> Dict[str, Any]:

@@ -1,5 +1,5 @@
 [Unit]
-Description=Friability Tester kiosk API (Flask)
+Description=Disintegration Tester (DT-CFR) kiosk API (Flask)
 After=network-online.target local-fs.target
 Wants=network-online.target
 
@@ -13,9 +13,14 @@ Environment=INTERNAL_USB_PATH=/media/usb_internal
 Environment=STORAGE_DIR=/media/usb_internal/storage
 Environment=REPORTS_DIR=/media/usb_internal/reports
 Environment=AUDIT_DB_DIR=/media/usb_internal/db
+Environment=ESP_PORT=/dev/serial0
+Environment=ESP_BAUD=9600
+Environment=DT_HARDWARE_MOCK=0
+Environment=THERMAL_PORT=/dev/ttyAMA3
+Environment=A4_PORT=/dev/ttyAMA4
+Environment=BIOMETRIC_PORT=/dev/ttyAMA5
 WorkingDirectory=/opt/kiosk
 
-# Free stale listeners on Flask port before bind (Harmless if nothing holds the port.)
 ExecStartPre=/usr/bin/env bash /opt/kiosk/scripts/kiosk_pre_start_port.sh
 ExecStartPre=/usr/bin/env bash /opt/kiosk/scripts/kiosk_wait_internal_usb.sh
 ExecStartPre=/usr/bin/env bash /opt/kiosk/scripts/kiosk_rtc_boot.sh
@@ -24,7 +29,6 @@ ExecStart=/usr/bin/env bash /opt/kiosk/run_hardness_bridge.sh
 Restart=always
 RestartSec=3
 
-# Logs (rle-owned path; avoids permission issues with /var/log)
 StandardOutput=append:/home/rle/kiosk_bridge.log
 StandardError=append:/home/rle/kiosk_bridge.log
 

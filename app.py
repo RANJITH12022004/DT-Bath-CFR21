@@ -79,7 +79,7 @@ EXPORT_USB_PATH = os.environ.get("EXPORT_USB_PATH", str(APP_ROOT / "export"))
 EXPORT_SUBFOLDER = os.environ.get("EXPORT_SUBFOLDER", "Disintegration-Reports-Exported")
 ESP_PORT = os.environ.get("ESP_PORT", "/dev/serial0")
 ESP_BAUD = int(os.environ.get("ESP_BAUD", "9600"))
-DT_HARDWARE_MOCK = str(os.environ.get("DT_HARDWARE_MOCK", "1")).strip().lower() in ("1", "true", "yes", "on")
+DT_HARDWARE_MOCK = str(os.environ.get("DT_HARDWARE_MOCK", "0")).strip().lower() in ("1", "true", "yes", "on")
 BIOMETRIC_PORT = os.environ.get("BIOMETRIC_PORT", "/dev/ttyAMA5")
 BIOMETRIC_BAUD = int(os.environ.get("BIOMETRIC_BAUD", "57600"))
 BIOMETRIC_ENROLL_TIMEOUT_SEC = float(os.environ.get("BIOMETRIC_ENROLL_TIMEOUT_SEC", "120"))
@@ -4862,6 +4862,10 @@ def dt_start():
         return gate
     data = request.get_json(force=True, silent=True) or {}
     basket = data.get("basket")
+    # Dt_Dr_Reddy stroke-only start: START,STROKE,Bx,A
+    if str(data.get("mode") or "").strip().lower() in ("stroke", "start-stroke"):
+        result = hardware_service.cmd_start_stroke(int(basket) if basket in (1, 2, "1", "2") else 1)
+        return jsonify(result), (200 if result.get("ok") else 400)
     temp = float(data.get("temp") or data.get("setTemperature") or 37.0)
     if basket in (3, "3", "both"):
         t1 = float(data.get("t1") or temp)
@@ -4872,6 +4876,40 @@ def dt_start():
     else:
         result = hardware_service.cmd_start_b1(temp)
     return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/hardware/dt/start-stroke", methods=["POST"])
+def dt_start_stroke():
+    """Compatibility with Dt_Dr_Reddy /api/start-stroke → START,STROKE,Bx,A."""
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test", "validation-test"],
+        "Forbidden. You do not have permission to run hardware tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    basket = data.get("basket") or data.get("id") or 1
+    result = hardware_service.cmd_start_stroke(int(basket) if str(basket) in ("1", "2") else 1)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/hardware/dt/temp", methods=["GET", "POST"])
+def dt_temp_bulk():
+    """Compatibility with Dt_Dr_Reddy GET /api/temp → send TEMP bulk query."""
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test", "validation-test", "calibration-menu"],
+        "Forbidden. You do not have permission to use hardware controls.",
+    )
+    if gate:
+        return gate
+    result = hardware_service.cmd_query_temps_bulk()
+    return jsonify({
+        "ok": bool(result.get("ok")),
+        "command": result,
+        "temps": hardware_service.get_latest_temps(),
+        "live": hardware_service.get_live_state(),
+        "mock": hardware_service.is_mock_mode(),
+    }), (200 if result.get("ok") else 400)
 
 
 @app.route("/api/hardware/dt/stop", methods=["POST"])
@@ -4913,6 +4951,37 @@ def _session_operator():
         "id": cur.get("employeeId") or cur.get("id") or "",
         "username": cur.get("username") or "",
     }
+
+
+@app.route("/api/data/dt/instrument-settings", methods=["GET"])
+def dt_instrument_settings_get():
+    """Persistent beaker enablement + basket tube count (survives reboot)."""
+    try:
+        settings = data_service.get_dt_instrument_settings()
+        return jsonify({"ok": True, "settings": settings}), 200
+    except Exception as e:
+        app.logger.exception("get dt instrument settings failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/data/dt/instrument-settings", methods=["POST"])
+def dt_instrument_settings_save():
+    """Save beaker / basket instrument settings to durable storage."""
+    try:
+        gate = _require_any_session_internal(
+            ["settings", "quick-test", "recipe-test", "factory-settings"],
+            "Forbidden. You do not have permission to change instrument settings.",
+        )
+        if gate:
+            return gate
+        data = request.get_json(force=True, silent=True) or {}
+        # Accept either nested {settings:{...}} or flat body.
+        payload = data.get("settings") if isinstance(data.get("settings"), dict) else data
+        saved = data_service.save_dt_instrument_settings(payload or {})
+        return jsonify({"ok": True, "settings": saved}), 200
+    except Exception as e:
+        app.logger.exception("save dt instrument settings failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/data/dt/runs", methods=["GET"])

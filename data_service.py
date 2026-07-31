@@ -1151,7 +1151,14 @@ def factory_reset() -> Dict[str, Any]:
                 except Exception:
                     pass
     n_storage_files = 0
-    for extra_name in ("test_run.json", "datetime.json", "audit_entries.json", "audit_log.json", "audit_export.json"):
+    for extra_name in (
+        "test_run.json",
+        "datetime.json",
+        "audit_entries.json",
+        "audit_log.json",
+        "audit_export.json",
+        "dt_instrument_settings.json",
+    ):
         extra_path = _get_storage_path(extra_name)
         if extra_path.exists():
             try:
@@ -1349,6 +1356,81 @@ def clear_test_run_data() -> None:
             test_path.unlink()
         except Exception:
             pass
+
+
+# =================== DT INSTRUMENT SETTINGS (beakers / baskets) ==========================
+
+DT_INSTRUMENT_SETTINGS_FILE = "dt_instrument_settings.json"
+_DEFAULT_DT_INSTRUMENT_SETTINGS = {
+    "basketConfig": 6,
+    "configuredBeakers": {"1": True, "2": True},
+    "setTemp": {"1": 37.0, "2": 37.0},
+}
+
+
+def _normalize_dt_instrument_settings(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    out = dict(_DEFAULT_DT_INSTRUMENT_SETTINGS)
+    try:
+        cfg = int(raw.get("basketConfig", out["basketConfig"]))
+    except (TypeError, ValueError):
+        cfg = 6
+    if cfg not in (1, 3, 6):
+        cfg = 6
+    out["basketConfig"] = cfg
+
+    configured_in = raw.get("configuredBeakers") or raw.get("configured") or {}
+    if not isinstance(configured_in, dict):
+        configured_in = {}
+    b1 = configured_in.get("1", configured_in.get(1, True))
+    b2 = configured_in.get("2", configured_in.get(2, True))
+    out["configuredBeakers"] = {"1": bool(b1), "2": bool(b2)}
+    if not out["configuredBeakers"]["1"] and not out["configuredBeakers"]["2"]:
+        out["configuredBeakers"] = {"1": True, "2": True}
+
+    temps_in = raw.get("setTemp") or {}
+    if not isinstance(temps_in, dict):
+        temps_in = {}
+    set_temp = {"1": 37.0, "2": 37.0}
+    for key in ("1", "2"):
+        try:
+            val = float(temps_in.get(key, temps_in.get(int(key), 37.0)))
+            if 20.0 <= val <= 55.0:
+                set_temp[key] = val
+        except (TypeError, ValueError):
+            pass
+    out["setTemp"] = set_temp
+    return out
+
+
+def get_dt_instrument_settings() -> Dict[str, Any]:
+    """Persistent beaker enablement + basket tube count (survives reboot)."""
+    path = _get_storage_path(DT_INSTRUMENT_SETTINGS_FILE)
+    data = _load_json_file(path, default={})
+    return _normalize_dt_instrument_settings(data if isinstance(data, dict) else {})
+
+
+def save_dt_instrument_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Save DT instrument settings; merges with existing file."""
+    path = _get_storage_path(DT_INSTRUMENT_SETTINGS_FILE)
+    current = get_dt_instrument_settings()
+    incoming = settings if isinstance(settings, dict) else {}
+    merged = dict(current)
+    if "basketConfig" in incoming:
+        merged["basketConfig"] = incoming.get("basketConfig")
+    if "configuredBeakers" in incoming or "configured" in incoming:
+        merged["configuredBeakers"] = incoming.get("configuredBeakers") or incoming.get("configured")
+    if "setTemp" in incoming:
+        merged["setTemp"] = incoming.get("setTemp")
+    normalized = _normalize_dt_instrument_settings(merged)
+    _save_json_file(path, normalized)
+    return normalized
+
+
+def clear_dt_instrument_settings() -> None:
+    """Reset instrument settings to defaults (factory reset)."""
+    path = _get_storage_path(DT_INSTRUMENT_SETTINGS_FILE)
+    _save_json_file(path, dict(_DEFAULT_DT_INSTRUMENT_SETTINGS))
 
 
 # =================== REPORT EXPORT SCHEDULE (24h purge, Tap Density style) =======

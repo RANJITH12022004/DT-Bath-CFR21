@@ -474,7 +474,10 @@
     window.dtSelectRecipeMode(mode);
   };
 
+  var _dtSaveRecipeInFlight = false;
+
   window.dtSaveRecipe = function () {
+    if (_dtSaveRecipeInFlight) return;
     var name = ((document.getElementById('dt-recipe-name') || {}).value || '').trim();
     var temp = parseFloat((document.getElementById('dt-recipe-temp') || {}).value);
     var mode = (document.getElementById('dt-recipe-mode') || {}).value || 'manual';
@@ -501,10 +504,16 @@
     function doSave(token) {
       var headers = {};
       if (token) headers['X-Approval-Verify-Token'] = token;
+      _dtSaveRecipeInFlight = true;
       return api('/api/data/recipes', { method: 'POST', body: body, headers: headers }).then(function () {
         toast('Recipe saved', 'success');
+        // goToPage already schedules loadManageRecipes — calling it again raced and showed duplicates.
         go('manage-recipes');
-        if (typeof loadManageRecipes === 'function') loadManageRecipes();
+      }).then(function () {
+        _dtSaveRecipeInFlight = false;
+      }, function (e) {
+        _dtSaveRecipeInFlight = false;
+        throw e;
       });
     }
 
@@ -512,14 +521,25 @@
       ? _approvalVerifyModalOptionsForRecipe()
       : { purpose: 'recipe', titleText: 'Recipe approval required', subtitleText: 'Enter credentials for a user with Recipe approval permission.' };
     if (typeof openApprovalVerifyModal === 'function') {
+      _dtSaveRecipeInFlight = true;
       openApprovalVerifyModal(opts).then(function (token) {
-        if (!token) return;
-        doSave(token).catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+        if (!token) {
+          _dtSaveRecipeInFlight = false;
+          return;
+        }
+        return doSave(token).catch(function (e) {
+          _dtSaveRecipeInFlight = false;
+          toast(e.message || 'Save failed', 'error');
+        });
       }).catch(function (e) {
+        _dtSaveRecipeInFlight = false;
         toast((e && e.message) || 'QA verification UI is missing.', 'error');
       });
     } else {
-      doSave(null).catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+      doSave(null).catch(function (e) {
+        _dtSaveRecipeInFlight = false;
+        toast(e.message || 'Save failed', 'error');
+      });
     }
   };
 
@@ -529,7 +549,6 @@
       try { logAuditEvent('Opened Load Recipe', 'Load Recipe list opened', { eventType: 'navigation' }); } catch (e) {}
     }
     go('manage-recipes');
-    if (typeof loadManageRecipes === 'function') loadManageRecipes();
   };
 
   // DT load flow: Batch → AR → Beaker → apply to dashboard
@@ -1357,6 +1376,60 @@
 
   // -------------------- Settings: beakers / baskets / heater --------------------
 
+  function persistInstrumentSettings() {
+    return api('/api/data/dt/instrument-settings', {
+      method: 'POST',
+      body: {
+        basketConfig: DT.basketConfig,
+        configuredBeakers: {
+          '1': !!DT.configured[1],
+          '2': !!DT.configured[2],
+        },
+        setTemp: {
+          '1': Number(DT.setTemp[1] || 37),
+          '2': Number(DT.setTemp[2] || 37),
+        },
+      },
+    }).catch(function (e) {
+      console.warn('[DT] persist instrument settings failed', e);
+      return null;
+    });
+  }
+
+  function applyInstrumentSettings(settings) {
+    if (!settings || typeof settings !== 'object') return;
+    var cfg = parseInt(settings.basketConfig, 10);
+    if ([1, 3, 6].indexOf(cfg) >= 0) DT.basketConfig = cfg;
+    var conf = settings.configuredBeakers || settings.configured || {};
+    DT.configured[1] = conf['1'] != null ? !!conf['1'] : (conf[1] != null ? !!conf[1] : true);
+    DT.configured[2] = conf['2'] != null ? !!conf['2'] : (conf[2] != null ? !!conf[2] : true);
+    if (!DT.configured[1] && !DT.configured[2]) {
+      DT.configured[1] = true;
+      DT.configured[2] = true;
+    }
+    var temps = settings.setTemp || {};
+    var t1 = parseFloat(temps['1'] != null ? temps['1'] : temps[1]);
+    var t2 = parseFloat(temps['2'] != null ? temps['2'] : temps[2]);
+    if (!isNaN(t1)) DT.setTemp[1] = t1;
+    if (!isNaN(t2)) DT.setTemp[2] = t2;
+    updateBasketHoles(1, DT.basketConfig);
+    updateBasketHoles(2, DT.basketConfig);
+    updateBasketStates();
+    updateDashboardTempButton();
+    var in1 = document.getElementById('set-temp-1');
+    var in2 = document.getElementById('set-temp-2');
+    if (in1) in1.value = String(DT.setTemp[1]);
+    if (in2) in2.value = String(DT.setTemp[2]);
+  }
+
+  function loadInstrumentSettings() {
+    return api('/api/data/dt/instrument-settings')
+      .then(function (res) {
+        if (res && res.ok && res.settings) applyInstrumentSettings(res.settings);
+      })
+      .catch(function () {});
+  }
+
   var _settingsBeakerPick = null;
   window.dtSettingsSelectBeaker = function (val) {
     _settingsBeakerPick = val;
@@ -1386,8 +1459,10 @@
       DT.configured[2] = false;
     }
     updateBasketStates();
-    go('home');
-    toast('Beaker configuration applied', 'success');
+    persistInstrumentSettings().then(function () {
+      go('home');
+      toast('Beaker configuration saved', 'success');
+    });
   };
 
   window.dtSetBasketConfig = function (c) {
@@ -1401,8 +1476,10 @@
       DT.basketConfig = c;
       updateBasketHoles(1, c);
       updateBasketHoles(2, c);
-      go('home');
-      toast(c + '-tube basket configuration applied', 'success');
+      persistInstrumentSettings().then(function () {
+        go('home');
+        toast(c + '-tube basket configuration saved', 'success');
+      });
     };
     if (typeof showYesNoModal === 'function') {
       showYesNoModal('Apply ' + c + '-tube basket configuration?', 'Add Baskets', 'Yes', 'No')
@@ -1467,7 +1544,9 @@
   // Boot
   function boot() {
     ensureSse();
-    refreshDashboard();
+    loadInstrumentSettings().then(function () {
+      refreshDashboard();
+    });
     // Pull live temps once
     api('/api/hardware/dt/live').then(function (res) {
       if (res && res.temps) updateTempDisplay(res.temps);

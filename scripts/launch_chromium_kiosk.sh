@@ -39,6 +39,7 @@ if pgrep -f -- "$CHROME_BIN.*--app=${KIOSK_URL%/}" >/dev/null 2>&1; then
   exit 0
 fi
 
+# --password-store=basic: never prompt to unlock GNOME/KWallet keyring on kiosk boot
 exec "$CHROME_BIN" \
   --start-fullscreen \
   --noerrdialogs \
@@ -50,6 +51,7 @@ exec "$CHROME_BIN" \
   --incognito \
   --disable-session-crashed-bubble \
   --disable-features=TranslateUI \
+  --password-store=basic \
   --ozone-platform="${CHROMIUM_OZONE_PLATFORM:-wayland}" \
   --window-size=1024,600 \
   --app="${KIOSK_URL%/}"
