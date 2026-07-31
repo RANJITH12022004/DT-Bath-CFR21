@@ -105,6 +105,7 @@ var _approvalVerifyEmptyCredentialsMessage = 'Enter QA username and password.';
 var _approvalVerifyPurpose = 'recipe';
 var _suppressTestRunNavGuardOnce = false;
 var _suppressValidationRunNavGuardOnce = false;
+var _suppressDtOpNavGuardOnce = false;
 var _validationAbortInProgress = false;
 /** 'expired' | 'mandatory' — which POST to use from the shared reset page. */
 var _passwordResetScreenMode = 'expired';
@@ -388,9 +389,24 @@ function showConfirmModal(message, title) {
         };
         var okBtn = document.createElement('button');
         okBtn.type = 'button';
-        okBtn.className = 'btn-role-select btn-confirm-ok';
         var t = String(title || '').trim().toLowerCase();
-        okBtn.textContent = (t === 'test running') ? 'Abort Test' : (t === 'operation in progress') ? 'Abort' : 'OK';
+        var msgLower = String(message || '').toLowerCase();
+        var isAbort = (
+            t === 'test running' ||
+            t === 'operation in progress' ||
+            t.indexOf('abort') === 0 ||
+            msgLower.indexOf('abort and exit') >= 0 ||
+            msgLower.indexOf('abort and logout') >= 0 ||
+            msgLower.indexOf('do you want to abort') >= 0
+        );
+        okBtn.className = 'btn-role-select ' + (isAbort ? 'btn-confirm-abort' : 'btn-confirm-ok');
+        okBtn.textContent = (t === 'test running') ? 'Abort Test' : (isAbort ? 'Abort' : 'OK');
+        if (isAbort) {
+            okBtn.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
+            okBtn.style.backgroundColor = '#ef4444';
+            okBtn.style.borderColor = '#dc2626';
+            okBtn.style.color = '#fff';
+        }
         okBtn.onclick = function () {
             overlay.style.display = 'none';
             if (appModalResolve) {
@@ -521,8 +537,16 @@ function updateProfileFromCurrentUser(user) {
         roleEl.textContent = displayRoleLabel(role);
     }
     var fullNameInput = document.getElementById('profile-fullname');
-    if (fullNameInput && name) {
-        fullNameInput.value = name;
+    if (fullNameInput) {
+        fullNameInput.value = name || '';
+        fullNameInput.readOnly = true;
+        fullNameInput.classList.add('input-readonly');
+    }
+    var userIdInput = document.getElementById('profile-userid');
+    if (userIdInput) {
+        userIdInput.value = user.username || '';
+        userIdInput.readOnly = true;
+        userIdInput.classList.add('input-readonly');
     }
 }
 
@@ -1570,9 +1594,12 @@ var PAGE_AUDIT_LABELS = {
     'stroke-validation': 'Stroke Validation',
     'temp-validation': 'Temperature Validation',
     'approval-verify': 'Approval',
-    'calibration-type-select': 'Select Calibration Type',
+    'calibration-type-select': 'Temperature Calibration',
     'load-calibration': 'Load Calibration',
     'distance-zero-calibration': 'Distance Calibration',
+    'add-beakers': 'Add Beakers',
+    'add-baskets': 'Add Baskets',
+    'heater-control': 'Heater Control',
     settings: 'Settings',
     'ip-configure': 'IP Configure',
     datetime: 'Date and Time',
@@ -1980,6 +2007,25 @@ function refreshShellAccessVisibility() {
 
 function goToPage(pageName) {
     var prevPage = getActivePageName();
+    // Hardness-Cfr style: block leaving while DT test / validation / calibration is active.
+    if (!_suppressDtOpNavGuardOnce && typeof dtIsOperationRunning === 'function' && dtIsOperationRunning()) {
+        var allowed = (typeof dtNavAllowedDuringOp === 'function') ? dtNavAllowedDuringOp(pageName) : false;
+        if (!allowed) {
+            showConfirmModal(
+                'Test/Validation/Calibration is running. Do you want to abort and exit?',
+                'Operation in progress'
+            ).then(function (ok) {
+                if (!ok) return;
+                Promise.resolve(
+                    typeof dtAbortActiveOperations === 'function' ? dtAbortActiveOperations() : null
+                ).then(function () {
+                    _suppressDtOpNavGuardOnce = true;
+                    goToPage(pageName);
+                });
+            });
+            return;
+        }
+    }
     // Tap Density: while a test/validation operation is active, require abort confirm before leaving.
     if (!_suppressTestRunNavGuardOnce && typeof _trIsActiveTestOperation === 'function' && _trIsActiveTestOperation()) {
         if (pageName !== 'test-run') {
@@ -2006,6 +2052,7 @@ function goToPage(pageName) {
     }
     _suppressTestRunNavGuardOnce = false;
     _suppressValidationRunNavGuardOnce = false;
+    _suppressDtOpNavGuardOnce = false;
     if (typeof guardReportPreviewNavigation === 'function' && guardReportPreviewNavigation(pageName)) {
         return;
     }
@@ -2241,7 +2288,6 @@ function goBack() {
         }
         return;
     } else if (pageId === 'page-stroke-validation' || pageId === 'page-temp-validation') {
-        if (typeof stopValidation === 'function') stopValidation({ stay: true });
         goToPage('validate-type-select');
         return;
     } else if (pageId === 'page-approval-verify') {
@@ -2250,6 +2296,7 @@ function goBack() {
         return;
     } else if (pageId === 'page-calibration-type-select') {
         goToPage('validate');
+        return;
     } else if (pageId === 'page-load-calibration' || pageId === 'page-distance-zero-calibration') {
         goToPage('calibration-type-select');
     } else if (pageId === 'page-datetime' || pageId === 'page-ip-configure') {
@@ -2651,13 +2698,17 @@ function logout() {
     var runActive =
         isTestRunActive() ||
         (validationRunState === 'running') ||
-        (validationRunBackendPending === true);
+        (validationRunBackendPending === true) ||
+        (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning());
     var pendingGate = hasActiveReportApprovalGate();
 
     var doLogout = function () {
         abortPendingReportOnLogout().then(function () {
             return stopActiveRunForLogout();
         }).finally(function () {
+            if (typeof dtAbortActiveOperations === 'function') {
+                try { dtAbortActiveOperations(); } catch (e) {}
+            }
             apiRequest(API_BASE + '/api/data/auth/logout', { method: 'POST', body: { reason: 'user' } }).catch(function () {});
             window.currentUser = null;
             try { localStorage.removeItem('currentUser'); } catch (e) {}
@@ -2668,11 +2719,13 @@ function logout() {
     };
 
     if (runActive) {
-        var logoutMsg = isTestRunActive()
-            ? 'Test is running. Do you want to abort and logout?'
-            : (validationRunState === 'running'
-                ? 'Validation is running. Do you want to abort and logout?'
-                : 'Operation in progress. Do you want to abort and logout?');
+        var logoutMsg = (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning())
+            ? 'Test/Validation/Calibration is running. Do you want to abort and logout?'
+            : (isTestRunActive()
+                ? 'Test is running. Do you want to abort and logout?'
+                : (validationRunState === 'running'
+                    ? 'Validation is running. Do you want to abort and logout?'
+                    : 'Operation in progress. Do you want to abort and logout?'));
         showConfirmModal(logoutMsg, 'Operation in progress').then(function (ok) {
             if (!ok) return;
             doLogout();
@@ -2749,6 +2802,7 @@ function isAutoLogoutRunBlocked() {
     return isTestRunActive() ||
         (validationRunState === 'running') ||
         (validationRunBackendPending === true) ||
+        (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning()) ||
         hasActiveReportApprovalGate();
 }
 
@@ -3299,15 +3353,18 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
         'Entered screen', 'Exited screen',
         'Opened Quick Test', 'Opened Load Recipe', 'Opened Manage Recipe', 'Loaded recipe',
         'Opened disabled recipes',
-        'Test started', 'Quick test started', 'Test finished', 'Test aborted', 'Test auto-aborted',
+        'Test preheat started', 'Test ready', 'Test started', 'Quick test started',
+        'Test finished', 'Test aborted', 'Test auto-aborted',
         'Test performed', 'Quick test performed',
         'Entered USP 1 validation', 'Entered USP 2 validation',
         'Validation started', 'Validation finished', 'Validation aborted',
+        'Calibration performed', 'Calibration failed',
         'USP 1 adapter error', 'USP 2 adapter error', 'Adapter check error',
         'Validation performed', 'Report saved', 'Report generated', 'Report approved',
         'Report aborted', 'Report aborted (power loss)', 'Report PDF generated',
         'Recipe created', 'Recipe edited', 'Recipe approved', 'Power interruption',
         'Approval verification', 'Disable Recipe', 'Recipe disabled',
+        'Factory settings changed', 'System date change',
         'Added new user', 'Password changed', 'User create', 'User update'
     ];
     coreActions.forEach(function (a) {
@@ -3325,18 +3382,42 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
     }
 }
 
+function _escapeAuditCell(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function _formatAuditOutcome(outcome) {
+    var o = String(outcome || '').trim().toLowerCase();
+    if (!o || o === 'success' || o === 'legacy') return '';
+    if (o === 'failure' || o === 'failed') return 'FAIL';
+    if (o === 'denied') return 'DENIED';
+    if (o === 'aborted') return 'ABORTED';
+    return o.toUpperCase();
+}
+
 function _renderAuditLogRows(tbody, list) {
     if (!tbody) return;
     tbody.innerHTML = '';
     if (!list || !list.length) {
         var emptyRow = document.createElement('tr');
-        emptyRow.innerHTML = '<td colspan="5">No audit entries match the filters.</td>';
+        emptyRow.innerHTML = '<td colspan="6">No audit entries match the filters.</td>';
         tbody.appendChild(emptyRow);
         return;
     }
     list.forEach(function (entry) {
         var row = document.createElement('tr');
-        row.innerHTML = '<td>' + (entry.dateTime || '') + '</td><td>' + (entry.user || '--') + '</td><td>' + displayRoleLabel(entry.role || '--') + '</td><td>' + (entry.action || '') + '</td><td>' + (entry.details || '') + '</td>';
+        var outcomeLabel = _formatAuditOutcome(entry.outcome);
+        row.innerHTML =
+            '<td>' + _escapeAuditCell(entry.dateTime || '') + '</td>' +
+            '<td>' + _escapeAuditCell(entry.user || '--') + '</td>' +
+            '<td>' + _escapeAuditCell(displayRoleLabel(entry.role || '--')) + '</td>' +
+            '<td>' + _escapeAuditCell(entry.action || '') + '</td>' +
+            '<td>' + _escapeAuditCell(outcomeLabel || (String(entry.outcome || '').toLowerCase() === 'success' ? 'OK' : '--')) + '</td>' +
+            '<td>' + _escapeAuditCell(entry.details || '') + '</td>';
         tbody.appendChild(row);
     });
 }
@@ -4248,44 +4329,16 @@ function saveEditedMember() {
     var memberId = editingMemberId;
     if (memberId == null) return;
     var modalTitle = 'Edit Profile';
-    var fullNameEl = document.getElementById('add-fullname');
-    var userIdEl = document.getElementById('add-userid');
-    var pwdEl = document.getElementById('add-password');
-    var confirmPwdEl = document.getElementById('add-confirm-password');
     var roleHidden = document.getElementById('selected-role');
-    var fullName = fullNameEl && fullNameEl.value ? fullNameEl.value.trim() : '';
-    var username = userIdEl && userIdEl.value ? userIdEl.value.trim() : '';
-    var password = pwdEl && pwdEl.value ? pwdEl.value : '';
-    var confirmPassword = confirmPwdEl && confirmPwdEl.value ? confirmPwdEl.value : '';
     var role = roleHidden && roleHidden.value ? roleHidden.value : 'User';
     var isSelf = typeof _isEditingOwnMemberProfile === 'function' && _isEditingOwnMemberProfile(memberId);
-    if (!fullName || !username) {
-        showAppModal('Full name and User ID are required.', modalTitle);
-        return;
-    }
-    if (username.toUpperCase() === FACTORY_USERNAME) {
-        showAppModal('This User ID is reserved for the factory account.', modalTitle);
-        return;
-    }
-    if (password || confirmPassword) {
-        if (password !== confirmPassword) {
-            showAppModal('Password and Confirm Password do not match.', modalTitle);
-            return;
-        }
-        var pwdErr = getStrongPasswordError(password);
-        if (pwdErr) {
-            showAppModal(pwdErr, modalTitle);
-            return;
-        }
-    }
     apiRequest(API_BASE + '/api/data/members/' + memberId, { method: 'GET' })
         .then(function (data) {
             var member = (data && data.member) ? data.member : null;
             if (!member) throw new Error('Member not found');
-            member.name = fullName;
-            member.username = username;
+            // Identity (name / username) is immutable after create — Hardness-Cfr.
+            // Password only via Change Password / password reset page.
             if (!isSelf) member.role = role;
-            if (password) member.password = password;
             if (!isSelf && _addMemberPermissionsPanelShouldShow()) {
                 var overrides = _addMemberFeatureOverrides || { allow: [], deny: [] };
                 var allowList = (overrides.allow || []).slice();
@@ -5172,7 +5225,7 @@ function loadReports(filterType) {
             return;
         }
         if (bar) bar.style.display = '';
-        if (theadRow) theadRow.innerHTML = '<th>Date & Time</th><th>User</th><th>Role</th><th>Action</th><th>Details</th>';
+        if (theadRow) theadRow.innerHTML = '<th>Date & Time</th><th>User</th><th>Role</th><th>Action</th><th>Outcome</th><th>Details</th>';
         var userEl = document.getElementById('audit-filter-user');
         var roleEl = document.getElementById('audit-filter-role');
         var actionEl = document.getElementById('audit-filter-action');
@@ -5217,7 +5270,7 @@ function loadReports(filterType) {
         }).catch(function () {
             tbody.innerHTML = '';
             var emptyRow = document.createElement('tr');
-            emptyRow.innerHTML = '<td colspan="5">Unable to load audit log.</td>';
+            emptyRow.innerHTML = '<td colspan="6">Unable to load audit log.</td>';
             tbody.appendChild(emptyRow);
         }).finally(function () {
             hideAuditTrailsLoadingOverlay();
@@ -9182,22 +9235,36 @@ function _loadMemberOverridesIntoPanel(overrides) {
 function _setAddMemberPageMode(isEdit, isSelfEdit) {
     var titleEl = document.getElementById('add-member-page-title');
     var saveBtn = document.getElementById('add-member-save-btn');
+    var fullNameEl = document.getElementById('add-fullname');
     var userIdEl = document.getElementById('add-userid');
     var pwdLabel = document.getElementById('add-password-label');
     var confirmPwdLabel = document.getElementById('add-confirm-password-label');
+    var pwdEl = document.getElementById('add-password');
+    var confirmPwdEl = document.getElementById('add-confirm-password');
     var roleContainer = document.querySelector('#page-add-member .role-selection-container');
     var headerTitle = document.getElementById('header-title');
     if (titleEl) titleEl.textContent = isEdit ? 'Edit Profile' : 'Add New Member';
     if (saveBtn) saveBtn.textContent = isEdit ? 'Update Profile' : 'Save Profile';
     if (headerTitle) headerTitle.textContent = isEdit ? 'Edit Profile' : (PAGE_TITLES['add-member'] || 'Add New Member');
-    if (userIdEl) {
-        userIdEl.readOnly = !!isEdit;
-        userIdEl.disabled = !!isEdit;
-        if (isEdit) userIdEl.classList.add('input-readonly');
-        else userIdEl.classList.remove('input-readonly');
-    }
-    if (pwdLabel) pwdLabel.textContent = isEdit ? 'New Password (optional)' : 'Password';
-    if (confirmPwdLabel) confirmPwdLabel.textContent = isEdit ? 'Confirm New Password (optional)' : 'Confirm Password';
+    // Full name + User ID are immutable after create (Hardness-Cfr).
+    [fullNameEl, userIdEl].forEach(function (el) {
+        if (!el) return;
+        el.readOnly = !!isEdit;
+        el.disabled = !!isEdit;
+        if (isEdit) el.classList.add('input-readonly');
+        else el.classList.remove('input-readonly');
+        if (isEdit) el.removeAttribute('onfocus');
+        else el.setAttribute('onfocus', "if(typeof openOSKForInput === 'function') openOSKForInput(this)");
+    });
+    // Password only via Change Password page — hide on edit.
+    [pwdEl, confirmPwdEl].forEach(function (el) {
+        if (!el) return;
+        var group = el.closest ? el.closest('.form-group') : null;
+        if (group) group.style.display = isEdit ? 'none' : '';
+        el.value = '';
+    });
+    if (pwdLabel) pwdLabel.textContent = 'Password';
+    if (confirmPwdLabel) confirmPwdLabel.textContent = 'Confirm Password';
     if (roleContainer) roleContainer.style.display = isSelfEdit ? 'none' : '';
     if (isSelfEdit) {
         var panel = document.getElementById('add-member-permissions-panel');
@@ -9243,7 +9310,6 @@ function openEditMember(id) {
             goToPage('add-member');
             setTimeout(function () {
                 if (typeof ensureAddMemberPageScroll === 'function') ensureAddMemberPageScroll();
-                if (fullNameEl) fullNameEl.focus();
             }, 60);
         })
         .catch(function (err) {
@@ -9326,12 +9392,20 @@ function _clearAddMemberForm() {
         var el = document.getElementById(id);
         if (el) el.value = '';
     });
-    var userIdEl = document.getElementById('add-userid');
-    if (userIdEl) {
-        userIdEl.readOnly = false;
-        userIdEl.disabled = false;
-        userIdEl.classList.remove('input-readonly');
-    }
+    ['add-fullname', 'add-userid'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.readOnly = false;
+        el.disabled = false;
+        el.classList.remove('input-readonly');
+        el.setAttribute('onfocus', "if(typeof openOSKForInput === 'function') openOSKForInput(this)");
+    });
+    ['add-password', 'add-confirm-password'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var group = el.closest ? el.closest('.form-group') : null;
+        if (group) group.style.display = '';
+    });
     if (typeof selectRole === 'function') selectRole('User');
     _addMemberFeatureOverrides = { allow: [], deny: [] };
     _setAddMemberPageMode(false, false);
@@ -9387,56 +9461,15 @@ function backToMemberAfterBiometric() {
     goToPage('user-profile');
 }
 
+/** Profile identity is read-only; password changes use Edit Password → Change Password page. */
 function saveUserProfile() {
-    var fullNameEl = document.getElementById('profile-fullname');
-    var newName = fullNameEl ? (fullNameEl.value || '').trim() : '';
-
-    var user = (typeof window.currentUser !== 'undefined' && window.currentUser) ? window.currentUser : (typeof currentUser !== 'undefined' && currentUser) ? currentUser : null;
-    if (!user) {
-        if (typeof showAppModal === 'function') showAppModal('No user logged in.', 'User Profile');
+    if (typeof openProfilePasswordResetPage === 'function') {
+        openProfilePasswordResetPage();
         return;
     }
-
-    var memberId = user.id;
-    var isFactory = (memberId === 0 || memberId === undefined || memberId === null);
-
-    function updateLocalName(name) {
-        if (window.currentUser) window.currentUser.name = name;
-        if (typeof currentUser !== 'undefined') { currentUser = currentUser || {}; currentUser.name = name; }
-        try { localStorage.setItem('currentUser', JSON.stringify(window.currentUser || currentUser)); } catch (e) {}
-        var displayEl = document.getElementById('profile-name-display');
-        if (displayEl) displayEl.textContent = name || '---';
+    if (typeof showAppModal === 'function') {
+        showAppModal('Use Edit Password to change your password.', 'User Profile');
     }
-
-    if (isFactory) {
-        updateLocalName(newName || user.name || user.username || 'Factory');
-        if (typeof showAppModal === 'function') showAppModal('Profile updated.', 'User Profile');
-        return;
-    }
-
-    if (!newName) {
-        if (typeof showAppModal === 'function') {
-            showAppModal('Enter a new full name to save. Use Edit Password to change your password.', 'User Profile');
-        }
-        return;
-    }
-
-    var payload = { name: newName };
-
-    apiRequest(API_BASE + '/api/data/auth/profile', {
-        method: 'PUT',
-        body: payload
-    })
-        .then(function (result) {
-            var updated = (result && result.member) ? result.member : result;
-            var nameToSet = (updated && updated.name) ? updated.name : newName;
-            updateLocalName(nameToSet || newName || (user.name || user.username));
-            if (typeof showAppModal === 'function') showAppModal('Profile updated.', 'User Profile');
-        })
-        .catch(function (err) {
-            var msg = (err && err.message) ? err.message : 'Failed to update profile.';
-            if (typeof showAppModal === 'function') showAppModal(msg, 'User Profile');
-        });
 }
 
 function initializeDatetime() {

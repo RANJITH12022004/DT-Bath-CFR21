@@ -27,7 +27,85 @@
     beakerPick: null,
     beakerPickPurpose: null,
     calBeaker: 1,
+    calSessionActive: false,
     latestTemps: {},
+  };
+
+  // Declared early so nav-lock helpers can close over them (assigned in validation section).
+  var _valPollTimer = null;
+  var _valKind = null;
+  var _valBasket = 1;
+  var _tempValRunning = false;
+
+  function syncDtNavLock() {
+    var locked = !!(DT.running[1] || DT.running[2] || _valPollTimer || _tempValRunning || _valKind || DT.calSessionActive);
+    var app = document.querySelector('.app-container');
+    if (app) app.classList.toggle('dt-op-locked', locked);
+    var sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+      if (locked) sidebar.classList.add('sidebar-locked');
+      else if (typeof isTestRunActive === 'function' && !isTestRunActive() &&
+               typeof isValidationRunActive === 'function' && !isValidationRunActive()) {
+        sidebar.classList.remove('sidebar-locked');
+      }
+    }
+  }
+
+  /** True while a DT test, stroke/temp validation, or calibration session is active. */
+  window.dtIsOperationRunning = function () {
+    if (DT.running[1] || DT.running[2]) return true;
+    if (_valPollTimer || _tempValRunning || _valKind) return true;
+    if (DT.calSessionActive) return true;
+    var active = document.querySelector('.page.active');
+    var id = active ? active.id : '';
+    if (id === 'page-stroke-validation' || id === 'page-temp-validation') return true;
+    if (id === 'page-calibration-type-select') return true;
+    return false;
+  };
+
+  /** Pages that may stay open without aborting the current DT operation. */
+  window.dtNavAllowedDuringOp = function (pageName) {
+    pageName = String(pageName || '');
+    if (pageName === 'report-preview' || pageName === 'approval-verify') return true;
+    if (DT.running[1] || DT.running[2]) {
+      return pageName === 'home' || pageName === 'test-run';
+    }
+    if (_valPollTimer || _tempValRunning || _valKind) {
+      if (_valKind === 'temp' || _tempValRunning) return pageName === 'temp-validation';
+      return pageName === 'stroke-validation';
+    }
+    var active = document.querySelector('.page.active');
+    var id = active ? active.id : '';
+    if (id === 'page-temp-validation') return pageName === 'temp-validation';
+    if (id === 'page-stroke-validation') return pageName === 'stroke-validation';
+    if (DT.calSessionActive || id === 'page-calibration-type-select') {
+      return pageName === 'calibration-type-select';
+    }
+    return true;
+  };
+
+  /** Abort running DT test(s), validation, and/or clear calibration session. */
+  window.dtAbortActiveOperations = function () {
+    var promises = [];
+    [1, 2].forEach(function (b) {
+      if (!DT.running[b]) return;
+      promises.push(
+        api('/api/data/dt/runs/' + b + '/stop', {
+          method: 'POST',
+          body: { aborted: true, reason: 'nav_abort' },
+        }).then(function () {
+          finishBasketUi(b);
+        }).catch(function () {
+          finishBasketUi(b);
+        })
+      );
+    });
+    if (_valPollTimer || _tempValRunning || _valKind) {
+      try { window.stopValidation({ stay: true }); } catch (e) {}
+    }
+    DT.calSessionActive = false;
+    syncDtNavLock();
+    return Promise.all(promises);
   };
 
   function api(path, opts) {
@@ -223,10 +301,16 @@
       center.textContent = '--';
       container.appendChild(center);
     }
-    var positions = [];
+    container.classList.toggle('is-single-tube', holeCount === 1);
+    container.classList.remove('completed');
+
+    // Single tube: whole outer circle is the vessel (Dr Reddy) — no inner hole dots.
     if (holeCount === 1) {
-      positions = [{ top: '50%', left: '50%', num: 1 }];
-    } else if (holeCount === 3) {
+      return;
+    }
+
+    var positions = [];
+    if (holeCount === 3) {
       var r = 33;
       positions = [
         { top: (50 - r) + '%', left: '50%', num: 1 },
@@ -312,6 +396,10 @@
     var hole = holeNum;
     if (hole == null && event && event.target && event.target.classList.contains('basket-hole')) {
       hole = parseInt(event.target.textContent, 10);
+    }
+    // Single-tube: tap anywhere on the outer basket circle (Dr Reddy).
+    if ((hole == null || isNaN(hole)) && DT.basketConfig === 1) {
+      hole = 1;
     }
     if (!hole) return;
     dtTapHole(basket, hole);
@@ -546,6 +634,8 @@
 
     if (purpose === 'calibration') {
       DT.calBeaker = pick === 2 ? 2 : 1;
+      DT.calSessionActive = true;
+      syncDtNavLock();
       var numEl = document.getElementById('calibration-beaker-num');
       if (numEl) numEl.textContent = String(DT.calBeaker);
       var sensor = document.getElementById('dt-cal-sensor');
@@ -615,6 +705,7 @@
     DT.heaterOn[basket] = false;
     if (DT._confirmPending) DT._confirmPending[basket] = false;
     stopRunPoll(basket);
+    syncDtNavLock();
     var startBtn = document.getElementById('start' + basket);
     if (startBtn) {
       startBtn.textContent = 'Start';
@@ -625,6 +716,7 @@
       var ring = container.querySelector('.basket-active-ring');
       if (ring) ring.remove();
       if (opts.resetHoles !== false) {
+        container.classList.remove('completed');
         container.querySelectorAll('.basket-hole').forEach(function (el) {
           el.classList.remove('completed');
         });
@@ -639,6 +731,7 @@
     DT.selectedBasket = basket;
     DT.basketConfig = params.basketConfig || DT.basketConfig || 6;
     DT.running[basket] = true;
+    syncDtNavLock();
     DT._runParams = DT._runParams || {};
     DT._runParams[basket] = params;
     var startBtn = document.getElementById('start' + basket);
@@ -737,6 +830,36 @@
     if (dtPanel) dtPanel.style.display = '';
   }
 
+  function reportIdFromResponse(res) {
+    if (!res) return null;
+    var run = res.run || {};
+    var report = res.savedReport || res.lastSavedReport || res.report ||
+      run.savedReport || run.lastSavedReport;
+    if (!report) return null;
+    if (typeof report === 'number') return report;
+    var rid = report.id != null ? report.id : report.reportId;
+    return rid != null ? rid : null;
+  }
+
+  function openPendingTestReport(res, opts) {
+    opts = opts || {};
+    if (opts.aborted) {
+      go('home');
+      return;
+    }
+    var rid = reportIdFromResponse(res);
+    if (rid && typeof openReportPreview === 'function') {
+      try {
+        openReportPreview(rid, { setGate: true });
+        return;
+      } catch (e) {}
+    }
+    go('home');
+    if (typeof loadReports === 'function') {
+      try { loadReports(); } catch (e2) {}
+    }
+  }
+
   function startRunPoll(basket) {
     stopRunPoll(basket);
     DT.pollTimers = DT.pollTimers || { 1: null, 2: null };
@@ -782,13 +905,11 @@
         if (run.state === 'COMPLETE' || run.state === 'ABORTED') {
           finishBasketUi(basket);
           toast(run.status || run.state, run.aborted ? 'error' : 'success');
-          if (typeof loadReports === 'function') try { loadReports(); } catch (e) {}
-          setTimeout(function () { go('home'); }, 600);
+          openPendingTestReport(res, { aborted: !!run.aborted });
         } else if (run.state === 'IDLE' && DT.running[basket]) {
           // Server cleared the run after auto-save; treat as finished.
           finishBasketUi(basket);
-          if (typeof loadReports === 'function') try { loadReports(); } catch (e) {}
-          setTimeout(function () { go('home'); }, 600);
+          openPendingTestReport(res, { aborted: false });
         }
       }).catch(function () {});
     }, 1000);
@@ -836,6 +957,10 @@
         if (!res.ok) throw new Error(res.error || 'Tap failed');
         var el = document.getElementById('dt-hole-' + hole);
         if (el) { el.classList.add('completed'); el.disabled = true; }
+        var container = document.getElementById('basket' + basket + '-container');
+        if (container && DT.basketConfig === 1) {
+          container.classList.add('completed');
+        }
         var dashHoles = document.querySelectorAll('#basket' + basket + '-container .basket-hole');
         dashHoles.forEach(function (node) {
           if (String(node.textContent) === String(hole)) node.classList.add('completed');
@@ -846,14 +971,12 @@
           (run.state === 'IDLE' && DT.running[basket]));
         if (finished) {
           finishBasketUi(basket);
+          var aborted = !!(run.aborted || run.state === 'ABORTED');
           toast(
-            (res.savedReport || res.report || run.state === 'COMPLETE')
-              ? 'Test complete — report pending approval'
-              : 'Test stopped',
-            'success'
+            aborted ? 'Test stopped' : 'Test complete — report pending approval',
+            aborted ? 'error' : 'success'
           );
-          if (typeof loadReports === 'function') try { loadReports(); } catch (e) {}
-          setTimeout(function () { go('home'); }, 600);
+          openPendingTestReport(res, { aborted: aborted });
         }
       })
       .catch(function (e) { toast(e.message || 'Tap failed', 'error'); });
@@ -868,7 +991,7 @@
       if (!res.ok) throw new Error(res.error || 'Stop failed');
       finishBasketUi(basket);
       toast(aborted ? 'Test aborted' : 'Test stopped', aborted ? 'error' : 'success');
-      setTimeout(function () { go('home'); }, 600);
+      openPendingTestReport(res, { aborted: !!aborted });
     }).catch(function (e) { toast(e.message || 'Stop failed', 'error'); });
   };
 
@@ -879,11 +1002,6 @@
   window.trDispenseTest = function () {};
 
   // -------------------- Validation --------------------
-
-  var _valPollTimer = null;
-  var _valKind = null;
-  var _valBasket = 1;
-  var _tempValRunning = false;
 
   function clearValPoll() {
     if (_valPollTimer) {
@@ -989,6 +1107,7 @@
     }).then(function (res) {
       if (!res.ok) throw new Error(res.error || 'Start failed');
       _tempValRunning = true;
+      syncDtNavLock();
       var startLbl = document.getElementById('validation-stop-btn-text');
       if (startLbl) startLbl.textContent = 'STOP';
       var msg = document.getElementById('validation-message');
@@ -1033,6 +1152,7 @@
     }
     _tempValRunning = false;
     _valKind = null;
+    syncDtNavLock();
     var startLbl = document.getElementById('validation-stop-btn-text');
     if (startLbl) startLbl.textContent = 'START';
     if (!opts.stay) go('validate-type-select');
@@ -1051,6 +1171,8 @@
         if (!res.ok) throw new Error(res.error || 'Save failed');
         toast('Validation report saved (pending approval)', 'success');
         _tempValRunning = false;
+        _valKind = null;
+        syncDtNavLock();
         var report = res.report || {};
         var rid = report.id;
         if (rid && typeof openReportPreview === 'function') {
@@ -1073,6 +1195,7 @@
   function pollValidation(kind, basket) {
     _valKind = kind;
     _valBasket = basket;
+    syncDtNavLock();
     var statusEl = document.getElementById('dt-val-status');
     clearValPoll();
     _valPollTimer = setInterval(function () {
@@ -1090,6 +1213,10 @@
           if (counter && s.strokesPerMin != null) counter.textContent = String(s.strokesPerMin);
           if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
             clearValPoll();
+            if (s.state === 'ABORTED') {
+              _valKind = null;
+              syncDtNavLock();
+            }
             var card = document.getElementById('stroke-validation-status-card');
             var text = document.getElementById('stroke-validation-status-text');
             var btn = document.getElementById('stroke-complete-btn');
@@ -1145,6 +1272,10 @@
           if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
             clearValPoll();
             _tempValRunning = false;
+            if (s.state === 'ABORTED') {
+              _valKind = null;
+            }
+            syncDtNavLock();
             var startLbl = document.getElementById('validation-stop-btn-text');
             if (startLbl) startLbl.textContent = 'START';
             var completeTemp = document.getElementById('complete-temp-validation-btn');
@@ -1173,7 +1304,7 @@
   };
 
   window.dtCalibrate = function () {
-    var sensor = (document.getElementById('dt-cal-sensor') || {}).value || 'IR1';
+    var beaker = DT.calBeaker === 2 ? 2 : 1;
     var measuredEl = document.getElementById('calibration-measured-temp-input');
     var temp = measuredEl
       ? parseFloat(measuredEl.value)
@@ -1183,14 +1314,26 @@
     function doCal(token) {
       return api('/api/data/calibration', {
         method: 'POST',
-        body: { sensor: sensor, temperature: temp, saveReport: true },
+        body: {
+          beaker: beaker,
+          probe: 'BOTH',
+          temperature: temp,
+          saveReport: true,
+        },
         headers: token ? { 'X-Approval-Verify-Token': token } : {},
       }).then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Calibration failed');
-        toast('Calibrated ' + sensor + ' (before=' + res.beforeValue + ' after=' + res.afterValue + ')', 'success');
-        var rid = (res.report && res.report.id) || res.reportId;
+        DT.calSessionActive = false;
+        syncDtNavLock();
+        var sensors = (res.sensors || []).map(function (s) { return s.sensor; }).join('+') ||
+          ('IR' + beaker + '+EXT' + beaker);
+        toast('Calibrated ' + sensors + ' to ' + temp.toFixed(1) + '°C', 'success');
+        var rid = (res.report && res.report.id) || res.reportId ||
+          (res.savedReport && res.savedReport.id);
         if (rid && typeof openReportPreview === 'function') {
           openReportPreview(rid, { setGate: true });
+        } else {
+          go('validate');
         }
       });
     }
@@ -1198,7 +1341,7 @@
     var calOpts = {
       purpose: 'calibration',
       titleText: 'Calibration approval required',
-      subtitleText: 'Enter credentials to authorize temperature calibration.',
+      subtitleText: 'Enter credentials to authorize temperature calibration (IR + EXT).',
     };
     if (typeof openApprovalVerifyModal === 'function') {
       openApprovalVerifyModal(calOpts).then(function (token) {

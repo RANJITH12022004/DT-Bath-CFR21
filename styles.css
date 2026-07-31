@@ -495,6 +495,10 @@ body {
     border-color: #d946ef;
     background: linear-gradient(160deg, rgba(217, 70, 239, 0.35), rgba(192, 38, 211, 0.22));
 }
+.permission-card.is-selected.permission-card--accent-12 {
+    border-color: #f43f5e;
+    background: linear-gradient(160deg, rgba(244, 63, 94, 0.35), rgba(225, 29, 72, 0.22));
+}
 
 .permission-card-title {
     font-size: 0.92rem;
@@ -1428,11 +1432,20 @@ body {
 }
 
 .btn-confirm-cancel {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    background: #475569;
 }
 
 .btn-confirm-ok {
-    background: linear-gradient(135deg, #ef4444, #dc2626);
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.btn-confirm-abort,
+#app-modal-buttons .btn-confirm-abort,
+.btn-role-select.btn-confirm-abort {
+    background: linear-gradient(135deg, #ef4444, #dc2626) !important;
+    background-color: #ef4444 !important;
+    border-color: #dc2626 !important;
+    color: #fff !important;
 }
 
 .btn {
@@ -4134,7 +4147,7 @@ body {
 /* Add New Member / biometric: full-bleed, scroll via .page-content */
 body.keyboard-open #page-add-member.active,
 body.keyboard-open #page-member-biometric.active {
-    scroll-padding-bottom: 280px;
+    scroll-padding-bottom: calc(var(--osk-panel-height, 300px) + var(--osk-bottom-offset, 138px) + 8px);
 }
 
 /* Validation / calibration / wizard pages — scroll via .page-content */
@@ -4337,23 +4350,47 @@ body.keyboard-open #page-member-biometric.active {
     background: #ea580c;
 }
 
-/* On-Screen Keyboard (from Hardness) */
+/* On-Screen Keyboard (Hardness-Cfr / components.css) — anchored above bottom edge */
+:root {
+    --osk-panel-height: 300px;
+    --osk-bottom-offset: 138px; /* raised +20 from 118px */
+}
+
+#keyboard-root {
+    position: fixed !important;
+    inset: auto 0 0 0 !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    height: 0 !important;
+    z-index: 100000 !important;
+    pointer-events: none !important;
+}
+
+#keyboard-root > * {
+    pointer-events: auto !important;
+}
+
 .keyboard,
 #osk,
 .keyboard-container {
     position: fixed !important;
-    bottom: 10px !important;
-    left: -5px !important;
+    bottom: var(--osk-bottom-offset, 138px) !important;
+    left: 0 !important;
+    right: 0 !important;
     width: 100% !important;
-    height: 300px !important;
-    z-index: 100000 !important;
-    overflow: visible !important;
+    max-width: 100vw !important;
+    height: var(--osk-panel-height) !important;
+    max-height: var(--osk-panel-height) !important;
+    z-index: 100001 !important;
+    overflow: hidden !important;
     pointer-events: auto !important;
     background: #111827 !important;
     display: none;
-    transform: translateY(-7px) !important;
+    transform: none !important;
     border: none !important;
     box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.5) !important;
+    box-sizing: border-box !important;
+    padding-bottom: 0 !important;
 }
 
 .keyboard.visible,
@@ -4362,20 +4399,23 @@ body.keyboard-open #page-member-biometric.active {
 }
 
 #osk-rows {
-    overflow: visible !important;
-    padding: 12px;
+    overflow: hidden !important;
+    padding: 10px 8px 8px;
     touch-action: manipulation;
     pointer-events: auto;
     background: #111827 !important;
+    height: 100%;
+    box-sizing: border-box;
 }
 
 .osk-row {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     justify-content: center;
     align-items: center;
-    padding: 4px;
-    margin-bottom: 6px;
+    padding: 3px;
+    margin-bottom: 4px;
+    flex: 0 0 auto;
 }
 
 .osk-key {
@@ -4384,14 +4424,16 @@ body.keyboard-open #page-member-biometric.active {
     user-select: none;
     pointer-events: auto !important;
     flex: 1;
-    min-width: 60px;
-    height: 60px;
+    min-width: 52px;
+    height: 56px;
+    min-height: 56px;
+    max-height: 56px;
     background: rgba(55, 65, 81, 0.9);
     border: 2px solid #4b5563;
-    border-radius: 12px;
+    border-radius: 10px;
     color: white !important;
     font-weight: bold;
-    font-size: 1.2rem;
+    font-size: 1.15rem;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -4449,15 +4491,19 @@ body.keyboard-open {
     position: fixed !important;
     top: 0 !important;
     left: 0 !important;
+    right: 0 !important;
+    bottom: calc(var(--osk-panel-height) + var(--osk-bottom-offset, 138px)) !important;
     width: 100% !important;
-    height: calc(100% - 300px) !important;
-    z-index: 99999 !important;
+    max-width: 100vw !important;
+    height: auto !important;
+    z-index: 100002 !important;
     display: none;
     align-items: center;
     justify-content: center;
     background: rgba(0, 0, 0, 0.85) !important;
     backdrop-filter: blur(8px);
     pointer-events: auto;
+    box-sizing: border-box !important;
 }
 
 .osk-popup-content {
@@ -7861,23 +7907,47 @@ input[type="number"] {
     background: #ea580c;
 }
 
-/* On-Screen Keyboard (from Hardness) */
+/* On-Screen Keyboard (Hardness-Cfr / components.css) — anchored above bottom edge */
+:root {
+    --osk-panel-height: 300px;
+    --osk-bottom-offset: 138px; /* raised +20 from 118px */
+}
+
+#keyboard-root {
+    position: fixed !important;
+    inset: auto 0 0 0 !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    height: 0 !important;
+    z-index: 100000 !important;
+    pointer-events: none !important;
+}
+
+#keyboard-root > * {
+    pointer-events: auto !important;
+}
+
 .keyboard,
 #osk,
 .keyboard-container {
     position: fixed !important;
-    bottom: 0 !important;
+    bottom: var(--osk-bottom-offset, 138px) !important;
     left: 0 !important;
+    right: 0 !important;
     width: 100% !important;
-    height: 300px !important;
-    z-index: 100000 !important;
-    overflow: visible !important;
+    max-width: 100vw !important;
+    height: var(--osk-panel-height) !important;
+    max-height: var(--osk-panel-height) !important;
+    z-index: 100001 !important;
+    overflow: hidden !important;
     pointer-events: auto !important;
     background: #111827 !important;
     display: none;
-    transform: translateY(-7px) !important;
+    transform: none !important;
     border: none !important;
     box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.5) !important;
+    box-sizing: border-box !important;
+    padding-bottom: 0 !important;
 }
 
 .keyboard.visible,
@@ -7886,20 +7956,23 @@ input[type="number"] {
 }
 
 #osk-rows {
-    overflow: visible !important;
-    padding: 12px;
+    overflow: hidden !important;
+    padding: 10px 8px 8px;
     touch-action: manipulation;
     pointer-events: auto;
     background: #111827 !important;
+    height: 100%;
+    box-sizing: border-box;
 }
 
 .osk-row {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     justify-content: center;
     align-items: center;
-    padding: 4px;
-    margin-bottom: 6px;
+    padding: 3px;
+    margin-bottom: 4px;
+    flex: 0 0 auto;
 }
 
 .osk-key {
@@ -7908,14 +7981,16 @@ input[type="number"] {
     user-select: none;
     pointer-events: auto !important;
     flex: 1;
-    min-width: 60px;
-    height: 60px;
+    min-width: 52px;
+    height: 56px;
+    min-height: 56px;
+    max-height: 56px;
     background: rgba(55, 65, 81, 0.9);
     border: 2px solid #4b5563;
-    border-radius: 12px;
+    border-radius: 10px;
     color: white !important;
     font-weight: bold;
-    font-size: 1.2rem;
+    font-size: 1.15rem;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -7973,15 +8048,19 @@ body.keyboard-open {
     position: fixed !important;
     top: 0 !important;
     left: 0 !important;
+    right: 0 !important;
+    bottom: calc(var(--osk-panel-height) + var(--osk-bottom-offset, 138px)) !important;
     width: 100% !important;
-    height: calc(100% - 300px) !important;
-    z-index: 99999 !important;
+    max-width: 100vw !important;
+    height: auto !important;
+    z-index: 100002 !important;
     display: none;
     align-items: center;
     justify-content: center;
     background: rgba(0, 0, 0, 0.85) !important;
     backdrop-filter: blur(8px);
     pointer-events: auto;
+    box-sizing: border-box !important;
 }
 
 .osk-popup-content {
@@ -9234,6 +9313,21 @@ body.keyboard-open {
     box-shadow: 0 8px 24px rgba(0,0,0,.5);
     position: relative;
 }
+.basket-container.is-single-tube {
+    background: #9ca3af;
+    border-color: #d1d5db;
+    cursor: pointer;
+}
+.basket-container.is-single-tube .center-temp {
+    background: rgba(75, 85, 99, 0.92);
+    border-color: #e5e7eb;
+    z-index: 4;
+    pointer-events: none;
+}
+.basket-container.is-single-tube.completed {
+    background: #10b981 !important;
+    border-color: #34d399;
+}
 .basket-hole {
     width: 73px;
     height: 73px;
@@ -9414,20 +9508,57 @@ body.keyboard-open {
     display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;
 }
 .beaker-select-btn {
-    width: 150px; height: 150px; border-radius: 24px; border: 4px solid #6b7280;
+    width: 160px; height: 160px; border-radius: 24px; border: 4px solid #6b7280;
     background: #374151; color: #fff; font-size: 18px; font-weight: 700; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 12px 10px; transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.beaker-select-btn:hover {
+    border-color: #3b82f6;
+}
+.beaker-select-btn:active {
+    transform: scale(0.96);
+}
+.beaker-select-btn .beaker-select-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #60a5fa; line-height: 0;
+}
+.beaker-select-btn .beaker-select-icon svg {
+    width: 72px; height: 72px;
+}
+.beaker-select-btn .beaker-select-icon--pair {
+    gap: 6px;
+}
+.beaker-select-btn .beaker-select-icon--pair svg {
+    width: 44px; height: 44px;
 }
 .beaker-select-btn.selected,
 .beaker-select-btn.is-selected {
     border-color: #10b981; background: rgba(16,185,129,0.25);
 }
+.beaker-select-btn.selected .beaker-select-icon,
+.beaker-select-btn.is-selected .beaker-select-icon {
+    color: #34d399;
+}
 .dt-basket-config-grid {
-    display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-top: 24px;
+    display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-top: 18px;
 }
 .dt-basket-cfg-btn {
-    width: 160px; height: 160px; border-radius: 24px; border: 4px solid #6b7280;
+    width: 200px; min-height: 220px; border-radius: 20px; border: 4px solid #6b7280;
     background: #374151; color: #fff; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-weight: 700;
+    padding: 14px 12px 16px; transition: border-color 0.15s ease, transform 0.1s ease, background 0.15s ease;
+}
+.dt-basket-cfg-btn:hover { border-color: #3b82f6; }
+.dt-basket-cfg-btn:active { transform: scale(0.96); }
+.dt-basket-cfg-preview {
+    width: 140px; height: 140px; display: block;
+}
+.dt-basket-cfg-btn .dt-cfg-label {
+    font-size: 20px; line-height: 1.1; margin-top: 4px;
+}
+.dt-basket-cfg-btn .dt-cfg-hint {
+    font-size: 12px; font-weight: 600; color: #9ca3af;
 }
 .dt-basket-cfg-btn .dt-cfg-num { font-size: 48px; line-height: 1; }
 .dt-heater-grid {
@@ -9451,6 +9582,93 @@ body.keyboard-open {
     display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; max-width: 700px; margin: 0 auto;
 }
 .dt-cal-grid .input-field { text-align: center; font-size: 22px; font-weight: 700; min-height: 56px; }
+
+.dt-calibration-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 120px);
+    padding: 24px 20px 40px;
+    box-sizing: border-box;
+}
+.dt-calibration-panel {
+    width: 100%;
+    max-width: 720px;
+    background: rgba(30, 30, 30, 0.92);
+    border: 3px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    padding: 28px 24px 24px;
+    box-sizing: border-box;
+}
+.dt-calibration-panel .section-title {
+    margin: 0 0 6px;
+    text-align: center;
+}
+.dt-calibration-panel .section-subtitle {
+    margin: 0 0 20px;
+    text-align: center;
+    opacity: 0.9;
+}
+.dt-calibration-panel .dt-cal-grid {
+    margin: 0 0 18px;
+    max-width: none;
+}
+.dt-cal-field label {
+    display: block;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    text-align: left;
+}
+.dt-cal-field .input-field {
+    width: 100%;
+    box-sizing: border-box;
+    background: rgba(55, 65, 81, 0.85);
+    border: 3px solid #4b5563;
+    border-radius: 12px;
+    color: #fff;
+}
+.dt-cal-field-measured .input-field {
+    border-color: #10b981;
+}
+.dt-cal-submit-btn {
+    display: block;
+    width: 100%;
+    min-height: 56px;
+    margin: 0 0 14px;
+    font-size: 20px;
+    font-weight: 700;
+    border-radius: 12px;
+    background: #10b981;
+    border-color: #10b981;
+    box-shadow: 0 8px 24px rgba(16, 185, 129, 0.35);
+}
+.dt-cal-submit-btn:hover {
+    background: #059669;
+    border-color: #059669;
+}
+.dt-cal-info {
+    margin: 0 0 14px;
+    padding: 12px 14px;
+    background: rgba(59, 130, 246, 0.2);
+    border: 2px solid rgba(59, 130, 246, 0.4);
+    border-radius: 10px;
+    color: #bfdbfe;
+    font-size: 13px;
+    line-height: 1.45;
+    text-align: left;
+}
+.dt-cal-live-strip {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+    opacity: 0.75;
+    font-size: 13px;
+    color: #e5e7eb;
+}
 #page-validate .validation-settings-grid {
     grid-template-columns: repeat(2, minmax(200px, 1fr));
     max-width: 640px;
@@ -9758,22 +9976,44 @@ body.keyboard-open {
     position: relative;
     display: flex;
     align-items: center;
-    justify-content: center;
-    min-height: 58px;
-    padding: 10px 12px;
+    justify-content: flex-start;
+    gap: 10px;
+    min-height: 64px;
+    padding: 10px 14px;
     border-radius: 12px;
     border: 2px solid rgba(255, 255, 255, 0.1);
     background: var(--bg-secondary, #151b23);
     cursor: pointer;
     transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
     color: #fff;
-    text-align: center;
+    text-align: left;
 }
 
 #page-create-recipe-step1 .dt-recipe-mode-card input {
     position: absolute;
     opacity: 0;
     pointer-events: none;
+}
+
+#page-create-recipe-step1 .dt-recipe-mode-icon {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.06);
+    color: #93c5fd;
+}
+
+#page-create-recipe-step1 .dt-recipe-mode-card[data-mode="timer"] .dt-recipe-mode-icon {
+    color: #67e8f9;
+}
+
+#page-create-recipe-step1 .dt-recipe-mode-icon svg {
+    width: 22px;
+    height: 22px;
 }
 
 #page-create-recipe-step1 .dt-recipe-mode-copy {

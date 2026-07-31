@@ -52,6 +52,7 @@ var PERMISSION_CARD_KEYS = [
   'perm_profile_admin',
   'perm_validation_test',
   'perm_validation_report_approve',
+  'perm_calibration',
   'perm_datetime',
   'perm_reports_view',
   'perm_audit_view',
@@ -79,6 +80,7 @@ var PERM_CARD_EXPAND = {
   ],
   perm_validation_test: ['validation-test', 'validate-menu', 'settings'],
   perm_validation_report_approve: ['validation-report-approve'],
+  perm_calibration: ['calibration-menu', 'settings'],
   perm_datetime: ['edit-datetime', 'settings'],
   perm_reports_view: ['reports-view'],
   perm_audit_view: ['audit-view'],
@@ -88,17 +90,18 @@ var PERM_CARD_EXPAND = {
 
 var PERMISSION_CARD_CATALOG = [
   { key: 'perm_test_access', label: 'Test access', description: 'Quick test and recipe-based test runs.', accent: 0 },
-  { key: 'perm_test_report_approve', label: 'Test report approval', description: 'Approve pending test reports.', accent: 1 },
+  { key: 'perm_test_report_approve', label: 'Test report approval', description: 'Approve pending test reports (e-signature).', accent: 1 },
   { key: 'perm_recipe_manage', label: 'Manage recipes', description: 'Create and edit recipes.', accent: 2 },
-  { key: 'perm_recipe_approve', label: 'Recipe approval', description: 'Participate in recipe approval / verification.', accent: 3 },
+  { key: 'perm_recipe_approve', label: 'Recipe approval', description: 'Approve / verify recipe creation and changes.', accent: 3 },
   { key: 'perm_profile_admin', label: 'Profile management', description: 'Add, disable, edit, lock, unlock, and change roles for profiles.', accent: 4 },
-  { key: 'perm_validation_test', label: 'Validation test access', description: 'Run USP validation (25 RPM, 4 min, 100 rotations).', accent: 5 },
+  { key: 'perm_validation_test', label: 'Validation test access', description: 'Run stroke and temperature validation.', accent: 5 },
   { key: 'perm_validation_report_approve', label: 'Validation report approval', description: 'Approve pending validation reports.', accent: 6 },
-  { key: 'perm_datetime', label: 'Edit date and time', description: 'Change system date, time, and RTC.', accent: 7 },
-  { key: 'perm_reports_view', label: 'View and print reports', description: 'Open, preview, and print reports.', accent: 8 },
-  { key: 'perm_audit_view', label: 'View audit trails only', description: 'View audit log entries (does not include test/validation reports list).', accent: 9 },
-  { key: 'perm_export_usb', label: 'Export reports and audit (USB)', description: 'Export to USB (requires report or audit access for the data being exported).', accent: 10 },
-  { key: 'perm_export_approve', label: 'Export approval', description: 'Verify another user’s USB export (secondary approval).', accent: 11 },
+  { key: 'perm_calibration', label: 'Calibration access', description: 'Run temperature calibration and authorize calibration e-sign.', accent: 7 },
+  { key: 'perm_datetime', label: 'Edit date and time', description: 'Change system date, time, and RTC.', accent: 8 },
+  { key: 'perm_reports_view', label: 'View and print reports', description: 'Open, preview, and print reports.', accent: 9 },
+  { key: 'perm_audit_view', label: 'View audit trails only', description: 'View audit log entries (does not include test/validation reports list).', accent: 10 },
+  { key: 'perm_export_usb', label: 'Export reports and audit (USB)', description: 'Export to USB (requires report or audit access for the data being exported).', accent: 11 },
+  { key: 'perm_export_approve', label: 'Export approval', description: 'Verify another user’s USB export (secondary approval).', accent: 12 },
 ];
 
 /** Legacy fine-grained keys (v1); still honored if present in allow until re-saved. */

@@ -26,6 +26,7 @@ _logger = None
 _audit_fn: Optional[Callable] = None
 _save_report_fn: Optional[Callable] = None
 _runs: Dict[int, Dict[str, Any]] = {}  # basket_id -> run state
+_last_saved_reports: Dict[int, Dict[str, Any]] = {}  # basket_id -> last auto-saved report
 _watchdog_started = False
 
 STATES = ("IDLE", "PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING", "COMPLETE", "ABORTED")
@@ -116,7 +117,12 @@ def get_run(basket: int) -> Dict[str, Any]:
     with _lock:
         if basket not in _runs:
             _runs[basket] = _empty_run(basket)
-        return dict(_runs[basket])
+        out = dict(_runs[basket])
+        saved = _last_saved_reports.pop(basket, None)
+    if saved:
+        out["savedReport"] = dict(saved) if isinstance(saved, dict) else saved
+        out["lastSavedReport"] = out["savedReport"]
+    return out
 
 
 def get_all_runs() -> Dict[str, Any]:
@@ -228,9 +234,12 @@ def start_preheat(
         operatorId=operator_id,
         operatorUsername=operator_username,
     )
+    product = product_name or run.get("productName") or run.get("recipeName") or "--"
+    batch = batch_number or run.get("batchNumber") or "--"
     _audit(
         "Test preheat started",
-        f"Basket {basket} preheat to {temp}°C mode={mode}",
+        f"Beaker {basket} | product {product} | batch {batch} | setpoint {temp}°C | mode {mode}"
+        + (f" | duration {dur} min" if dur else ""),
         entity_type="test_run",
         entity_id=str(basket),
         extra={
@@ -255,7 +264,7 @@ def on_temp_ready(basket: int) -> Dict[str, Any]:
     run = _set_state(basket, "AWAIT_CONFIRM", readyAt=_now_iso())
     # Also mark READY for clients that look for it
     run["state"] = "AWAIT_CONFIRM"
-    _audit("Test ready", f"Basket {basket} at setpoint (TR{basket})", entity_type="test_run", entity_id=str(basket))
+    _audit("Test ready", f"Beaker {basket} reached setpoint — awaiting confirm to start", entity_type="test_run", entity_id=str(basket))
     return {"ok": True, "run": run}
 
 
@@ -291,9 +300,23 @@ def confirm_start(basket: int) -> Dict[str, Any]:
         holeCompletionTimestamps={},
         completedHoles={},
     )
+    product = run.get("productName") or run.get("recipeName") or "--"
+    batch = run.get("batchNumber") or "--"
+    mode = run.get("mode") or "manual"
+    temp = run.get("setTemperature")
+    detail_parts = [
+        f"Beaker {basket}",
+        f"product {product}",
+        f"batch {batch}",
+        f"mode {mode}",
+    ]
+    if temp is not None:
+        detail_parts.append(f"setpoint {temp}°C")
+    if mode == "timer" and run.get("setDurationMinutes") is not None:
+        detail_parts.append(f"duration {run.get('setDurationMinutes')} min")
     _audit(
         "Test started",
-        f"Basket {basket} started mode={run.get('mode')}",
+        " | ".join(detail_parts),
         entity_type="test_run",
         entity_id=str(basket),
         extra={"basket": basket, "mock": hw.is_mock_mode()},
@@ -370,13 +393,8 @@ def tap_vessel(basket: int, vessel: int) -> Dict[str, Any]:
             out = dict(run)
     if not already:
         _persist()
-        _audit(
-            "Tube completed",
-            f"Basket {basket} tube {vessel} at {formatted}",
-            entity_type="test_run",
-            entity_id=str(basket),
-            extra={"basket": basket, "vessel": vessel, "elapsed": formatted},
-        )
+        # Intentionally no per-tube audit — trails stay readable (start / finish / abort only).
+        pass
 
     # All vessels done? (also on re-tap of an already-marked tube so a missed
     # auto-stop cannot leave the stroke motor running.)
@@ -414,11 +432,33 @@ def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[s
         abortReason=reason or ("operator_abort" if aborted else ""),
     )
     report = build_report_payload(run)
+    product = run.get("productName") or run.get("recipeName") or "--"
+    batch = run.get("batchNumber") or "--"
+    tubes = len(run.get("completedHoles") or {})
+    cfg = int(run.get("basketConfig") or 6)
+    mm, ss = (elapsed // 60), (elapsed % 60)
+    elapsed_str = f"{mm:02d}:{ss:02d}"
+    if aborted:
+        reason_txt = reason or "operator_abort"
+        detail = (
+            f"Beaker {basket} | product {product} | batch {batch} | aborted ({reason_txt}) "
+            f"| elapsed {elapsed_str} | tubes {tubes}/{cfg}"
+        )
+        action = "Test aborted"
+        outcome = "aborted"
+    else:
+        detail = (
+            f"Beaker {basket} | product {product} | batch {batch} | completed "
+            f"| elapsed {elapsed_str} | tubes {tubes}/{cfg}"
+        )
+        action = "Test finished"
+        outcome = "success"
     _audit(
-        "Test aborted" if aborted else "Test finished",
-        f"Basket {basket} {status}",
+        action,
+        detail,
         entity_type="test_run",
         entity_id=str(basket),
+        outcome=outcome,
         extra={"basket": basket, "status": status, "reason": reason, "mock": hw.is_mock_mode()},
     )
     saved = None
@@ -429,6 +469,9 @@ def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[s
             for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
                 to_save.pop(k, None)
             saved = _save_report_fn(to_save)
+            with _lock:
+                if saved:
+                    _last_saved_reports[basket] = dict(saved) if isinstance(saved, dict) else {"id": saved}
             clear_run(basket)
         except Exception as e:
             if _logger:

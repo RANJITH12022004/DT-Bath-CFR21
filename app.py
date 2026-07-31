@@ -148,14 +148,21 @@ def _dt_save_report(report: dict):
     rid = data_service.save_report(report)
     saved = data_service.get_report(rid) or report
     try:
+        details = _format_report_audit_details(rid, saved if isinstance(saved, dict) else report)
+        basket = (report or {}).get("basket")
+        if basket is not None:
+            details = "{} | basket {}".format(details, basket)
+        status = (report or {}).get("status") or ""
+        if status:
+            details = "{} | {}".format(details, status)
         _audit_event(
             action="Report saved",
             outcome="success",
-            details=f"Pending test report basket {report.get('basket')}",
+            details=details,
             entity_type="report",
             entity_id=str(rid or ""),
-            entity_name=(saved or {}).get("name") or "",
-            extra={"basket": report.get("basket"), "mock": report.get("mock"), "auto": True},
+            entity_name=(saved or {}).get("name") if isinstance(saved, dict) else "",
+            extra={"basket": basket, "mock": (report or {}).get("mock"), "auto": True},
         )
     except Exception:
         pass
@@ -2380,9 +2387,25 @@ def get_factory_settings():
 def save_factory_settings():
     try:
         settings = request.get_json(force=True, silent=True) or {}
+        if not isinstance(settings, dict):
+            settings = {}
+        before = data_service.get_factory_settings() or {}
         data_service.save_factory_settings(settings)
         saved = data_service.get_factory_settings() or {}
-        _audit(None, None, "Factory settings changed", "")
+        date_keys = {"lastValidationDate", "nextValidationDate", "dueIntervalMonths", "dueKind"}
+        changed = []
+        for key in set(list(before.keys()) + list(saved.keys())):
+            if before.get(key) != saved.get(key):
+                changed.append(key)
+        non_date_changed = [k for k in changed if k not in date_keys]
+        # Hardness-Cfr: only log when non-date factory fields actually change.
+        if non_date_changed:
+            _audit(
+                None,
+                None,
+                "Factory settings changed",
+                "Changed: {}".format(", ".join(sorted(non_date_changed))),
+            )
         return jsonify({"success": True, "settings": saved}), 200
     except Exception as e:
         app.logger.exception("Error saving factory settings")
@@ -3440,6 +3463,8 @@ def _humanize_audit_details(action: str, details: str) -> str:
     action = str(action or "").strip()
     details = audit_service._details_audit_display(details)
     if not details:
+        if action == "Factory settings changed":
+            return "Factory settings updated"
         return details
     if action in ("Power interruption", "Power interruption logout"):
         import re
@@ -3509,6 +3534,22 @@ def _humanize_audit_details(action: str, details: str) -> str:
         if re.match(r"^\d{4}-\d{2}-\d{2}T", details):
             return "Set to {}".format(_format_wall_datetime_for_audit(details))
         return _format_wall_datetime_for_audit(details)
+    # DT disintegration — clearer beaker/basket wording
+    if action in (
+        "Test preheat started", "Test ready", "Test started", "Test finished", "Test aborted",
+        "Validation started", "Validation finished", "Validation aborted",
+        "Calibration performed", "Calibration failed",
+    ):
+        import re
+        details = re.sub(r"\bBasket\s+(\d)\b", r"Beaker \1", details, flags=re.I)
+        details = re.sub(r"\bbasket\s+(\d)\b", r"beaker \1", details)
+        details = re.sub(r"\bmode=([a-zA-Z]+)", r"mode \1", details)
+        details = re.sub(r"\bpreheat to\s+", "setpoint ", details, flags=re.I)
+        details = re.sub(r"\s*\(TR\d\)\s*", " ", details)
+        details = re.sub(r"\s{2,}", " ", details).strip(" |")
+        return details
+    if action in ("Entered screen", "Exited screen"):
+        return details
     if "/opt/kiosk/" in details or "/media/" in details:
         import re
         details = re.sub(
@@ -3524,9 +3565,11 @@ def _humanize_audit_details(action: str, details: str) -> str:
 def _audit_entry_should_omit(entry: dict) -> bool:
     """Drop noisy or sensitive rows from operator-facing audit views."""
     action = str(entry.get("action") or "").strip()
-    outcome = str(entry.get("outcome") or "").strip().lower()
     details = str(entry.get("details") or "").strip().lower()
     if action == "Login" and "invalid username" in details:
+        return True
+    # Per-tube taps flood the trail; keep start/finish/abort only.
+    if action == "Tube completed":
         return True
     return False
 
@@ -3539,6 +3582,7 @@ def _prepare_audit_entries_for_display(entries):
         row = dict(entry)
         row["role"] = _display_role_label(row.get("role"))
         row["details"] = _humanize_audit_details(row.get("action"), row.get("details"))
+        row["outcome"] = row.get("outcome") or ""
         out.append(row)
     return out
 
@@ -4943,8 +4987,8 @@ def dt_run_tap(basket):
     data = request.get_json(force=True, silent=True) or {}
     vessel = data.get("vessel") or data.get("hole") or data.get("tube")
     result = dt_test_service.tap_vessel(basket, int(vessel))
-    # If complete, auto-save pending report
-    if result.get("ok") and result.get("report"):
+    # If complete, auto-save pending report (skip if stop_test already saved one)
+    if result.get("ok") and result.get("report") and not result.get("savedReport"):
         try:
             report = dict(result["report"])
             report["reportApprovalStatus"] = "pending"
@@ -5145,14 +5189,26 @@ def dt_calibration():
     if verify_err:
         return jsonify({"ok": False, "error": verify_err}), 403
     data = request.get_json(force=True, silent=True) or {}
-    result = dt_calibration_service.calibrate(
-        sensor=data.get("sensor"),
-        beaker=data.get("beaker") or data.get("basket"),
-        probe=data.get("probe") or "IR",
-        temperature=data.get("temperature") or data.get("temp") or data.get("setTemperature"),
-        operator=_session_operator(),
-        verifier=verified,
-    )
+    probe = str(data.get("probe") or "IR").strip().upper()
+    temperature = data.get("temperature") or data.get("temp") or data.get("setTemperature")
+    beaker = data.get("beaker") or data.get("basket")
+    operator = _session_operator()
+    if probe in ("BOTH", "ALL", "IR+EXT", "IR_EXT"):
+        result = dt_calibration_service.calibrate_both(
+            beaker=beaker or 1,
+            temperature=temperature,
+            operator=operator,
+            verifier=verified,
+        )
+    else:
+        result = dt_calibration_service.calibrate(
+            sensor=data.get("sensor"),
+            beaker=beaker,
+            probe=probe,
+            temperature=temperature,
+            operator=operator,
+            verifier=verified,
+        )
     if result.get("ok") and result.get("report") and data.get("saveReport", True):
         try:
             report = dict(result["report"])

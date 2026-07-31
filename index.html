@@ -7,8 +7,8 @@
     <meta name="viewport"
         content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Tablet Disintegration Tester</title>
-    <link rel="stylesheet" href="/styles.css?v=41" id="app-main-css"
-        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=41&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
+    <link rel="stylesheet" href="/styles.css?v=53" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=53&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -500,7 +500,7 @@
                         <div class="add-member-form form-grid">
                             <div class="form-group full-width">
                                 <label>User ID</label>
-                                <input type="text" id="expired-reset-username" class="input-field" readonly>
+                                <input type="text" id="expired-reset-username" class="input-field input-readonly" readonly tabindex="-1">
                             </div>
                             <div class="form-group full-width">
                                 <label>Current Password</label>
@@ -548,6 +548,14 @@
                                     <label class="dt-recipe-mode-card is-active" data-mode="manual" id="recipe-mode-manual">
                                         <input type="radio" name="recipe-mode-ui" id="recipe-mode-manual-radio" value="manual" checked
                                             onchange="dtSelectRecipeMode('manual')">
+                                        <span class="dt-recipe-mode-icon" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M18 11V6a2 2 0 0 0-4 0v5"></path>
+                                                <path d="M14 10V4a2 2 0 0 0-4 0v8"></path>
+                                                <path d="M10 10.5V6a2 2 0 0 0-4 0v8"></path>
+                                                <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-4a8 8 0 0 1-8-8 2 2 0 1 1 4 0"></path>
+                                            </svg>
+                                        </span>
                                         <span class="dt-recipe-mode-copy">
                                             <strong>Manual</strong>
                                             <small>Operator stops</small>
@@ -556,6 +564,13 @@
                                     <label class="dt-recipe-mode-card" data-mode="timer" id="recipe-mode-timer">
                                         <input type="radio" name="recipe-mode-ui" id="recipe-mode-timer-radio" value="timer"
                                             onchange="dtSelectRecipeMode('timer')">
+                                        <span class="dt-recipe-mode-icon" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <circle cx="12" cy="13" r="8"></circle>
+                                                <path d="M12 9v4l2.5 1.5"></path>
+                                                <path d="M9 2h6"></path>
+                                            </svg>
+                                        </span>
                                         <span class="dt-recipe-mode-copy">
                                             <strong>Timer</strong>
                                             <small>Auto-stop</small>
@@ -1613,40 +1628,40 @@
                                 <!-- Calibration type select (Dt_Dr_Reddy temperature calibration) -->
                 <div class="page" id="page-calibration-type-select">
                     <div class="validation-type-page dt-calibration-page">
-                        <h2 class="section-title">Temperature Calibration</h2>
-                        <p class="section-subtitle">Beaker <span id="calibration-beaker-num">1</span> – Enter reference thermometer value</p>
-                        <div class="dt-cal-grid">
-                            <div class="form-group">
-                                <label>Internal (IR)</label>
-                                <input type="text" id="calibration-internal-temp-input" class="input-field" readonly placeholder="Reading...">
+                        <div class="dt-calibration-panel">
+                            <h2 class="section-title">Temperature Calibration</h2>
+                            <p class="section-subtitle">Beaker <span id="calibration-beaker-num">1</span> – Enter reference thermometer value</p>
+                            <div class="dt-cal-grid">
+                                <div class="form-group dt-cal-field">
+                                    <label for="calibration-internal-temp-input">Internal (IR)</label>
+                                    <input type="text" id="calibration-internal-temp-input" class="input-field" readonly placeholder="Reading...">
+                                </div>
+                                <div class="form-group dt-cal-field">
+                                    <label for="calibration-external-temp-input">External (EXT)</label>
+                                    <input type="text" id="calibration-external-temp-input" class="input-field" readonly placeholder="Reading...">
+                                </div>
+                                <div class="form-group dt-cal-field dt-cal-field-measured">
+                                    <label for="calibration-measured-temp-input">Measured (Reference)</label>
+                                    <input type="text" id="calibration-measured-temp-input" class="input-field" inputmode="decimal" placeholder="Enter measured temp"
+                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label>External (EXT)</label>
-                                <input type="text" id="calibration-external-temp-input" class="input-field" readonly placeholder="Reading...">
+                            <!-- legacy ids used by dtCalibrate -->
+                            <select id="dt-cal-sensor" style="display:none;" aria-hidden="true">
+                                <option value="IR1">IR1</option>
+                                <option value="IR2">IR2</option>
+                            </select>
+                            <input type="hidden" id="dt-cal-temp" value="37">
+                            <button type="button" class="btn btn-primary dt-cal-submit-btn" onclick="dtCalibrateFromPage()">Calibrate</button>
+                            <div class="dt-cal-info">
+                                Place reference thermometer and external probe in the beaker, wait for readings to stabilize, then enter the reference thermometer value. Sends <strong>CAL IR</strong> then <strong>CAL EXT</strong> to the ESP. E-signature required.
                             </div>
-                            <div class="form-group">
-                                <label>Measured (Reference)</label>
-                                <input type="number" id="calibration-measured-temp-input" class="input-field" min="0" max="55" step="0.1" placeholder="Enter measured temp"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            <div class="dt-cal-live-strip">
+                                <span>IR1: <strong id="dt-ir1">--</strong></span>
+                                <span>IR2: <strong id="dt-ir2">--</strong></span>
+                                <span>EXT1: <strong id="dt-ext1">--</strong></span>
+                                <span>EXT2: <strong id="dt-ext2">--</strong></span>
                             </div>
-                        </div>
-                        <!-- legacy ids used by dtCalibrate -->
-                        <select id="dt-cal-sensor" style="display:none;">
-                            <option value="IR1">IR1</option>
-                            <option value="IR2">IR2</option>
-                        </select>
-                        <input type="hidden" id="dt-cal-temp" value="37">
-                        <div style="text-align:center;margin-top:18px;">
-                            <button type="button" class="btn btn-primary" onclick="dtCalibrateFromPage()">Calibrate</button>
-                        </div>
-                        <p class="section-subtitle" style="margin-top:14px;max-width:640px;margin-left:auto;margin-right:auto;">
-                            Place reference thermometer and external probe in the beaker, wait for readings to stabilize, then enter the reference thermometer value. E-signature required.
-                        </p>
-                        <div style="display:flex;gap:16px;justify-content:center;margin-top:12px;flex-wrap:wrap;opacity:.7;">
-                            <span>IR1: <strong id="dt-ir1">--</strong></span>
-                            <span>IR2: <strong id="dt-ir2">--</strong></span>
-                            <span>EXT1: <strong id="dt-ext1">--</strong></span>
-                            <span>EXT2: <strong id="dt-ext2">--</strong></span>
                         </div>
                     </div>
                 </div>
@@ -1805,9 +1820,14 @@
                             </div>
                             <div class="profile-edit-form">
                                 <div class="form-group full-width">
-                                    <label>Edit Full Name</label>
-                                    <input type="text" id="profile-fullname" class="input-field"
-                                        placeholder="Full name">
+                                    <label>Full Name</label>
+                                    <input type="text" id="profile-fullname" class="input-field input-readonly"
+                                        placeholder="Full name" readonly tabindex="-1">
+                                </div>
+                                <div class="form-group full-width">
+                                    <label>User ID</label>
+                                    <input type="text" id="profile-userid" class="input-field input-readonly"
+                                        placeholder="User ID" readonly tabindex="-1" autocomplete="off">
                                 </div>
                                 <div class="form-group full-width">
                                     <label>Password</label>
@@ -1816,7 +1836,6 @@
                             </div>
                         </div>
                         <div class="profile-actions">
-                            <button class="btn btn-blue btn-block" onclick="saveUserProfile()">Save</button>
                             <button class="btn btn-orange btn-block" onclick="goToPage('manage-members')">Manage Profiles</button>
                             <button class="btn btn-blue btn-block" onclick="openAddMember()">Add Members</button>
                         </div>
@@ -2113,10 +2132,42 @@
                     <div class="validation-type-page">
                         <h2 class="section-title">Add Beakers</h2>
                         <p class="section-subtitle">Select which beakers are active on the dashboard</p>
-                        <div class="dt-beaker-select-grid" style="max-width:640px;margin:24px auto;">
-                            <button type="button" id="beaker-select-1" class="beaker-select-btn" onclick="dtSettingsSelectBeaker(1)">Beaker 1</button>
-                            <button type="button" id="beaker-select-2" class="beaker-select-btn" onclick="dtSettingsSelectBeaker(2)">Beaker 2</button>
-                            <button type="button" id="beaker-select-both" class="beaker-select-btn" onclick="dtSettingsSelectBeaker('both')">Both</button>
+                        <div class="dt-beaker-select-grid" style="max-width:720px;margin:24px auto;">
+                            <button type="button" id="beaker-select-1" class="beaker-select-btn" onclick="dtSettingsSelectBeaker(1)">
+                                <span class="beaker-select-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </span>
+                                <span>Beaker 1</span>
+                            </button>
+                            <button type="button" id="beaker-select-2" class="beaker-select-btn" onclick="dtSettingsSelectBeaker(2)">
+                                <span class="beaker-select-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </span>
+                                <span>Beaker 2</span>
+                            </button>
+                            <button type="button" id="beaker-select-both" class="beaker-select-btn" onclick="dtSettingsSelectBeaker('both')">
+                                <span class="beaker-select-icon beaker-select-icon--pair" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </span>
+                                <span>Both</span>
+                            </button>
                         </div>
                         <div style="text-align:center;margin-top:20px;">
                             <button type="button" class="btn btn-primary" id="proceed-beaker-btn" style="display:none;" onclick="dtProceedBeakerSelection()">Proceed to Dashboard</button>
@@ -2131,9 +2182,45 @@
                         <h2 class="section-title">Add Baskets</h2>
                         <p class="section-subtitle">Choose tube configuration for both baskets</p>
                         <div class="dt-basket-config-grid">
-                            <button type="button" class="dt-basket-cfg-btn" onclick="dtSetBasketConfig(1)"><span class="dt-cfg-num">1</span><span>tube</span></button>
-                            <button type="button" class="dt-basket-cfg-btn" onclick="dtSetBasketConfig(3)"><span class="dt-cfg-num">3</span><span>tubes</span></button>
-                            <button type="button" class="dt-basket-cfg-btn" onclick="dtSetBasketConfig(6)"><span class="dt-cfg-num">6</span><span>tubes</span></button>
+                            <button type="button" class="dt-basket-cfg-btn" onclick="dtSetBasketConfig(1)" aria-label="1 tube">
+                                <svg class="dt-basket-cfg-preview" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                    <circle cx="48" cy="48" r="40" fill="#4B5563" stroke="#6B7280" stroke-width="4"></circle>
+                                    <circle cx="48" cy="48" r="28" fill="#9CA3AF"></circle>
+                                    <text x="48" y="54" text-anchor="middle" fill="#111827" font-size="18" font-weight="700">1</text>
+                                </svg>
+                                <span class="dt-cfg-label">1 tube</span>
+                                <span class="dt-cfg-hint">Full circle</span>
+                            </button>
+                            <button type="button" class="dt-basket-cfg-btn" onclick="dtSetBasketConfig(3)" aria-label="3 tubes">
+                                <svg class="dt-basket-cfg-preview" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                    <circle cx="48" cy="48" r="40" fill="#4B5563" stroke="#6B7280" stroke-width="4"></circle>
+                                    <circle cx="48" cy="28" r="11" fill="#9CA3AF"></circle>
+                                    <text x="48" y="32" text-anchor="middle" fill="#111827" font-size="11" font-weight="700">1</text>
+                                    <circle cx="65" cy="58" r="11" fill="#9CA3AF"></circle>
+                                    <text x="65" y="62" text-anchor="middle" fill="#111827" font-size="11" font-weight="700">2</text>
+                                    <circle cx="31" cy="58" r="11" fill="#9CA3AF"></circle>
+                                    <text x="31" y="62" text-anchor="middle" fill="#111827" font-size="11" font-weight="700">3</text>
+                                </svg>
+                                <span class="dt-cfg-label">3 tubes</span>
+                            </button>
+                            <button type="button" class="dt-basket-cfg-btn" onclick="dtSetBasketConfig(6)" aria-label="6 tubes">
+                                <svg class="dt-basket-cfg-preview" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                    <circle cx="48" cy="48" r="40" fill="#4B5563" stroke="#6B7280" stroke-width="4"></circle>
+                                    <circle cx="48" cy="20" r="9" fill="#9CA3AF"></circle>
+                                    <text x="48" y="24" text-anchor="middle" fill="#111827" font-size="10" font-weight="700">1</text>
+                                    <circle cx="72.25" cy="34" r="9" fill="#9CA3AF"></circle>
+                                    <text x="72.25" y="38" text-anchor="middle" fill="#111827" font-size="10" font-weight="700">2</text>
+                                    <circle cx="72.25" cy="62" r="9" fill="#9CA3AF"></circle>
+                                    <text x="72.25" y="66" text-anchor="middle" fill="#111827" font-size="10" font-weight="700">3</text>
+                                    <circle cx="48" cy="76" r="9" fill="#9CA3AF"></circle>
+                                    <text x="48" y="80" text-anchor="middle" fill="#111827" font-size="10" font-weight="700">4</text>
+                                    <circle cx="23.75" cy="62" r="9" fill="#9CA3AF"></circle>
+                                    <text x="23.75" y="66" text-anchor="middle" fill="#111827" font-size="10" font-weight="700">5</text>
+                                    <circle cx="23.75" cy="34" r="9" fill="#9CA3AF"></circle>
+                                    <text x="23.75" y="38" text-anchor="middle" fill="#111827" font-size="10" font-weight="700">6</text>
+                                </svg>
+                                <span class="dt-cfg-label">6 tubes</span>
+                            </button>
                         </div>
                         <div style="text-align:center;margin-top:20px;">
                             <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
@@ -2320,11 +2407,11 @@
         </main>
     </div>
     <div id="keyboard-root"></div>
-    <script src="/keyboard.js?v=3"></script>
+    <script src="/keyboard.js?v=5"></script>
     <script src="/input-focus.js?v=1"></script>
-    <script src="/rbac.js?v=7"></script>
-    <script src="/script.js?v=93"></script>
-    <script src="/dt_client.js?v=7"></script>
+    <script src="/rbac.js?v=8"></script>
+    <script src="/script.js?v=98"></script>
+    <script src="/dt_client.js?v=11"></script>
 </body>
 
 </html>

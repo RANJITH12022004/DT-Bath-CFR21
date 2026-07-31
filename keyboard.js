@@ -56,7 +56,7 @@
       
       <!-- Keyboard Container -->
       <div id="osk" class="keyboard" aria-hidden="true">
-        <div class="flex flex-col p-3 gap-2" id="osk-rows"></div>
+        <div id="osk-rows"></div>
       </div>
     `;
 
@@ -280,6 +280,7 @@
     // Open keyboard for input
     function openOSKForInput(inputElement) {
         if (!inputElement) return;
+        if (inputElement.readOnly || inputElement.disabled) return;
 
         currentInput = inputElement;
 

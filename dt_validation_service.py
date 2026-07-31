@@ -103,7 +103,7 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
         _sessions[key] = session
     _audit(
         "Validation started",
-        f"Stroke validation basket {basket}",
+        f"Stroke validation | Beaker {basket} | duration 60 s",
         entity_type="validation",
         entity_id=f"stroke-{basket}",
         extra={"basket": basket, "kind": "stroke", "mock": hw.is_mock_mode()},
@@ -205,7 +205,7 @@ def _stroke_worker(basket: int) -> None:
 
         _audit(
             "Validation finished",
-            f"Stroke basket {basket}: {status} ({strokes_per_min}/min)",
+            f"Stroke validation | Beaker {basket} | result {status} | {strokes_per_min} strokes/min",
             entity_type="validation",
             entity_id=f"stroke-{basket}",
             outcome="success" if passed else "failure",
@@ -248,7 +248,7 @@ def abort_stroke_validation(basket: int) -> Dict[str, Any]:
             out = dict(_sessions[key])
         else:
             out = {}
-    _audit("Validation aborted", f"Stroke basket {basket}", entity_type="validation", entity_id=f"stroke-{basket}")
+    _audit("Validation aborted", f"Stroke validation | Beaker {basket} | aborted by operator", entity_type="validation", entity_id=f"stroke-{basket}", outcome="aborted")
     return {"ok": True, "session": out}
 
 
@@ -313,7 +313,7 @@ def start_temp_validation(
         _sessions[key] = session
     _audit(
         "Validation started",
-        f"Temp validation basket {basket} at {temp}°C",
+        f"Temperature validation | Beaker {basket} | setpoint {temp}°C | hold 120 s",
         entity_type="validation",
         entity_id=f"temp-{basket}",
         extra={"basket": basket, "kind": "temp", "setTemperature": temp, "mock": hw.is_mock_mode()},
@@ -450,7 +450,7 @@ def _temp_worker(basket: int) -> None:
 
         _audit(
             "Validation finished",
-            f"Temp basket {basket}: {status} (dev={max_dev})",
+            f"Temperature validation | Beaker {basket} | result {status} | deviation ±{max_dev}°C | range {min_t}–{max_t}°C",
             entity_type="validation",
             entity_id=f"temp-{basket}",
             outcome="success" if passed else "failure",
@@ -494,7 +494,7 @@ def abort_temp_validation(basket: int) -> Dict[str, Any]:
             out = dict(_sessions[key])
         else:
             out = {}
-    _audit("Validation aborted", f"Temp basket {basket}", entity_type="validation", entity_id=f"temp-{basket}")
+    _audit("Validation aborted", f"Temperature validation | Beaker {basket} | aborted by operator", entity_type="validation", entity_id=f"temp-{basket}", outcome="aborted")
     return {"ok": True, "session": out}
 
 
