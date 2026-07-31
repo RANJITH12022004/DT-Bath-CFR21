@@ -23,6 +23,9 @@
     heaterOn: { 1: false, 2: false },
     configured: { 1: true, 2: true },
     running: { 1: false, 2: false },
+    /** Dashboard start-btn phase: idle | preheating | ready | running */
+    btnPhase: { 1: 'idle', 2: 'idle' },
+    preheatInProgress: { 1: false, 2: false },
     loadCtx: null,
     beakerPick: null,
     beakerPickPurpose: null,
@@ -181,9 +184,11 @@
           if (data.type === 'temps' || data.kind === 'temps' || data.IR1 != null || data.temps) {
             var t = data.temps || data;
             updateTempDisplay(t);
+            maybeMarkReadyFromTemp(1);
+            maybeMarkReadyFromTemp(2);
           }
           if (data.type === 'TR1' || data.type === 'TR2') {
-            onBasketReady(data.type === 'TR1' ? 1 : 2);
+            markBasketReady(data.type === 'TR1' ? 1 : 2, 'tr');
           }
         } catch (e) {}
       };
@@ -227,11 +232,59 @@
     }
   }
 
-  function onBasketReady(basket) {
+  function setStartBtnPhase(basket, phase) {
+    basket = basket === 2 ? 2 : 1;
+    DT.btnPhase[basket] = phase;
+    var startBtn = document.getElementById('start' + basket);
+    if (!startBtn) return;
+    startBtn.classList.remove('is-stop', 'is-preheating', 'is-ready');
+    startBtn.disabled = false;
+    if (phase === 'preheating') {
+      startBtn.textContent = 'Preheating';
+      startBtn.classList.add('is-preheating');
+      DT.preheatInProgress[basket] = true;
+    } else if (phase === 'ready') {
+      startBtn.textContent = 'Start';
+      startBtn.classList.add('is-ready');
+      DT.preheatInProgress[basket] = false;
+    } else if (phase === 'running') {
+      startBtn.textContent = 'Abort';
+      startBtn.classList.add('is-stop');
+      DT.preheatInProgress[basket] = false;
+    } else {
+      startBtn.textContent = 'Preheat';
+      DT.preheatInProgress[basket] = false;
+    }
+  }
+
+  function markBasketReady(basket, reason) {
+    basket = basket === 2 ? 2 : 1;
+    // Only while actively preheating (ignore stray TR when idle/running)
+    if (DT.btnPhase[basket] !== 'preheating' && !DT.preheatInProgress[basket]) return;
+    if (DT.btnPhase[basket] === 'running') return;
+    if (DT.btnPhase[basket] === 'ready') return;
+    setStartBtnPhase(basket, 'ready');
+    onBasketReady(basket, reason);
+  }
+
+  function maybeMarkReadyFromTemp(basket) {
+    if (DT.btnPhase[basket] !== 'preheating' && !DT.preheatInProgress[basket]) return;
+    var params = (DT._runParams && DT._runParams[basket]) || {};
+    var setT = Number(params.setTemperature != null ? params.setTemperature : DT.setTemp[basket]);
+    if (!(setT > 0)) return;
+    var ir = basket === 1 ? DT.latestTemps.IR1 : DT.latestTemps.IR2;
+    if (ir == null || ir === '') return;
+    var tol = 0.5;
+    if (Math.abs(Number(ir) - setT) <= tol) {
+      markBasketReady(basket, 'setpoint');
+    }
+  }
+
+  function onBasketReady(basket, reason) {
     var banner = document.getElementById('dt-ready-banner');
     if (banner) {
       banner.style.display = '';
-      banner.textContent = 'Basket ' + basket + ' at setpoint — confirm to start';
+      banner.textContent = 'Basket ' + basket + ' at setpoint — press Start';
       banner.setAttribute('data-basket', String(basket));
     }
     var btn = document.getElementById('dt-confirm-btn');
@@ -239,7 +292,10 @@
       btn.disabled = false;
       btn.textContent = 'Confirm Start';
     }
-    toast('Basket ' + basket + ' ready', 'success');
+    toast(
+      'Basket ' + basket + ' ready' + (reason === 'tr' ? ' (TR)' : reason === 'setpoint' ? ' (set temp)' : ''),
+      'success'
+    );
   }
 
   // -------------------- Dashboard --------------------
@@ -407,12 +463,52 @@
 
   window.dtDashboardStart = function (basket) {
     ensureSse();
+    basket = basket === 2 ? 2 : 1;
     if (!DT.configured[basket]) {
       toast('Configure beaker ' + basket + ' in Settings → Add Beakers', 'error');
       return;
     }
-    if (DT.running[basket]) {
-      // Stop / abort
+
+    var phase = DT.btnPhase[basket] || 'idle';
+
+    // Preheat in progress → confirm stop
+    if (phase === 'preheating' || DT.preheatInProgress[basket]) {
+      var doAbortPreheat = function () {
+        api('/api/data/dt/runs/' + basket + '/stop', {
+          method: 'POST',
+          body: { aborted: true, reason: 'preheat_abort' },
+        }).then(function () {
+          finishBasketUi(basket);
+          var tEl = document.getElementById('timer' + basket);
+          if (tEl) tEl.textContent = '00:00:00';
+          toast('Preheating stopped for basket ' + basket, 'info');
+          go('home');
+        }).catch(function (e) { toast(e.message || 'Failed to stop preheating', 'error'); });
+      };
+      var preheatMsg = 'Do you want to stop preheating?';
+      if (typeof showYesNoModal === 'function') {
+        showYesNoModal(preheatMsg, 'Stop Preheat', 'Yes', 'No').then(function (ok) {
+          if (ok) doAbortPreheat();
+        });
+      } else if (typeof showConfirmModal === 'function') {
+        showConfirmModal(preheatMsg, 'Stop Preheat').then(function (ok) {
+          if (ok) doAbortPreheat();
+        });
+      } else if (window.confirm(preheatMsg)) {
+        doAbortPreheat();
+      }
+      return;
+    }
+
+    // Ready → confirm motor start
+    if (phase === 'ready') {
+      DT.selectedBasket = basket;
+      promptConfirmStart(basket);
+      return;
+    }
+
+    // Running → abort test
+    if (phase === 'running' || DT.running[basket]) {
       api('/api/data/dt/runs/' + basket + '/stop', {
         method: 'POST',
         body: { aborted: true, reason: 'operator_abort' },
@@ -420,12 +516,13 @@
         finishBasketUi(basket);
         var tEl = document.getElementById('timer' + basket);
         if (tEl) tEl.textContent = '00:00:00';
-        toast('Basket ' + basket + ' stopped', 'info');
+        toast('Basket ' + basket + ' aborted', 'info');
         go('home');
-      }).catch(function (e) { toast(e.message || 'Stop failed', 'error'); });
+      }).catch(function (e) { toast(e.message || 'Abort failed', 'error'); });
       return;
     }
 
+    // Idle → begin preheat
     var product = DT.products[basket] || ('Manual Test B' + basket);
     var temp = Number(DT.setTemp[basket] || 37);
     var mode = DT.modes[basket] || 'manual';
@@ -722,14 +819,11 @@
     opts = opts || {};
     DT.running[basket] = false;
     DT.heaterOn[basket] = false;
+    DT.preheatInProgress[basket] = false;
     if (DT._confirmPending) DT._confirmPending[basket] = false;
     stopRunPoll(basket);
     syncDtNavLock();
-    var startBtn = document.getElementById('start' + basket);
-    if (startBtn) {
-      startBtn.textContent = 'Start';
-      startBtn.classList.remove('is-stop');
-    }
+    setStartBtnPhase(basket, 'idle');
     var container = document.getElementById('basket' + basket + '-container');
     if (container) {
       var ring = container.querySelector('.basket-active-ring');
@@ -743,18 +837,21 @@
     }
     updateHeaterIndicators();
     updateModeButtonsUI(basket);
+    var banner = document.getElementById('dt-ready-banner');
+    if (banner && String(banner.getAttribute('data-basket')) === String(basket)) {
+      banner.style.display = 'none';
+    }
   }
 
   function openTestRun(basket, params) {
     ensureSse();
     DT.selectedBasket = basket;
     DT.basketConfig = params.basketConfig || DT.basketConfig || 6;
-    DT.running[basket] = true;
+    DT.running[basket] = true; // run session active (preheat phase counts for nav lock)
     syncDtNavLock();
     DT._runParams = DT._runParams || {};
     DT._runParams[basket] = params;
-    var startBtn = document.getElementById('start' + basket);
-    if (startBtn) { startBtn.textContent = 'Stop'; startBtn.classList.add('is-stop'); }
+    setStartBtnPhase(basket, 'preheating');
     // Stay on dashboard test screen (Dt_Dr_Reddy behavior)
     go('home');
     updateProductNames();
@@ -781,7 +878,7 @@
       startRunPoll(basket);
     }).catch(function (e) {
       DT.running[basket] = false;
-      if (startBtn) { startBtn.textContent = 'Start'; startBtn.classList.remove('is-stop'); }
+      setStartBtnPhase(basket, 'idle');
       toast(e.message || 'Preheat failed', 'error');
     });
   }
@@ -797,7 +894,15 @@
     var finish = function (ok) {
       DT._confirmPending[basket] = false;
       if (!ok) {
-        window.dtDashboardStart(basket); // acts as stop while running flag set
+        // Cancel → stop heaters and return to Preheat (Dt_Dr_Reddy)
+        api('/api/data/dt/runs/' + basket + '/stop', {
+          method: 'POST',
+          body: { aborted: true, reason: 'start_cancelled' },
+        }).then(function () {
+          finishBasketUi(basket);
+        }).catch(function () {
+          finishBasketUi(basket);
+        });
         return;
       }
       DT.selectedBasket = basket;
@@ -901,9 +1006,10 @@
         if (run.state === 'AWAIT_CONFIRM' || run.state === 'READY') {
           var btn = document.getElementById('dt-confirm-btn');
           if (btn) { btn.disabled = false; btn.textContent = 'Confirm Start'; }
-          promptConfirmStart(basket);
+          markBasketReady(basket, 'run_state');
         }
         if (run.state === 'RUNNING') {
+          setStartBtnPhase(basket, 'running');
           var container = document.getElementById('basket' + basket + '-container');
           if (container && !container.querySelector('.basket-active-ring')) {
             var ring = document.createElement('div');
@@ -957,6 +1063,7 @@
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Start failed');
         if (DT._confirmPending) DT._confirmPending[basket] = false;
+        setStartBtnPhase(basket, 'running');
         toast('Test started', 'success');
         var banner = document.getElementById('dt-ready-banner');
         if (banner) banner.style.display = 'none';
@@ -965,6 +1072,7 @@
       })
       .catch(function (e) {
         if (DT._confirmPending) DT._confirmPending[basket] = false;
+        setStartBtnPhase(basket, 'ready');
         toast(e.message || 'Start failed', 'error');
       });
   };

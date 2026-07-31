@@ -1,12 +1,49 @@
-/* App message modal: multiline text (password rules, etc.) */
+/* App message modal: large, readable on 1024x600 kiosk */
+#app-modal-overlay .role-modal {
+    width: min(720px, 92vw);
+    max-width: 720px;
+    min-width: 420px;
+    padding: 28px 32px 24px;
+    text-align: center;
+}
+#app-modal-overlay .role-modal h3,
+#app-modal-title {
+    margin: 0 0 16px;
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: #f8fafc !important;
+    letter-spacing: -0.02em;
+}
 #app-modal-message {
     white-space: pre-line;
-    text-align: left;
-    max-height: min(340px, 52vh);
+    text-align: center;
+    max-height: min(280px, 42vh);
     overflow-y: auto;
-    line-height: 1.5;
-    font-size: 0.92rem;
-    color: var(--text-secondary, #e2e8f0);
+    margin: 0 0 22px;
+    padding: 0 4px;
+    line-height: 1.45;
+    font-size: 20px;
+    font-weight: 500;
+    color: #f1f5f9 !important;
+    opacity: 1;
+}
+#app-modal-buttons.role-modal-buttons,
+#app-modal-overlay #app-modal-buttons {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: stretch;
+    gap: 14px;
+}
+#app-modal-overlay #app-modal-buttons .btn-role-select {
+    width: auto;
+    min-width: 140px;
+    flex: 1 1 0;
+    padding: 14px 20px;
+    font-size: 18px;
+    font-weight: 700;
+    color: #ffffff !important;
 }
 
 /* Friability Tester - 1024x600 7-inch display. Optimized for 7-inch landscape with Chromium. */
@@ -1179,18 +1216,25 @@ body {
     background: var(--bg-elevated);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
-    padding: var(--spacing-2xl);
+    padding: 24px 28px;
     width: 90%;
-    max-width: 340px;
+    max-width: 520px;
     text-align: center;
     box-shadow: var(--shadow-xl);
+    color: var(--text-primary);
 }
 
 .role-modal h3 {
     margin-top: 0;
     margin-bottom: var(--spacing-md);
-    font-size: 18px;
+    font-size: 22px;
     font-weight: 700;
+    color: var(--text-primary);
+}
+
+.role-modal p {
+    font-size: 17px;
+    line-height: 1.45;
     color: var(--text-primary);
 }
 
@@ -9429,6 +9473,8 @@ body.keyboard-open {
     cursor: pointer;
 }
 .dt-start-btn.is-stop { background: #ef4444; border-color: #b91c1c; }
+.dt-start-btn.is-preheating { background: #f59e0b; border-color: #d97706; }
+.dt-start-btn.is-ready { background: #10b981; border-color: #059669; box-shadow: 0 0 0 3px rgba(16,185,129,0.35); }
 .dt-start-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .dt-set-temp-panel {
