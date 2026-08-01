@@ -888,10 +888,26 @@ def _normalize_validation_runs(td: Dict[str, Any], report_data: Dict[str, Any]) 
             "actualTapCount": td.get("actualTapCount", report_data.get("actualTapCount")),
             "validationDurationSec": td.get("validationDurationSec", report_data.get("validationDurationSec") or td.get("durationSeconds", report_data.get("durationSeconds"))),
             "durationSeconds": td.get("durationSeconds", report_data.get("durationSeconds")),
+            "durationSec": td.get("durationSec", report_data.get("durationSec")),
             "status": td.get("status", report_data.get("status")),
             "validationStartTime": td.get("validationStartTime", report_data.get("validationStartTime") or td.get("testStartTime", report_data.get("testStartTime"))),
             "validationEndTime": td.get("validationEndTime", report_data.get("validationEndTime") or td.get("testEndTime", report_data.get("testEndTime"))),
             "completedAt": td.get("completedAt", report_data.get("completedAt")),
+            "testStartTime": td.get("testStartTime", report_data.get("testStartTime")),
+            "testEndTime": td.get("testEndTime", report_data.get("testEndTime")),
+            # DT stroke / temp fields
+            "basket": td.get("basket", report_data.get("basket")),
+            "beaker": td.get("beaker", report_data.get("beaker")),
+            "strokesPerMin": td.get("strokesPerMin", report_data.get("strokesPerMin")),
+            "pulsesSeen": td.get("pulsesSeen", report_data.get("pulsesSeen")),
+            "actualStrokes": td.get("actualStrokes", report_data.get("actualStrokes")),
+            "requiredRange": td.get("requiredRange", report_data.get("requiredRange")),
+            "setTemperature": td.get("setTemperature", report_data.get("setTemperature")),
+            "minTemp": td.get("minTemp", report_data.get("minTemp")),
+            "maxTemp": td.get("maxTemp", report_data.get("maxTemp")),
+            "maxDeviation": td.get("maxDeviation", report_data.get("maxDeviation")),
+            "requiredDeviation": td.get("requiredDeviation", report_data.get("requiredDeviation")),
+            "sensorSilent": td.get("sensorSilent", report_data.get("sensorSilent")),
         }
     ]
 
@@ -908,11 +924,17 @@ def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
         ("End Time", _format_ts_readable(run.get("validationEndTime") or run.get("testEndTime") or run.get("completedAt"))),
     ]
     sub = str(run.get("validationSubtype") or "").strip().lower()
-    if sub == "stroke" or run.get("strokesPerMin") is not None:
+    if sub == "stroke" or run.get("strokesPerMin") is not None or run.get("actualStrokes") is not None:
+        actual = run.get("actualStrokes")
+        if actual is None:
+            actual = run.get("pulsesSeen")
+        if actual is None:
+            actual = run.get("strokesPerMin")
         pairs.extend([
             ("Basket", _cell_str(run.get("basket") or run.get("beaker"))),
-            ("Strokes/Min", _cell_str(run.get("strokesPerMin"))),
-            ("Required Range", _cell_str(run.get("requiredRange") or "29-32")),
+            ("Actual Strokes", _cell_str(actual)),
+            ("Strokes/Min", _cell_str(run.get("strokesPerMin") if run.get("strokesPerMin") is not None else actual)),
+            ("Required Range", _cell_str(run.get("requiredRange") or "29-32") + " strokes/min"),
         ])
     elif sub in ("temp", "temperature"):
         pairs.extend([

@@ -8802,11 +8802,58 @@ function renderValidationDetailsInPreview(preview) {
     if (!bodyEl) return;
     if (titleEl) titleEl.textContent = 'VALIDATION DETAILS';
     var td = preview.testData || preview;
-    var runs = validationRunsFromPreview(preview);
+    var sub = String(
+        preview.validationSubtype || td.validationSubtype || preview.usp || td.usp || ''
+    ).trim().toLowerCase();
     var rows = [];
+    var dateStr = formatReportDate(
+        td.completedAt || preview.completedAt || td.testEndTime || preview.createdAt
+    );
+    var status = td.status || preview.status || '--';
+    var basket = td.basket != null ? td.basket : (td.beaker != null ? td.beaker : (preview.basket != null ? preview.basket : preview.beaker));
+
+    if (sub === 'stroke' || preview.strokesPerMin != null || td.strokesPerMin != null ||
+        preview.actualStrokes != null || td.actualStrokes != null || preview.pulsesSeen != null || td.pulsesSeen != null) {
+        var actual = preview.actualStrokes != null ? preview.actualStrokes
+            : (td.actualStrokes != null ? td.actualStrokes
+                : (preview.pulsesSeen != null ? preview.pulsesSeen
+                    : (td.pulsesSeen != null ? td.pulsesSeen
+                        : (preview.strokesPerMin != null ? preview.strokesPerMin : td.strokesPerMin))));
+        var spm = preview.strokesPerMin != null ? preview.strokesPerMin
+            : (td.strokesPerMin != null ? td.strokesPerMin : actual);
+        var range = preview.requiredRange || td.requiredRange || '29-32';
+        var dur = td.durationSec != null ? td.durationSec
+            : (preview.durationSec != null ? preview.durationSec : 60);
+        if (titleEl) titleEl.textContent = 'STROKE VALIDATION DETAILS';
+        rows.push('<tr><th>Date / Time</th><td colspan="3">' + dateStr + '</td></tr>');
+        rows.push('<tr><th>Procedure</th><td>Stroke Rate</td><th>Basket</th><td>' + (basket != null ? basket : '--') + '</td></tr>');
+        rows.push('<tr><th>Duration</th><td>' + formatSecondsToMmSs(dur) + '</td><th>Status</th><td>' + status + '</td></tr>');
+        rows.push('<tr><th>Required Range</th><td>' + range + ' strokes/min</td><th>Actual Strokes</th><td>' + (actual != null ? actual : '--') + '</td></tr>');
+        rows.push('<tr><th>Strokes/Min</th><td colspan="3">' + (spm != null ? spm : '--') + '</td></tr>');
+        bodyEl.innerHTML = rows.join('');
+        return;
+    }
+
+    if (sub === 'temp' || sub === 'temperature' || preview.maxDeviation != null || td.maxDeviation != null) {
+        if (titleEl) titleEl.textContent = 'TEMPERATURE VALIDATION DETAILS';
+        var setT = preview.setTemperature != null ? preview.setTemperature : td.setTemperature;
+        var minT = preview.minTemp != null ? preview.minTemp : td.minTemp;
+        var maxT = preview.maxTemp != null ? preview.maxTemp : td.maxTemp;
+        var maxDev = preview.maxDeviation != null ? preview.maxDeviation : td.maxDeviation;
+        var lim = preview.requiredDeviation != null ? preview.requiredDeviation : (td.requiredDeviation != null ? td.requiredDeviation : 0.5);
+        rows.push('<tr><th>Date / Time</th><td colspan="3">' + dateStr + '</td></tr>');
+        rows.push('<tr><th>Procedure</th><td>Temperature Hold</td><th>Basket</th><td>' + (basket != null ? basket : '--') + '</td></tr>');
+        rows.push('<tr><th>Set Temp (°C)</th><td>' + (setT != null ? setT : '--') + '</td><th>Status</th><td>' + status + '</td></tr>');
+        rows.push('<tr><th>Min / Max (°C)</th><td>' + (minT != null ? minT : '--') + ' / ' + (maxT != null ? maxT : '--') + '</td><th>Max Deviation</th><td>±' + (maxDev != null ? maxDev : '--') + '°C</td></tr>');
+        rows.push('<tr><th>Limit</th><td colspan="3">±' + lim + '°C</td></tr>');
+        bodyEl.innerHTML = rows.join('');
+        return;
+    }
+
+    var runs = validationRunsFromPreview(preview);
     if (runs && runs.length) {
         runs.forEach(function (run) {
-            var dateStr = formatReportDate(run.completedAt || preview.completedAt || preview.createdAt);
+            var rDate = formatReportDate(run.completedAt || preview.completedAt || preview.createdAt);
             var usp = run.usp || 'USP';
             var rpm = run.rpm != null ? run.rpm : 25;
             var duration = run.durationSec != null ? formatSecondsToMmSs(run.durationSec) : '04:00';
@@ -8814,15 +8861,14 @@ function renderValidationDetailsInPreview(preview) {
             var tol = run.expectedTolerance != null ? run.expectedTolerance : null;
             var expectedDisplay = (tol != null && expected !== '--') ? (String(expected) + ' (±' + String(tol) + ')') : expected;
             var actual = run.actualRotationCount != null ? run.actualRotationCount : (run.actualTapCount != null ? run.actualTapCount : '--');
-            var status = run.status || '--';
+            var rStatus = run.status || '--';
             rows.push('<tr><th colspan="4" class="report-validation-usp-header">' + usp + ' validation</th></tr>');
-            rows.push('<tr><th>Date / Time</th><td colspan="3">' + dateStr + '</td></tr>');
+            rows.push('<tr><th>Date / Time</th><td colspan="3">' + rDate + '</td></tr>');
             rows.push('<tr><th>Procedure</th><td>' + usp + '</td><th>RPM</th><td>' + rpm + '</td></tr>');
-            rows.push('<tr><th>Duration</th><td>' + duration + '</td><th>Status</th><td>' + status + '</td></tr>');
+            rows.push('<tr><th>Duration</th><td>' + duration + '</td><th>Status</th><td>' + rStatus + '</td></tr>');
             rows.push('<tr><th>Expected Rotations</th><td>' + expectedDisplay + '</td><th>Actual Rotations</th><td>' + actual + '</td></tr>');
         });
     } else {
-        var dateStr = formatReportDate(td.completedAt || preview.completedAt || preview.createdAt);
         var usp = td.usp || preview.usp || 'USP';
         var rpm = td.rpm != null ? td.rpm : (preview.rpm != null ? preview.rpm : 25);
         var duration = td.durationSec != null ? formatSecondsToMmSs(td.durationSec) : '04:00';
@@ -8830,7 +8876,6 @@ function renderValidationDetailsInPreview(preview) {
         var tol = td.expectedTolerance != null ? td.expectedTolerance : (preview.expectedTolerance != null ? preview.expectedTolerance : null);
         var expectedDisplay = (tol != null && expected !== '--') ? (String(expected) + ' (±' + String(tol) + ')') : expected;
         var actual = td.actualRotationCount != null ? td.actualRotationCount : (td.actualTapCount != null ? td.actualTapCount : '--');
-        var status = td.status || preview.status || '--';
         rows.push('<tr><th>Date / Time</th><td colspan="3">' + dateStr + '</td></tr>');
         rows.push('<tr><th>Procedure</th><td>' + usp + '</td><th>RPM</th><td>' + rpm + '</td></tr>');
         rows.push('<tr><th>Duration</th><td>' + duration + '</td><th>Status</th><td>' + status + '</td></tr>');

@@ -39,6 +39,7 @@
   var _valKind = null;
   var _valBasket = 1;
   var _tempValRunning = false;
+  var _valSaveLock = false;
 
   function syncDtNavLock() {
     var locked = !!(DT.running[1] || DT.running[2] || _valPollTimer || _tempValRunning || _valKind || DT.calSessionActive);
@@ -59,10 +60,10 @@
     if (DT.running[1] || DT.running[2]) return true;
     if (_valPollTimer || _tempValRunning || _valKind) return true;
     if (DT.calSessionActive) return true;
+    // Do NOT treat merely being on a validation page as running — idle Start screen is not active.
     var active = document.querySelector('.page.active');
     var id = active ? active.id : '';
-    if (id === 'page-stroke-validation' || id === 'page-temp-validation') return true;
-    if (id === 'page-calibration-type-select') return true;
+    if (id === 'page-calibration-type-select' && DT.calSessionActive) return true;
     return false;
   };
 
@@ -77,11 +78,7 @@
       if (_valKind === 'temp' || _tempValRunning) return pageName === 'temp-validation';
       return pageName === 'stroke-validation';
     }
-    var active = document.querySelector('.page.active');
-    var id = active ? active.id : '';
-    if (id === 'page-temp-validation') return pageName === 'temp-validation';
-    if (id === 'page-stroke-validation') return pageName === 'stroke-validation';
-    if (DT.calSessionActive || id === 'page-calibration-type-select') {
+    if (DT.calSessionActive) {
       return pageName === 'calibration-type-select';
     }
     return true;
@@ -1173,24 +1170,14 @@
     window.updateValidationSelection();
     var basket = currentValBasket();
     if (selected.value === 'stroke') {
-      var strokeBeaker = document.getElementById('stroke-beaker');
-      if (strokeBeaker) strokeBeaker.textContent = String(basket);
-      var counter = document.getElementById('stroke-counter');
-      if (counter) counter.textContent = '0';
-      var statusCard = document.getElementById('stroke-validation-status-card');
-      if (statusCard) statusCard.style.display = 'none';
-      var completeBtn = document.getElementById('stroke-complete-btn');
-      if (completeBtn) {
-        completeBtn.disabled = true;
-        completeBtn.style.opacity = '0.5';
-        completeBtn.style.cursor = 'not-allowed';
-      }
+      resetStrokeValidationUi(basket);
       go('stroke-validation');
-      window.dtStartStrokeValidation();
+      // Do not start motors until user presses Start on the stroke screen
     } else if (selected.value === 'temp') {
       var tempBeaker = document.getElementById('temp-beaker');
       if (tempBeaker) tempBeaker.textContent = String(basket);
       _tempValRunning = false;
+      _valKind = null;
       var msg = document.getElementById('validation-message');
       var st = document.getElementById('validation-status');
       if (msg) msg.textContent = 'Ready to Validate';
@@ -1203,16 +1190,75 @@
     }
   };
 
+  function resetStrokeValidationUi(basket) {
+    basket = basket === 2 ? 2 : 1;
+    _valSaveLock = false;
+    var strokeBeaker = document.getElementById('stroke-beaker');
+    if (strokeBeaker) strokeBeaker.textContent = String(basket);
+    var counter = document.getElementById('stroke-counter');
+    if (counter) counter.textContent = '0';
+    var timer = document.getElementById('stroke-timer');
+    if (timer) timer.textContent = '01:00';
+    var statusCard = document.getElementById('stroke-validation-status-card');
+    if (statusCard) statusCard.style.display = 'none';
+    var stopBtn = document.getElementById('stroke-stop-btn');
+    if (stopBtn) stopBtn.style.display = 'none';
+    setStrokePrimaryBtn('start');
+  }
+
+  function setStrokePrimaryBtn(mode) {
+    var btn = document.getElementById('stroke-complete-btn');
+    if (!btn) return;
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor = 'pointer';
+    if (mode === 'start') {
+      btn.textContent = 'Start';
+      btn.dataset.mode = 'start';
+    } else if (mode === 'running') {
+      btn.textContent = 'Running…';
+      btn.disabled = true;
+      btn.style.opacity = '0.55';
+      btn.style.cursor = 'not-allowed';
+      btn.dataset.mode = 'running';
+    } else if (mode === 'save') {
+      btn.textContent = 'Complete & Save';
+      btn.dataset.mode = 'save';
+    }
+  }
+
+  window.dtStrokePrimaryAction = function () {
+    var btn = document.getElementById('stroke-complete-btn');
+    var mode = (btn && btn.dataset.mode) || 'start';
+    if (mode === 'save') {
+      window.completeValidation('stroke');
+      return;
+    }
+    if (mode === 'running') return;
+    window.dtStartStrokeValidation();
+  };
+
   window.dtStartStrokeValidation = function () {
     var basket = currentValBasket();
     clearValPoll();
+    setStrokePrimaryBtn('running');
+    var stopBtn = document.getElementById('stroke-stop-btn');
+    if (stopBtn) stopBtn.style.display = '';
+    var timer = document.getElementById('stroke-timer');
+    if (timer) timer.textContent = '01:00';
+    var counter = document.getElementById('stroke-counter');
+    if (counter) counter.textContent = '0';
     api('/api/data/dt/validation/stroke/' + basket + '/start', { method: 'POST', body: {} })
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Start failed');
         toast('Stroke validation started (60s)', 'info');
         pollValidation('stroke', basket);
       })
-      .catch(function (e) { toast(e.message || 'Failed', 'error'); });
+      .catch(function (e) {
+        setStrokePrimaryBtn('start');
+        if (stopBtn) stopBtn.style.display = 'none';
+        toast(e.message || 'Failed', 'error');
+      });
   };
 
   window.dtStartTempValidation = function () {
@@ -1268,22 +1314,89 @@
 
   window.stopValidation = function (opts) {
     opts = opts || {};
-    clearValPoll();
     var basket = currentValBasket();
     var kind = _valKind;
-    if (kind === 'temp' || _tempValRunning) {
-      api('/api/data/dt/validation/temp/' + basket + '/abort', { method: 'POST', body: {} }).catch(function () {});
+    var wasRunning = !!(kind || _tempValRunning || _valPollTimer);
+
+    // Idle on stroke/temp screen — leave without abort popup / without killing HW
+    if (!wasRunning) {
+      clearValPoll();
+      _tempValRunning = false;
+      _valKind = null;
+      syncDtNavLock();
+      if (!opts.stay) {
+        try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+        go('validate-type-select');
+      }
+      return;
     }
-    if (kind === 'stroke') {
-      api('/api/data/dt/validation/stroke/' + basket + '/abort', { method: 'POST', body: {} }).catch(function () {});
+
+    clearValPoll();
+    var abortUrl = null;
+    if (kind === 'temp' || _tempValRunning) {
+      abortUrl = '/api/data/dt/validation/temp/' + basket + '/abort';
+    } else if (kind === 'stroke') {
+      abortUrl = '/api/data/dt/validation/stroke/' + basket + '/abort';
     }
     _tempValRunning = false;
     _valKind = null;
+    _valSaveLock = false;
     syncDtNavLock();
     var startLbl = document.getElementById('validation-stop-btn-text');
     if (startLbl) startLbl.textContent = 'START';
-    if (!opts.stay) go('validate-type-select');
+    var stopBtn = document.getElementById('stroke-stop-btn');
+    if (stopBtn) stopBtn.style.display = 'none';
+    setStrokePrimaryBtn('start');
+    var timer = document.getElementById('stroke-timer');
+    if (timer) timer.textContent = '01:00';
+
+    var afterAbort = function () {
+      toast('Validation stopped', 'info');
+      if (!opts.stay) {
+        try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+        go('validate-type-select');
+      }
+    };
+
+    if (abortUrl) {
+      api(abortUrl, { method: 'POST', body: {} })
+        .then(function () { afterAbort(); })
+        .catch(function () { afterAbort(); });
+    } else if (!opts.stay) {
+      try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+      go('validate-type-select');
+    }
   };
+
+  function saveValidationAndPreview(kind, basket, opts) {
+    opts = opts || {};
+    if (_valSaveLock) return Promise.resolve(null);
+    _valSaveLock = true;
+    return api('/api/data/dt/validation/' + kind + '/' + basket + '/save', { method: 'POST', body: {} })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.error || 'Save failed');
+        toast('Validation report saved (pending approval)', 'success');
+        _tempValRunning = false;
+        _valKind = null;
+        syncDtNavLock();
+        var report = res.report || {};
+        var rid = report.id;
+        // Open unapproved/pending report only after operator Save & Complete
+        if (rid && typeof openReportPreview === 'function') {
+          openReportPreview(rid, { setGate: true });
+        } else {
+          try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+          go('reports');
+          if (typeof loadReports === 'function') loadReports();
+        }
+        return res;
+      })
+      .catch(function (e) {
+        _valSaveLock = false;
+        toast(e.message || 'Save failed', 'error');
+        throw e;
+      });
+  }
 
   window.exitTempValidation = function () {
     window.stopValidation();
@@ -1293,23 +1406,8 @@
     kind = kind === 'temp' ? 'temp' : 'stroke';
     var basket = currentValBasket();
     clearValPoll();
-    api('/api/data/dt/validation/' + kind + '/' + basket + '/save', { method: 'POST', body: {} })
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.error || 'Save failed');
-        toast('Validation report saved (pending approval)', 'success');
-        _tempValRunning = false;
-        _valKind = null;
-        syncDtNavLock();
-        var report = res.report || {};
-        var rid = report.id;
-        if (rid && typeof openReportPreview === 'function') {
-          openReportPreview(rid, { setGate: true });
-        } else {
-          go('reports');
-          if (typeof loadReports === 'function') loadReports();
-        }
-      })
-      .catch(function (e) { toast(e.message || 'Save failed', 'error'); });
+    _valSaveLock = false;
+    saveValidationAndPreview(kind, basket, {});
   };
 
   function formatHoldRemaining(s) {
@@ -1337,25 +1435,47 @@
 
         if (kind === 'stroke') {
           var counter = document.getElementById('stroke-counter');
-          if (counter && s.strokesPerMin != null) counter.textContent = String(s.strokesPerMin);
+          var liveCount = s.pulsesSeen != null ? s.pulsesSeen
+            : (s.strokesPerMin != null ? s.strokesPerMin : null);
+          if (counter && liveCount != null) counter.textContent = String(liveCount);
+          var rem = s.remainingSec;
+          if (rem == null && s.state === 'RUNNING' && s.startedAtEpoch && s.durationSec) {
+            rem = Math.max(0, Number(s.durationSec) - ((Date.now() / 1000) - Number(s.startedAtEpoch)));
+          }
+          if (s.state === 'COMPLETE' || s.state === 'ABORTED') rem = 0;
+          if (rem != null) {
+            var timerEl = document.getElementById('stroke-timer');
+            if (timerEl) timerEl.textContent = formatHoldRemaining(rem);
+          }
           if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
             clearValPoll();
-            if (s.state === 'ABORTED') {
-              _valKind = null;
-              syncDtNavLock();
-            }
+            var wasAborted = s.state === 'ABORTED';
+            _valKind = null;
+            syncDtNavLock();
+            var stopBtn = document.getElementById('stroke-stop-btn');
+            if (stopBtn) stopBtn.style.display = 'none';
             var card = document.getElementById('stroke-validation-status-card');
             var text = document.getElementById('stroke-validation-status-text');
-            var btn = document.getElementById('stroke-complete-btn');
+            var finalCount = s.pulsesSeen != null ? s.pulsesSeen
+              : (s.strokesPerMin != null ? s.strokesPerMin : null);
+            if (counter && finalCount != null) counter.textContent = String(finalCount);
             if (card) {
               card.style.display = '';
               card.className = 'dt-val-status-card ' + (s.status === 'PASSED' ? 'is-pass' : 'is-fail');
             }
-            if (text) text.textContent = s.status === 'PASSED' ? 'VALIDATION PASSED' : 'VALIDATION FAILED';
-            if (btn && s.state === 'COMPLETE') {
-              btn.disabled = false;
-              btn.style.opacity = '1';
-              btn.style.cursor = 'pointer';
+            if (text) {
+              var countLabel = finalCount != null ? (' (' + finalCount + ' strokes)' ) : '';
+              text.textContent = wasAborted
+                ? 'VALIDATION ABORTED'
+                : ((s.status === 'PASSED' ? 'VALIDATION PASSED' : 'VALIDATION FAILED') + countLabel);
+            }
+            // Wait for operator Complete & Save — do not auto-open report
+            if (wasAborted) {
+              setStrokePrimaryBtn('start');
+              toast('Stroke validation aborted', 'info');
+            } else {
+              setStrokePrimaryBtn('save');
+              toast('Validation finished — press Complete & Save', 'success');
             }
           }
         }
@@ -1399,16 +1519,22 @@
           if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
             clearValPoll();
             _tempValRunning = false;
-            if (s.state === 'ABORTED') {
-              _valKind = null;
-            }
+            var tempAborted = s.state === 'ABORTED';
+            _valKind = null;
             syncDtNavLock();
             var startLbl = document.getElementById('validation-stop-btn-text');
             if (startLbl) startLbl.textContent = 'START';
-            var completeTemp = document.getElementById('complete-temp-validation-btn');
-            if (completeTemp && s.state === 'COMPLETE') completeTemp.style.display = '';
-            if (msg) msg.textContent = s.state === 'COMPLETE' ? 'Hold complete' : 'Aborted';
+            var msg = document.getElementById('validation-message');
+            var st = document.getElementById('validation-status');
+            if (msg) msg.textContent = tempAborted ? 'Aborted' : 'Hold complete';
             if (st) st.textContent = s.status || '-';
+            var completeTemp = document.getElementById('complete-temp-validation-btn');
+            if (completeTemp && !tempAborted) {
+              completeTemp.style.display = '';
+              toast('Validation finished — press Complete & Save', 'success');
+            } else if (tempAborted) {
+              toast('Temperature validation aborted', 'info');
+            }
           }
         }
       }).catch(function () {});

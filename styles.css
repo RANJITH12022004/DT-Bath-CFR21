@@ -9785,6 +9785,16 @@ body.keyboard-open {
     margin: 24px auto 0;
 }
 
+.dt-stroke-timer {
+    font-size: 42px;
+    font-weight: 800;
+    color: #38bdf8;
+    line-height: 1.1;
+    margin: 8px 0 0;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+}
+
 .dt-stroke-counter {
     font-size: 64px;
     font-weight: 800;

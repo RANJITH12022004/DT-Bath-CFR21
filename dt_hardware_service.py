@@ -88,6 +88,9 @@ _mock_running = {"1": False, "2": False}
 _mock_temps = {"IR1": 25.0, "IR2": 25.0, "EXT1": 24.5, "EXT2": 24.5}
 _mock_emit_strokes = True
 _calibration_in_progress = False
+# While stroke validation runs, pause T1/T2/TS so UART is free for S1/S2
+_stroke_validation_active = False
+_stroke_validation_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +105,23 @@ def set_mock_emit_strokes(enabled: bool) -> None:
     """Test hook: disable stroke emission so stroke validation fails."""
     global _mock_emit_strokes
     _mock_emit_strokes = bool(enabled)
+
+
+def set_stroke_validation_active(active: bool) -> None:
+    """Pause T1/T2/TS polling while stroke validation needs a clean UART for strokes."""
+    global _stroke_validation_active
+    with _stroke_validation_lock:
+        _stroke_validation_active = bool(active)
+    if _logger:
+        _logger.info(
+            "[DT HW] stroke validation temp-poll %s",
+            "paused" if active else "resumed",
+        )
+
+
+def is_stroke_validation_active() -> bool:
+    with _stroke_validation_lock:
+        return bool(_stroke_validation_active)
 
 
 def _env_wants_mock() -> bool:
@@ -722,6 +742,10 @@ def _temperature_polling_thread() -> None:
             if _calibration_in_progress:
                 time.sleep(1.0)
                 continue
+            # Stroke validation: only strokes matter — do not rush T1/T2/TS on UART
+            if is_stroke_validation_active():
+                time.sleep(0.5)
+                continue
             # Dt_Dr_Reddy: skip poll briefly after PHW to reduce UART contention
             if (time.time() - _last_preheat_time) < float(
                 _config.get("PREHEAT_COOLDOWN", _preheat_cooldown)
@@ -917,14 +941,23 @@ def cmd_start_b3(t1: float, t2: float) -> Dict[str, Any]:
 
 
 def cmd_start_stroke(basket: int = 1) -> Dict[str, Any]:
-    """Dt_Dr_Reddy START,STROKE,Bx,A (stroke-only start)."""
+    """Dt_Dr_Reddy START,STROKE,Bx,A (stroke-only start). Pauses T1/T2 polling."""
     b = 1 if int(basket or 1) != 2 else 2
+    set_stroke_validation_active(True)
+    # Let any in-flight T1/T2 cycle finish before START,STROKE
+    time.sleep(1.2)
     if is_mock_mode():
         with _mock_lock:
             _mock_running[str(b)] = True
     with _live_state_lock:
         _live_state["running"] = True
-    return send_command(f"START,STROKE,B{b},A")
+    result = send_command(f"START,STROKE,B{b},A")
+    if not result.get("ok"):
+        set_stroke_validation_active(False)
+        if is_mock_mode():
+            with _mock_lock:
+                _mock_running[str(b)] = False
+    return result
 
 
 def cmd_query_temps_bulk() -> Dict[str, Any]:
@@ -952,6 +985,10 @@ def cmd_stop(basket: Optional[int] = None) -> Dict[str, Any]:
                 _mock_running["1"] = False
                 _mock_running["2"] = False
         set_heater_state(t1=0.0, t2=0.0)
+
+    # Resume T1/T2 after stroke validation stop
+    if is_stroke_validation_active():
+        set_stroke_validation_active(False)
 
     # Clear global running when no basket is still stroking (per-basket STOP1/2
     # previously left live.running stuck true after a completed test).

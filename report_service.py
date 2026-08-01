@@ -677,6 +677,30 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
         preview["validationStartTime"] = report.get("validationStartTime") or report.get("testStartTime")
         if preview["validationStartTime"] in (None, "") and isinstance(td, dict):
             preview["validationStartTime"] = td.get("validationStartTime") or td.get("testStartTime")
+        # DT stroke / temp fields (flat report or nested testData)
+        for key in (
+            "strokesPerMin",
+            "pulsesSeen",
+            "actualStrokes",
+            "requiredRange",
+            "requiredMin",
+            "requiredMax",
+            "setTemperature",
+            "minTemp",
+            "maxTemp",
+            "maxDeviation",
+            "requiredDeviation",
+            "basket",
+            "beaker",
+            "durationSec",
+            "status",
+            "sensorSilent",
+        ):
+            val = report.get(key)
+            if val in (None, "") and isinstance(td, dict):
+                val = td.get(key)
+            if val not in (None, ""):
+                preview[key] = val
         runs = report.get("validationRuns")
         if not runs and isinstance(td, dict):
             runs = td.get("validationRuns")

@@ -50,7 +50,22 @@ def get_session(kind: str, basket: int) -> Optional[Dict[str, Any]]:
     key = f"{kind}:{basket}"
     with _lock:
         s = _sessions.get(key)
-        return dict(s) if s else None
+        if not s:
+            return None
+        out = dict(s)
+    # Live remaining countdown for UI (1-min stroke / 2-min temp hold)
+    state = out.get("state")
+    if kind == "stroke" and state == "RUNNING":
+        started = float(out.get("startedAtEpoch") or 0)
+        dur = float(out.get("durationSec") or STROKE_DURATION_SEC)
+        out["remainingSec"] = max(0, int(round(dur - (time.time() - started))))
+    elif kind == "temp" and state == "HOLDING":
+        started = float(out.get("holdStartedAtEpoch") or 0)
+        dur = float(out.get("durationSec") or TEMP_HOLD_SEC)
+        out["remainingSec"] = max(0, int(round(dur - (time.time() - started))))
+    elif kind == "temp" and state == "PREHEAT":
+        out["remainingSec"] = int(out.get("durationSec") or TEMP_HOLD_SEC)
+    return out
 
 
 def get_all() -> Dict[str, Any]:
@@ -71,13 +86,10 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
             return {"ok": False, "error": "stroke validation already running"}
 
     baseline = hw.reset_stroke_baseline()
-    # Start motor at 25°C (DisT-Raw convention for stroke validation)
-    if basket == 1:
-        hw_result = hw.cmd_start_b1(25.0)
-    else:
-        hw_result = hw.cmd_start_b2(25.0)
+    # Dt_Dr_Reddy / setting up.md: START,STROKE,Bx,A (stroke-only, not test START)
+    hw_result = hw.cmd_start_stroke(basket)
     if not hw_result.get("ok"):
-        return {"ok": False, "error": hw_result.get("error") or "failed to start motor", "hardware": hw_result}
+        return {"ok": False, "error": hw_result.get("error") or "failed to start stroke motor", "hardware": hw_result}
 
     session = {
         "kind": "stroke",
@@ -117,6 +129,42 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
     return {"ok": True, "session": dict(session), "hardware": hw_result}
 
 
+def _build_stroke_report(session: Dict[str, Any], basket: int) -> Dict[str, Any]:
+    status = session.get("status") or "FAILED"
+    actual = session.get("pulsesSeen")
+    if actual is None:
+        actual = session.get("strokesPerMin")
+    strokes_per_min = session.get("strokesPerMin")
+    if strokes_per_min is None:
+        strokes_per_min = actual
+    return {
+        "type": "validation",
+        "validationSubtype": "stroke",
+        "name": f"Validation Report – Stroke (Basket {basket})",
+        "status": status,
+        "strokesPerMin": strokes_per_min,
+        "pulsesSeen": actual,
+        "actualStrokes": actual,
+        "requiredRange": f"{STROKE_MIN}-{STROKE_MAX}",
+        "requiredMin": STROKE_MIN,
+        "requiredMax": STROKE_MAX,
+        "durationSec": session.get("durationSec") or STROKE_DURATION_SEC,
+        "beaker": basket,
+        "basket": basket,
+        "operatorName": session.get("operatorName"),
+        "operatorId": session.get("operatorId"),
+        "operatorUsername": session.get("operatorUsername"),
+        "mock": session.get("mock"),
+        "sensorSilent": session.get("sensorSilent"),
+        "error": session.get("error"),
+        "aborted": session.get("state") == "ABORTED" or status == "ABORTED",
+        "createdAt": _now_iso(),
+        "completedAt": session.get("endedAt"),
+        "testStartTime": session.get("startedAt"),
+        "testEndTime": session.get("endedAt"),
+    }
+
+
 def _stroke_worker(basket: int) -> None:
     key = f"stroke:{basket}"
     stroke_key = f"S{basket}"
@@ -130,6 +178,10 @@ def _stroke_worker(basket: int) -> None:
         pulses = 0
         saw_any_line = False
         while time.time() < deadline:
+            with _lock:
+                cur_sess = _sessions.get(key)
+                if not cur_sess or cur_sess.get("state") == "ABORTED":
+                    return
             counts = hw.get_stroke_counts()
             cur = int(counts.get(stroke_key) or 0)
             if cur > last_count:
@@ -140,10 +192,17 @@ def _stroke_worker(basket: int) -> None:
                 # controller reset — re-baseline, do not add negative
                 last_count = cur
             with _lock:
-                if key in _sessions:
+                if key in _sessions and _sessions[key].get("state") == "RUNNING":
                     _sessions[key]["pulsesSeen"] = pulses
                     _sessions[key]["currentCount"] = cur
+                    rem = max(0, int(round(deadline - time.time())))
+                    _sessions[key]["remainingSec"] = rem
             time.sleep(0.2)
+
+        with _lock:
+            cur_sess = _sessions.get(key)
+            if not cur_sess or cur_sess.get("state") == "ABORTED":
+                return
 
         # Final sample
         counts = hw.get_stroke_counts()
@@ -166,13 +225,14 @@ def _stroke_worker(basket: int) -> None:
             error = None
 
         with _lock:
-            if key not in _sessions:
+            if key not in _sessions or _sessions[key].get("state") == "ABORTED":
                 return
             _sessions[key].update({
                 "state": "COMPLETE",
                 "endedAt": _now_iso(),
                 "pulsesSeen": pulses,
                 "strokesPerMin": strokes_per_min,
+                "remainingSec": 0,
                 "passed": passed,
                 "status": status,
                 "sensorSilent": silent,
@@ -180,28 +240,10 @@ def _stroke_worker(basket: int) -> None:
             })
             session = dict(_sessions[key])
 
-        report = {
-            "type": "validation",
-            "validationSubtype": "stroke",
-            "name": f"Validation Report – Stroke (Basket {basket})",
-            "status": status,
-            "strokesPerMin": strokes_per_min,
-            "requiredRange": f"{STROKE_MIN}-{STROKE_MAX}",
-            "beaker": basket,
-            "basket": basket,
-            "operatorName": session.get("operatorName"),
-            "operatorId": session.get("operatorId"),
-            "operatorUsername": session.get("operatorUsername"),
-            "mock": session.get("mock"),
-            "sensorSilent": silent,
-            "error": error,
-            "createdAt": _now_iso(),
-            "completedAt": session.get("endedAt"),
-            "testStartTime": session.get("startedAt"),
-            "testEndTime": session.get("endedAt"),
-        }
+        report = _build_stroke_report(session, basket)
         with _lock:
-            _sessions[key]["report"] = report
+            if key in _sessions and _sessions[key].get("state") == "COMPLETE":
+                _sessions[key]["report"] = report
 
         _audit(
             "Validation finished",
@@ -220,7 +262,7 @@ def _stroke_worker(basket: int) -> None:
     except Exception as e:
         hw.cmd_stop(basket)
         with _lock:
-            if key in _sessions:
+            if key in _sessions and _sessions[key].get("state") != "ABORTED":
                 _sessions[key].update({
                     "state": "ABORTED",
                     "error": str(e),
@@ -228,6 +270,8 @@ def _stroke_worker(basket: int) -> None:
                     "passed": False,
                     "endedAt": _now_iso(),
                 })
+                sess = dict(_sessions[key])
+                _sessions[key]["report"] = _build_stroke_report(sess, basket)
         if _logger:
             _logger.exception("stroke validation failed")
 
@@ -238,13 +282,20 @@ def abort_stroke_validation(basket: int) -> Dict[str, Any]:
     hw.cmd_stop(basket)
     with _lock:
         if key in _sessions:
+            sess = _sessions[key]
+            # Keep last pulses seen for aborted report
+            pulses = sess.get("pulsesSeen")
             _sessions[key].update({
                 "state": "ABORTED",
-                "status": "FAILED",
+                "status": "ABORTED",
                 "passed": False,
                 "endedAt": _now_iso(),
-                "error": "aborted",
+                "remainingSec": 0,
+                "error": "aborted by operator",
+                "strokesPerMin": pulses if pulses is not None else sess.get("strokesPerMin"),
             })
+            out = dict(_sessions[key])
+            _sessions[key]["report"] = _build_stroke_report(out, basket)
             out = dict(_sessions[key])
         else:
             out = {}
@@ -486,11 +537,36 @@ def abort_temp_validation(basket: int) -> Dict[str, Any]:
         if key in _sessions:
             _sessions[key].update({
                 "state": "ABORTED",
-                "status": "FAILED",
+                "status": "ABORTED",
                 "passed": False,
                 "endedAt": _now_iso(),
-                "error": "aborted",
+                "error": "aborted by operator",
             })
+            sess = dict(_sessions[key])
+            report = {
+                "type": "validation",
+                "validationSubtype": "temp",
+                "name": f"Validation Report – Temperature (Basket {basket})",
+                "status": "ABORTED",
+                "setTemperature": sess.get("setTemperature"),
+                "minTemp": sess.get("minTemp"),
+                "maxTemp": sess.get("maxTemp"),
+                "maxDeviation": sess.get("maxDeviation"),
+                "requiredDeviation": TEMP_DEVIATION_LIMIT,
+                "beaker": basket,
+                "basket": basket,
+                "operatorName": sess.get("operatorName"),
+                "operatorId": sess.get("operatorId"),
+                "operatorUsername": sess.get("operatorUsername"),
+                "mock": sess.get("mock"),
+                "error": sess.get("error"),
+                "aborted": True,
+                "createdAt": _now_iso(),
+                "completedAt": sess.get("endedAt"),
+                "testStartTime": sess.get("holdStartedAt") or sess.get("startedAt"),
+                "testEndTime": sess.get("endedAt"),
+            }
+            _sessions[key]["report"] = report
             out = dict(_sessions[key])
         else:
             out = {}

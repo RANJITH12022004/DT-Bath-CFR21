@@ -7,8 +7,8 @@
     <meta name="viewport"
         content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Tablet Disintegration Tester</title>
-    <link rel="stylesheet" href="/styles.css?v=57" id="app-main-css"
-        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=57&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
+    <link rel="stylesheet" href="/styles.css?v=58" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=58&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -1423,16 +1423,19 @@
                         </p>
                         <div class="validation-type-grid create-recipe-grid--pair dt-val-type-cards">
                             <label class="validation-type-settings-card validation-type-btn dt-val-card-stroke" id="val-stroke">
-                                <input type="radio" name="val-type" value="stroke" onchange="updateValidationSelection(); startValidationProcess();">
+                                <input type="radio" name="val-type" value="stroke" onchange="updateValidationSelection()">
                                 <h3>Stroke Validation</h3>
                                 <p class="step1-card-sublabel">29–32 strokes/min · 60s</p>
                             </label>
                             <label class="validation-type-settings-card validation-type-btn dt-val-card-temp" id="val-temp">
-                                <input type="radio" name="val-type" value="temp" onchange="updateValidationSelection(); startValidationProcess();">
+                                <input type="radio" name="val-type" value="temp" onchange="updateValidationSelection()">
                                 <h3>Temperature Validation</h3>
                                 <p class="step1-card-sublabel">Hold ±0.5°C · 2 min</p>
                             </label>
                         </div>
+                        <button type="button" class="btn btn-primary validation-start-btn" onclick="startValidationProcess()" style="margin-top:18px;width:100%;max-width:420px;display:block;margin-left:auto;margin-right:auto;">
+                            Start Validation
+                        </button>
                         <p id="dt-val-status" class="section-subtitle" style="display:none;">Idle</p>
                         <input type="hidden" id="dt-val-temp" value="37">
                     </div>
@@ -1442,18 +1445,20 @@
                 <div class="page" id="page-stroke-validation">
                     <div class="validation-type-page dt-stroke-validation-page">
                         <div class="dt-val-test-header">
-                            <button type="button" class="btn btn-secondary dt-val-stop-btn" onclick="stopValidation()">Stop</button>
+                            <button type="button" class="btn btn-secondary dt-val-stop-btn" id="stroke-stop-btn" onclick="stopValidation()" style="display:none;">Stop</button>
                             <h2 class="section-title">Stroke Validation — Beaker <span id="stroke-beaker">1</span></h2>
                         </div>
                         <div class="dt-stroke-center">
                             <p class="section-subtitle">Required: 29–32 strokes/min</p>
+                            <p class="dt-stroke-timer" id="stroke-timer">01:00</p>
+                            <p class="section-subtitle" style="margin-top:4px;">time remaining</p>
                             <p class="dt-stroke-counter" id="stroke-counter">0</p>
-                            <p class="section-subtitle">strokes/min</p>
+                            <p class="section-subtitle">stroke count</p>
                             <div id="stroke-validation-status-card" class="dt-val-status-card" style="display:none;">
                                 <p id="stroke-validation-status-text" class="dt-val-status-text">VALIDATION PASSED</p>
                             </div>
-                            <button type="button" id="stroke-complete-btn" class="btn btn-primary" onclick="completeValidation('stroke')" disabled style="opacity:0.5;cursor:not-allowed;">
-                                Complete &amp; Save
+                            <button type="button" id="stroke-complete-btn" class="btn btn-primary" onclick="dtStrokePrimaryAction()">
+                                Start
                             </button>
                         </div>
                     </div>
@@ -2410,8 +2415,8 @@
     <script src="/keyboard.js?v=5"></script>
     <script src="/input-focus.js?v=1"></script>
     <script src="/rbac.js?v=8"></script>
-    <script src="/script.js?v=99"></script>
-    <script src="/dt_client.js?v=15"></script>
+    <script src="/script.js?v=100"></script>
+    <script src="/dt_client.js?v=17"></script>
 </body>
 
 </html>

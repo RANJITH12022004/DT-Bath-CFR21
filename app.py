@@ -5167,9 +5167,11 @@ def dt_stroke_save(basket):
         if session and session.get("report"):
             report = session["report"]
         else:
-            return jsonify({"ok": False, "error": "No completed stroke validation report"}), 400
+            return jsonify({"ok": False, "error": "No stroke validation report to save"}), 400
     report = dict(report)
     report["reportApprovalStatus"] = "pending"
+    if report.get("aborted") or report.get("status") == "ABORTED":
+        report["status"] = "ABORTED"
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
     saved_id = data_service.save_report(report)
@@ -5227,9 +5229,11 @@ def dt_temp_save(basket):
         if session and session.get("report"):
             report = session["report"]
         else:
-            return jsonify({"ok": False, "error": "No completed temp validation report"}), 400
+            return jsonify({"ok": False, "error": "No temp validation report to save"}), 400
     report = dict(report)
     report["reportApprovalStatus"] = "pending"
+    if report.get("aborted") or report.get("status") == "ABORTED":
+        report["status"] = "ABORTED"
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
     saved_id = data_service.save_report(report)
