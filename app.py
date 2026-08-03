@@ -732,6 +732,11 @@ def _approval_verifier_eligible_for_recipe_disable(verifier: dict) -> bool:
     return rbac_service.member_has_internal(vm, "recipe-manage")
 
 
+def _approval_verifier_eligible_for_recipe_enable(verifier: dict) -> bool:
+    """Recipe enable: verifier must have recipe management permission (Factory bypass)."""
+    return _approval_verifier_eligible_for_recipe_disable(verifier)
+
+
 def _report_approval_internal_key(report_type: str) -> str:
     """Internal RBAC key for approving a report by type."""
     if str(report_type or "").strip().lower() == "validation":
@@ -1395,6 +1400,9 @@ def _consume_approval_verify_token(expected_purpose):
     elif exp == "recipe_disable":
         if not _verifier_payload_has_internal(payload, "recipe-manage"):
             return None, "Verifier does not have recipe management permission."
+    elif exp == "recipe_enable":
+        if not _verifier_payload_has_internal(payload, "recipe-manage"):
+            return None, "Verifier does not have recipe management permission."
     elif exp == "user_admin":
         if not _verifier_payload_has_internal(payload, "user-manage"):
             return None, "Verifier does not have profile management permission."
@@ -1545,8 +1553,8 @@ def create_recipe():
 @app.route("/api/data/recipes/disabled", methods=["GET"])
 def get_disabled_recipes():
     try:
-        gate = _require_session_internal(
-            "disable-recipes",
+        gate = _require_any_session_internal(
+            ["disable-recipes", "recipe-manage", "recipe-enable", "recipe-delete"],
             "Forbidden. You do not have permission to view disabled recipes.",
         )
         if gate:
@@ -1555,6 +1563,71 @@ def get_disabled_recipes():
     except Exception as e:
         app.logger.exception("Error listing disabled recipes")
         return jsonify({"error": str(e), "recipes": []}), 500
+
+
+@app.route("/api/data/recipes/<int:recipe_id>/enable", methods=["POST"])
+def enable_recipe_route(recipe_id):
+    """Restore a disabled recipe (requires recipe management permission + enable approval)."""
+    try:
+        gate = _require_any_session_internal(
+            ["recipe-manage", "recipe-enable", "disable-recipes"],
+            "Forbidden. You do not have permission to enable recipes.",
+        )
+        if gate:
+            return gate
+        archived = data_service.get_disabled_recipe(recipe_id)
+        if not archived:
+            return jsonify({"error": "Disabled recipe not found"}), 404
+        body = request.get_json(force=True, silent=True) or {}
+        remarks = (body.get("remarks") or body.get("enableApprovalRemarks") or "").strip()
+        cur = data_service.get_current_user() or {}
+        enabled_by = (cur.get("name") or cur.get("username") or "—").strip()
+        enabled_by_username = _norm_username(cur.get("username") or cur.get("name"))
+        role = _effective_request_role()
+        if role == "factory":
+            display_name = (request.headers.get("X-User-Name") or "").strip() or enabled_by
+            username_raw = (
+                (request.headers.get("X-User-Username") or "").strip()
+                or (cur.get("username") or "").strip()
+                or display_name
+            )
+            approver_line = "{} ({})".format(display_name, _display_role_label("factory"))
+            approver_username = _norm_username(username_raw)
+        else:
+            verified, verify_err = _consume_approval_verify_token("recipe_enable")
+            if verify_err:
+                return jsonify({"error": verify_err}), 401
+            verified_name = (verified.get("name") or verified.get("username") or "—").strip()
+            verified_role = (verified.get("role") or "").strip()
+            approver_line = verified_name
+            if verified_role:
+                approver_line = "{} ({})".format(verified_name, _display_role_label(verified_role))
+            approver_username = _norm_username(verified.get("username"))
+        restored = data_service.enable_disabled_recipe(
+            recipe_id,
+            enabled_by=enabled_by,
+            enabled_by_username=enabled_by_username,
+            enable_approved_by=approver_line,
+            enable_approved_by_username=approver_username,
+            enable_approval_remarks=remarks,
+        )
+        if not restored:
+            return jsonify({"error": "Disabled recipe not found"}), 404
+        rlabel = restored.get("productName") or restored.get("name") or ""
+        details = "Recipe id {}".format(recipe_id)
+        if rlabel:
+            details = "{}: {}".format(details, rlabel)
+        if remarks:
+            details = "{} | remarks: {}".format(details, remarks)
+        details = "{} | approved by {}".format(details, approver_line)
+        _audit(None, None, "Recipe enabled", details)
+        _audit(approver_username or None, None, "Recipe enable approved", details)
+        return jsonify({"success": True, "recipe": restored}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error enabling recipe")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/data/recipes/<int:recipe_id>", methods=["GET"])
@@ -2965,8 +3038,8 @@ def approval_verify():
         payload = request.get_json(force=True, silent=True) or {}
         method = str(payload.get("method") or "credentials").strip().lower()
         purpose = str(payload.get("purpose") or "recipe").strip().lower()
-        if purpose not in ("recipe", "report", "user_admin", "export", "recipe_disable", "calibration"):
-            return jsonify({"ok": False, "error": "purpose must be recipe, report, user_admin, export, recipe_disable, or calibration"}), 400
+        if purpose not in ("recipe", "report", "user_admin", "export", "recipe_disable", "recipe_enable", "calibration"):
+            return jsonify({"ok": False, "error": "purpose must be recipe, report, user_admin, export, recipe_disable, recipe_enable, or calibration"}), 400
         verifier = None
         username = (payload.get("username") or "").strip()
 
@@ -3054,6 +3127,8 @@ def approval_verify():
             eligible = _approval_verifier_eligible_for_recipe(verifier)
         elif purpose == "recipe_disable":
             eligible = _approval_verifier_eligible_for_recipe_disable(verifier)
+        elif purpose == "recipe_enable":
+            eligible = _approval_verifier_eligible_for_recipe_enable(verifier)
         elif purpose == "export":
             eligible = _approval_verifier_eligible_for_export(verifier)
             # Same person who is exporting cannot approve their own export.

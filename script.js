@@ -1504,6 +1504,18 @@ function _approvalVerifyModalOptionsForRecipeDisable() {
     };
 }
 
+/** Recipe enable: verifier needs recipe-manage (server purpose recipe_enable). */
+function _approvalVerifyModalOptionsForRecipeEnable() {
+    return {
+        purpose: 'recipe_enable',
+        titleText: 'Recipe enable approval',
+        subtitleText: 'Enter credentials of a user with recipe management permission.',
+        usernameLabelText: 'Verifier username',
+        usernamePlaceholder: 'Username',
+        emptyCredentialsMessage: 'Enter verifier username and password.'
+    };
+}
+
 function getEffectiveRecipeApprovalStatus(recipe) {
     if (!recipe) return 'approved';
     var st = recipe.recipeApprovalStatus;
@@ -7925,40 +7937,9 @@ function disableRecipe(id, opts) {
         headers: headers,
         body: { remarks: remarks }
     }).then(function () {
-        try {
-            // Keep a local list of disabled recipes so the Disable page only shows those
-            var disabled = [];
-            try {
-                var raw = localStorage.getItem('disabledRecipes');
-                if (raw) disabled = JSON.parse(raw) || [];
-            } catch (e) {}
-
-            var recipe = null;
-            if (Array.isArray(lastDisplayedRecipes)) {
-                recipe = lastDisplayedRecipes.find(function (r) { return r.id === id; }) || null;
-            }
-
-            if (recipe) {
-                var u = window.currentUser || {};
-                var entry = {
-                    id: recipe.id,
-                    name: recipe.productName || recipe.name || '--',
-                    testMode: recipeTestModeLabel(recipe),
-                    rpm: recipeRpm(recipe),
-                    time: recipeTimeDisplay(recipe),
-                    rotations: recipeRotationsDisplay(recipe),
-                    drumCount: parseInt(recipe.drumCount, 10) === 1 ? 1 : 2,
-                    disabledBy: String(u.name || u.username || '—').trim(),
-                    disabledAt: new Date().toISOString()
-                };
-                // Avoid duplicates
-                disabled = disabled.filter(function (d) { return d.id !== entry.id; });
-                disabled.push(entry);
-                localStorage.setItem('disabledRecipes', JSON.stringify(disabled));
-            }
-        } catch (e) {}
-
+        try { localStorage.removeItem('disabledRecipes'); } catch (e) {}
         loadManageRecipes();
+        if (typeof loadDisableRecipes === 'function') loadDisableRecipes();
         showAppModal('Recipe disabled.', 'Disable Recipe');
     });
 }
@@ -8368,39 +8349,124 @@ function loadDisableRecipes() {
     if (!tbody) return;
 
     tbody.innerHTML = '';
+    if (msgEl) {
+        msgEl.textContent = 'Loading…';
+        msgEl.style.display = '';
+    }
+    if (tableEl) tableEl.style.display = 'none';
 
-    var disabled = [];
+    var canEnable = true;
     try {
-        var raw = localStorage.getItem('disabledRecipes');
-        if (raw) disabled = JSON.parse(raw) || [];
+        if (typeof userHasInternalKey === 'function') {
+            canEnable = !!(
+                userHasInternalKey(null, 'recipe-manage') ||
+                userHasInternalKey(null, 'recipe-enable') ||
+                userHasInternalKey(null, 'disable-recipes')
+            );
+        } else if (typeof canPerformAction === 'function') {
+            canEnable = !!canPerformAction(null, 'recipe-manage', 'edit');
+        }
     } catch (e) {}
 
-    if (!disabled || !disabled.length) {
-        if (msgEl) {
-            msgEl.textContent = 'No disabled recipes.';
-            msgEl.style.display = '';
-        }
-        if (tableEl) tableEl.style.display = 'none';
-        return;
+    apiRequest(API_BASE + '/api/data/recipes/disabled')
+        .then(function (data) {
+            var disabled = (data && data.recipes) ? data.recipes : [];
+            if (!disabled.length) {
+                if (msgEl) {
+                    msgEl.textContent = 'No disabled recipes.';
+                    msgEl.style.display = '';
+                }
+                if (tableEl) tableEl.style.display = 'none';
+                return;
+            }
+            if (msgEl) msgEl.style.display = 'none';
+            if (tableEl) tableEl.style.display = '';
+            disabled.forEach(function (r) {
+                var tr = document.createElement('tr');
+                var rid = r.id != null ? r.id : 0;
+                var name = r.productName || r.name || '--';
+                var modeLabel = String(r.mode || r.testMode || 'manual').toUpperCase();
+                var tempStr = (r.temp != null ? r.temp : (r.setTemperature != null ? r.setTemperature : '--'));
+                var disabledBy = r.disabledBy || '--';
+                var disabledAt = formatDisabledRecipeTimestamp(r.disabledAt);
+                var enableBtn = canEnable
+                    ? ('<button type="button" class="btn-action btn-load" onclick="openRecipeEnableModal(' + rid + ')" title="Enable">Enable</button>')
+                    : '';
+                tr.innerHTML =
+                    '<td>' + name + '</td>' +
+                    '<td>' + modeLabel + '</td>' +
+                    '<td>' + tempStr + '</td>' +
+                    '<td>' + disabledBy + '</td>' +
+                    '<td>' + disabledAt + '</td>' +
+                    '<td class="actions-cell actions-col">' + enableBtn + '</td>';
+                tbody.appendChild(tr);
+            });
+        })
+        .catch(function (err) {
+            if (msgEl) {
+                msgEl.textContent = (err && err.message) ? err.message : 'Failed to load disabled recipes.';
+                msgEl.style.display = '';
+            }
+            if (tableEl) tableEl.style.display = 'none';
+        });
+}
+
+function openRecipeEnableModal(recipeId) {
+    window._recipeEnableId = recipeId;
+    var ta = document.getElementById('recipe-enable-remarks');
+    if (ta) ta.value = '';
+    var overlay = document.getElementById('recipe-enable-overlay');
+    if (overlay) overlay.style.display = 'flex';
+}
+
+function closeRecipeEnableModal() {
+    window._recipeEnableId = null;
+    var overlay = document.getElementById('recipe-enable-overlay');
+    if (overlay) overlay.style.display = 'none';
+}
+
+function submitRecipeEnable() {
+    var id = window._recipeEnableId;
+    if (id == null) return;
+    var ta = document.getElementById('recipe-enable-remarks');
+    var remarks = ta ? String(ta.value || '').trim() : '';
+    var role = typeof getCurrentRole === 'function' ? String(getCurrentRole() || '').toLowerCase() : '';
+
+    var runEnable = function (token) {
+        return enableRecipe(id, { remarks: remarks, token: token || '' }).then(function () {
+            closeRecipeEnableModal();
+        });
+    };
+
+    var chain;
+    if (role === 'factory') {
+        chain = runEnable('');
+    } else {
+        chain = openApprovalVerifyModal(_approvalVerifyModalOptionsForRecipeEnable()).then(function (token) {
+            if (!token) return null;
+            return runEnable(token);
+        });
     }
+    chain.catch(function (err) {
+        var msg = (err && err.message) ? err.message : 'Failed to enable recipe.';
+        showAppModal(msg, 'Enable Recipe');
+    });
+}
 
-    if (msgEl) msgEl.style.display = 'none';
-    if (tableEl) tableEl.style.display = '';
-
-    disabled.forEach(function (r) {
-        var tr = document.createElement('tr');
-        var name = r.name || '--';
-        var modeLabel = r.testMode || '--';
-        var rpmStr = r.rpm != null ? String(r.rpm) : '--';
-        var disabledBy = r.disabledBy || '--';
-        var disabledAt = formatDisabledRecipeTimestamp(r.disabledAt);
-        tr.innerHTML =
-            '<td>' + name + '</td>' +
-            '<td>' + modeLabel + '</td>' +
-            '<td>' + rpmStr + '</td>' +
-            '<td>' + disabledBy + '</td>' +
-            '<td>' + disabledAt + '</td>';
-        tbody.appendChild(tr);
+function enableRecipe(id, opts) {
+    opts = opts || {};
+    var remarks = opts.remarks != null ? String(opts.remarks).trim() : '';
+    var token = opts.token != null ? String(opts.token) : '';
+    var headers = token ? { 'X-Approval-Verify-Token': token } : {};
+    return apiRequest(API_BASE + '/api/data/recipes/' + id + '/enable', {
+        method: 'POST',
+        headers: headers,
+        body: { remarks: remarks }
+    }).then(function () {
+        try { localStorage.removeItem('disabledRecipes'); } catch (e) {}
+        loadDisableRecipes();
+        if (typeof loadManageRecipes === 'function') loadManageRecipes();
+        showAppModal('Recipe enabled.', 'Enable Recipe');
     });
 }
 

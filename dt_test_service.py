@@ -325,10 +325,13 @@ def apply_run_setup(
 def confirm_start(basket: int) -> Dict[str, Any]:
     basket = int(basket)
     current = get_run(basket)
-    if current.get("state") not in ("READY", "AWAIT_CONFIRM", "PREHEAT"):
-        # Allow confirm from PREHEAT if already near setpoint (mock/race)
-        if current.get("state") != "PREHEAT":
-            return {"ok": False, "error": f"basket {basket} not ready to start (state={current.get('state')})"}
+    state = str(current.get("state") or "")
+    if state not in ("READY", "AWAIT_CONFIRM", "PREHEAT"):
+        return {
+            "ok": False,
+            "error": f"basket {basket} not ready to start (state={state or 'IDLE'})",
+            "run": current,
+        }
 
     temp = float(current.get("setTemperature") or 37.0)
     if basket == 1:

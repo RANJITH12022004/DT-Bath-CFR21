@@ -279,8 +279,7 @@
           if (data.type === 'temps' || data.kind === 'temps' || data.IR1 != null || data.temps) {
             var t = data.temps || data;
             updateTempDisplay(t);
-            maybeMarkReadyFromTemp(1);
-            maybeMarkReadyFromTemp(2);
+            // Ready / Start is TR-driven only (Dr Reddy). Do not flip Start from IR setpoint alone.
           }
           if (data.type === 'TR1' || data.type === 'TR2') {
             markBasketReady(data.type === 'TR1' ? 1 : 2, 'tr');
@@ -360,25 +359,19 @@
 
   function markBasketReady(basket, reason) {
     basket = basket === 2 ? 2 : 1;
+    // Formal preheat/run session only (ignore TR during settings-only heater)
+    if (!DT.running[basket]) return;
     // Only while actively preheating (ignore stray TR when idle/running)
     if (DT.btnPhase[basket] !== 'preheating' && !DT.preheatInProgress[basket]) return;
     if (DT.btnPhase[basket] === 'running') return;
     if (DT.btnPhase[basket] === 'ready') return;
     setStartBtnPhase(basket, 'ready');
-    onBasketReady(basket, reason);
+    onBasketReady(basket, reason || 'tr');
   }
 
   function maybeMarkReadyFromTemp(basket) {
-    if (DT.btnPhase[basket] !== 'preheating' && !DT.preheatInProgress[basket]) return;
-    var params = (DT._runParams && DT._runParams[basket]) || {};
-    var setT = Number(params.setTemperature != null ? params.setTemperature : DT.setTemp[basket]);
-    if (!(setT > 0)) return;
-    var ir = basket === 1 ? DT.latestTemps.IR1 : DT.latestTemps.IR2;
-    if (ir == null || ir === '') return;
-    var tol = 0.5;
-    if (Math.abs(Number(ir) - setT) <= tol) {
-      markBasketReady(basket, 'setpoint');
-    }
+    // Intentionally unused for Start arming — ESP TR is the ready signal.
+    return;
   }
 
   function onBasketReady(basket, reason) {
@@ -393,10 +386,7 @@
       btn.disabled = false;
       btn.textContent = 'Confirm Start';
     }
-    toast(
-      'Basket ' + basket + ' ready' + (reason === 'tr' ? ' (TR)' : reason === 'setpoint' ? ' (set temp)' : ''),
-      'success'
-    );
+    toast('Basket ' + basket + ' ready (TR) — press Start', 'success');
   }
 
   // -------------------- Dashboard --------------------
@@ -720,13 +710,14 @@
       return;
     }
 
-    // Ready → Start (after preheat). No recipe / no product → Quick Test setup first.
+    // Ready (TR received) → Start. No recipe loaded → Quick Test for product/batch/mode/media/mesh.
     if (phase === 'ready') {
       DT.selectedBasket = basket;
       if (!DT.fromRecipe[basket] && !DT.products[basket]) {
-        openQuickTestSetup(basket);
+        openQuickTestSetup(basket, { fromReady: true });
         return;
       }
+      // Recipe already loaded — confirm then start motors
       promptConfirmStart(basket);
       return;
     }
@@ -750,15 +741,30 @@
     beginPreheatFromSetup(basket);
   };
 
-  function openQuickTestSetup(basket) {
+  function openQuickTestSetup(basket, opts) {
+    opts = opts || {};
     basket = basket === 2 ? 2 : 1;
     DT._quickTestBasket = basket;
     DT.selectedBasket = basket;
+    DT._qtFromReady = !!opts.fromReady;
     resetQuickTestForm();
+    var titleEl = document.getElementById('dt-qt-title');
+    var subEl = document.getElementById('dt-qt-subtitle');
+    if (titleEl) titleEl.textContent = DT._qtFromReady ? 'Quick Test' : 'Quick Test';
+    if (subEl) {
+      subEl.textContent = DT._qtFromReady
+        ? 'Basket ' + basket + ' is ready. Enter product, batch, mode, media and mesh, then start the test.'
+        : 'Enter product, batch, mode, media and mesh to begin.';
+    }
     var hint = document.getElementById('dt-qt-basket-hint');
     if (hint) {
       hint.textContent = 'Beaker ' + basket + ' — uses dashboard set temperature (' +
         Number(DT.setTemp[basket] || 37).toFixed(1) + ' °C).';
+    }
+    var startBtn = document.getElementById('dt-qt-start-btn');
+    if (startBtn) {
+      startBtn.disabled = false;
+      startBtn.textContent = DT._qtFromReady ? 'Start Test' : 'Start Preheat';
     }
     go('quick-test');
   }
@@ -806,11 +812,15 @@
 
   window.dtCancelQuickTest = function () {
     DT._quickTestBasket = null;
+    DT._qtFromReady = false;
     go('home');
   };
 
   window.dtStartQuickRun = function () {
     var basket = DT._quickTestBasket === 2 ? 2 : (DT.selectedBasket === 2 ? 2 : 1);
+    var fromReady = !!DT._qtFromReady ||
+      DT.btnPhase[basket] === 'ready' ||
+      (DT.running[basket] && DT.btnPhase[basket] !== 'running');
     var name = ((document.getElementById('dt-qt-name') || {}).value || '').trim();
     var batch = ((document.getElementById('dt-qt-batch') || {}).value || '').trim();
     var mode = ((document.getElementById('dt-qt-mode') || {}).value || 'manual');
@@ -823,6 +833,14 @@
     }
     if (!batch) {
       toast('Enter a batch number', 'error');
+      return;
+    }
+    if (!media) {
+      toast('Enter media', 'error');
+      return;
+    }
+    if (!mesh) {
+      toast('Enter mesh', 'error');
       return;
     }
     var duration = null;
@@ -839,8 +857,8 @@
     DT.fromRecipe[basket] = false;
     DT.modes[basket] = mode;
     DT.durations[basket] = duration;
-    DT.media[basket] = media || null;
-    DT.mesh[basket] = mesh || null;
+    DT.media[basket] = media;
+    DT.mesh[basket] = mesh;
     DT.configured[basket] = true;
     updateModeButtonsUI(basket);
     updateProductNames();
@@ -854,8 +872,8 @@
       durationMinutes: duration,
       basketConfig: DT.basketConfig,
       batchNumber: batch,
-      media: media || null,
-      mesh: mesh || null,
+      media: media,
+      mesh: mesh,
     };
     DT._runParams = DT._runParams || {};
     DT._runParams[basket] = Object.assign({}, DT._runParams[basket] || {}, params);
@@ -872,14 +890,15 @@
           });
         } catch (e) {}
       }
+      DT._qtFromReady = false;
       DT.selectedBasket = basket;
       go('home');
-      // Already preheated — start motors now (no second confirm)
+      // Already at TR-ready / preheated — start motors now (no second confirm)
       window.dtConfirmStart();
     };
 
-    // If a preheat/ready session is active, patch setup onto the run then confirm
-    if (DT.btnPhase[basket] === 'ready' || DT.btnPhase[basket] === 'preheating' || DT.running[basket]) {
+    // After TR → Start → Quick Test: patch setup onto the armed run, then start motors
+    if (fromReady || DT.btnPhase[basket] === 'ready' || DT.btnPhase[basket] === 'preheating' || DT.running[basket]) {
       api('/api/data/dt/runs/' + basket + '/setup', {
         method: 'POST',
         body: {
@@ -887,8 +906,8 @@
           batchNumber: batch,
           mode: mode,
           durationMinutes: duration,
-          media: media || null,
-          mesh: mesh || null,
+          media: media,
+          mesh: mesh,
           recipeName: name,
         },
       }).then(function (res) {
@@ -901,7 +920,8 @@
       return;
     }
 
-    // Fallback: no active preheat (e.g. opened Quick Test from menu) → start preheat
+    // Opened from menu with no active preheat → start preheat first
+    DT._qtFromReady = false;
     if (startBtn) startBtn.disabled = false;
     beginPreheatFromSetup(basket);
   };
@@ -1522,23 +1542,85 @@
   }
 
   window.dtConfirmStart = function () {
-    var basket = DT.selectedBasket;
-    api('/api/data/dt/runs/' + basket + '/confirm', { method: 'POST', body: {} })
+    var basket = DT.selectedBasket === 2 ? 2 : 1;
+    DT.selectedBasket = basket;
+
+    var applyStartedUi = function () {
+      if (DT._confirmPending) DT._confirmPending[basket] = false;
+      DT.running[basket] = true;
+      DT.heaterManual[basket] = false;
+      DT.heaterOn[basket] = true;
+      setStartBtnPhase(basket, 'running');
+      updateHeaterIndicators();
+      toast('Test started', 'success');
+      var banner = document.getElementById('dt-ready-banner');
+      if (banner) banner.style.display = 'none';
+      var btn = document.getElementById('dt-confirm-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+      startRunPoll(basket);
+    };
+
+    var failStart = function (e) {
+      if (DT._confirmPending) DT._confirmPending[basket] = false;
+      // Keep Start available if we were in ready; otherwise leave phase alone
+      if (DT.btnPhase[basket] === 'running') setStartBtnPhase(basket, 'ready');
+      else if (DT.btnPhase[basket] !== 'ready') setStartBtnPhase(basket, 'ready');
+      toast((e && e.message) || 'Start failed', 'error');
+    };
+
+    var doConfirm = function () {
+      return api('/api/data/dt/runs/' + basket + '/confirm', { method: 'POST', body: {} })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.error || 'Start failed');
+          applyStartedUi();
+          return res;
+        });
+    };
+
+    // Ensure a formal run exists (Dr Reddy always START after armed preheat; CFR needs PREHEAT/AWAIT).
+    api('/api/data/dt/runs/' + basket)
       .then(function (res) {
-        if (!res.ok) throw new Error(res.error || 'Start failed');
-        if (DT._confirmPending) DT._confirmPending[basket] = false;
-        setStartBtnPhase(basket, 'running');
-        toast('Test started', 'success');
-        var banner = document.getElementById('dt-ready-banner');
-        if (banner) banner.style.display = 'none';
-        var btn = document.getElementById('dt-confirm-btn');
-        if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+        var state = String(((res && res.run) || {}).state || '').toUpperCase();
+        if (state === 'PREHEAT' || state === 'READY' || state === 'AWAIT_CONFIRM') {
+          return doConfirm();
+        }
+        var params = (DT._runParams && DT._runParams[basket]) || {};
+        var mode = params.mode || DT.modes[basket] || 'manual';
+        var dur = params.durationMinutes != null ? params.durationMinutes : DT.durations[basket];
+        if (mode === 'timer' && !(Number(dur) > 0)) {
+          mode = 'manual';
+          dur = null;
+        }
+        var body = {
+          setTemperature: params.setTemperature != null ? params.setTemperature : DT.setTemp[basket],
+          mode: mode,
+          durationMinutes: dur,
+          basketConfig: params.basketConfig || DT.basketConfig || 6,
+          productName: params.productName || DT.products[basket] || ('Beaker ' + basket),
+          batchNumber: params.batchNumber || DT.batches[basket] || '',
+          recipeName: params.recipeName || params.productName || DT.products[basket] || '',
+          media: params.media != null ? params.media : DT.media[basket],
+          mesh: params.mesh != null ? params.mesh : DT.mesh[basket],
+        };
+        return api('/api/data/dt/runs/' + basket + '/preheat', { method: 'POST', body: body })
+          .then(function (pres) {
+            if (!pres.ok) throw new Error(pres.error || 'Could not arm basket for start');
+            DT.running[basket] = true;
+            DT.heaterManual[basket] = false;
+            DT.heaterOn[basket] = true;
+            DT._runParams = DT._runParams || {};
+            DT._runParams[basket] = Object.assign({}, params, {
+              setTemperature: body.setTemperature,
+              mode: body.mode,
+              durationMinutes: body.durationMinutes,
+              productName: body.productName,
+              batchNumber: body.batchNumber,
+            });
+            updateHeaterIndicators();
+            return doConfirm();
+          });
       })
-      .catch(function (e) {
-        if (DT._confirmPending) DT._confirmPending[basket] = false;
-        setStartBtnPhase(basket, 'ready');
-        toast(e.message || 'Start failed', 'error');
-      });
+      .catch(failStart);
   };
 
   window.dtTapHole = dtTapHole;
@@ -2543,10 +2625,8 @@
         DT.heaterOn[basket] = turningOn;
         if (turningOn) {
           DT.heaterManual[basket] = true;
-          // If a formal preheat run is not active, drive home Preheat UI
-          if (!DT.running[basket]) {
-            setStartBtnPhase(basket, 'preheating');
-          }
+          // Dr Reddy: settings heater does NOT arm the dashboard Start/Preheat session.
+          // TR / setpoint-ready only apply after dashboard Preheat creates a formal run.
         } else {
           // Turning off from settings — stop formal preheat run if active, else clear manual heat
           if (DT.running[basket] && (DT.btnPhase[basket] === 'preheating' || DT.preheatInProgress[basket])) {
@@ -2563,9 +2643,6 @@
             return;
           }
           DT.heaterManual[basket] = false;
-          if (!DT.running[basket]) {
-            setStartBtnPhase(basket, 'idle');
-          }
         }
         updateHeaterIndicators();
         toast('Heater ' + basket + (turningOn ? ' ON' : ' OFF'), 'success');

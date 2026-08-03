@@ -180,16 +180,22 @@
             buildKeyboard();
         } else {
             // Regular key
-            if (_inputWantsDecimalKeyboard(currentInput) || String(currentInput.type || '').toLowerCase() === 'number') {
+            if (_isNumericOskField(currentInput)) {
                 var allowDecimal = _inputWantsDecimalKeyboard(currentInput);
                 if (key === '.' || key === ',') {
-                    if (!allowDecimal || currentInput.value.indexOf('.') >= 0) return;
+                    if (!allowDecimal || String(currentInput.value || '').indexOf('.') >= 0) return;
                     key = '.';
                 } else if (!/^\d$/.test(key)) {
                     return;
                 }
             }
-            currentInput.value += key;
+            // Prefer text/decimal fields for fractional values — type=number often
+            // rejects intermediate strings like "37." when set via value.
+            try {
+                currentInput.value = String(currentInput.value || '') + key;
+            } catch (e) {
+                return;
+            }
             updatePopup();
 
             // Auto-disable shift after typing (but not caps lock)
@@ -274,7 +280,23 @@
         if (!inputElement) return false;
         if (inputElement.getAttribute('data-decimal-input') === 'true') return true;
         if (String(inputElement.getAttribute('inputmode') || '').toLowerCase() === 'decimal') return true;
-        return inputElement.classList.contains('decimal-input');
+        if (inputElement.classList.contains('decimal-input')) return true;
+        // type=number with fractional / any step needs a decimal point
+        if (String(inputElement.type || '').toLowerCase() === 'number') {
+            var stepAttr = inputElement.getAttribute('step');
+            if (stepAttr == null || stepAttr === '') return false;
+            var stepLower = String(stepAttr).toLowerCase();
+            if (stepLower === 'any') return true;
+            var stepNum = parseFloat(stepAttr);
+            if (!isNaN(stepNum) && stepNum > 0 && Math.floor(stepNum) !== stepNum) return true;
+        }
+        return false;
+    }
+
+    function _isNumericOskField(inputElement) {
+        if (!inputElement) return false;
+        if (_inputWantsDecimalKeyboard(inputElement)) return true;
+        return String(inputElement.type || '').toLowerCase() === 'number';
     }
 
     // Open keyboard for input
@@ -284,7 +306,7 @@
 
         currentInput = inputElement;
 
-        if (_inputWantsDecimalKeyboard(inputElement) || String(inputElement.type || '').toLowerCase() === 'number') {
+        if (_isNumericOskField(inputElement)) {
             numbersActive = true;
             capsLockActive = false;
             shiftActive = false;

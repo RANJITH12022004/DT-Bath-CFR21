@@ -383,6 +383,64 @@ def archive_disabled_recipe(
     return True
 
 
+def get_disabled_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
+    """Return one archived disabled recipe by id."""
+    want = _norm_recipe_id(recipe_id)
+    if want is None:
+        return None
+    for row in list_disabled_recipes():
+        if _norm_recipe_id((row or {}).get("id")) == want:
+            return dict(row)
+    return None
+
+
+def enable_disabled_recipe(
+    recipe_id: int,
+    *,
+    enabled_by: str = "",
+    enabled_by_username: str = "",
+    enable_approved_by: str = "",
+    enable_approved_by_username: str = "",
+    enable_approval_remarks: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Restore an archived disabled recipe into the active recipes list."""
+    want = _norm_recipe_id(recipe_id)
+    if want is None:
+        return None
+    archived = get_disabled_recipe(want)
+    if not archived:
+        return None
+    # Already active?
+    if get_recipe(want):
+        raise ValueError("Recipe is already active")
+
+    restored = dict(archived)
+    restored["id"] = want
+    restored["status"] = "active"
+    for key in (
+        "disabledAt",
+        "disabledBy",
+        "disabledByUsername",
+        "disableApprovedBy",
+        "disableApprovedByUsername",
+        "disableApprovalRemarks",
+    ):
+        restored.pop(key, None)
+    restored["enabledAt"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    restored["enabledBy"] = enabled_by or "--"
+    restored["enabledByUsername"] = enabled_by_username or "--"
+    restored["enableApprovedBy"] = enable_approved_by or "--"
+    restored["enableApprovedByUsername"] = enable_approved_by_username or "--"
+    restored["enableApprovalRemarks"] = (enable_approval_remarks or "").strip()
+
+    save_recipe(restored)
+
+    path = _get_storage_path("disabled_recipes.json")
+    remaining = [d for d in list_disabled_recipes() if _norm_recipe_id((d or {}).get("id")) != want]
+    _save_json_file(path, remaining)
+    return restored
+
+
 # =================== REPORT OPERATIONS ==========================
 
 
@@ -695,18 +753,18 @@ def _parse_installation_date(value: Any) -> Optional[datetime]:
 
 
 def get_password_policy_for_members() -> Dict[str, Any]:
-    """Return parsed password policy from factory settings."""
+    """Return password-reset period from factory settings (enabled when periodDays >= 1)."""
     fs = get_factory_settings()
-    install_dt = _parse_installation_date(fs.get("installationDate"))
     try:
         period_days = int(fs.get("passwordResetPeriodDays"))
     except (TypeError, ValueError):
         period_days = 0
     if period_days < 1:
         period_days = 0
-    enabled = bool(install_dt and period_days > 0)
+    # Installation date is optional metadata only; cycles are per profile (createdAt).
+    install_dt = _parse_installation_date(fs.get("installationDate"))
     return {
-        "enabled": enabled,
+        "enabled": period_days > 0,
         "installationDate": install_dt,
         "periodDays": period_days,
     }
@@ -719,10 +777,10 @@ def _compute_password_cycle_state(
     now_dt: datetime,
 ) -> Dict[str, Any]:
     """
-    Rolling password-expiry cycles anchored to installation date.
+    Rolling password-expiry cycles anchored to the member profile creation date.
 
-    First enforcement boundary: installationDate + periodDays + 1 day
-    (e.g. install 01-03 with 30 days => enforce from 01-04).
+    First enforcement boundary: createdAt + periodDays + 1 day
+    (e.g. created 01-03 with 30 days => enforce from 01-04).
     Later boundaries: every periodDays after that first boundary.
     Expired when passwordLastChangedAt is before the current cycle start.
     """
@@ -750,6 +808,7 @@ def _compute_password_cycle_state(
             "passwordLastChangedAt": plc_day.strftime("%Y-%m-%dT%H:%M:%S"),
             "periodDays": period_days,
             "cycleIndex": 0,
+            "anchor": anchor_day.strftime("%Y-%m-%d"),
         }
 
     first_boundary = anchor_day + timedelta(days=period_days + 1)
@@ -763,6 +822,7 @@ def _compute_password_cycle_state(
             "passwordLastChangedAt": plc_day.strftime("%Y-%m-%dT%H:%M:%S"),
             "periodDays": period_days,
             "cycleIndex": 0,
+            "anchor": anchor_day.strftime("%Y-%m-%d"),
         }
 
     days_past = (now_day - first_boundary).days
@@ -779,28 +839,34 @@ def _compute_password_cycle_state(
         "passwordLastChangedAt": plc_day.strftime("%Y-%m-%dT%H:%M:%S"),
         "periodDays": period_days,
         "cycleIndex": int(cycle_index) + 1,
+        "anchor": anchor_day.strftime("%Y-%m-%d"),
     }
 
 
 def get_member_password_expiry_state(member: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
     """
-    Compute password expiry status for a non-factory member.
-    Global rolling cycles: installationDate + N * periodDays (first boundary at +period+1).
+    Compute password expiry for a non-factory member.
+    Cycles are anchored to that member's profile createdAt (not instrument installation date).
     """
     policy = get_password_policy_for_members()
     if not policy.get("enabled"):
         return {"expired": False, "reason": "policy-disabled"}
-    anchor = policy.get("installationDate")
     period_days = int(policy.get("periodDays") or 0)
-    now_dt = now or datetime.now()
-    if not anchor or period_days < 1:
+    if period_days < 1:
         return {"expired": False, "reason": "invalid-policy"}
+    now_dt = now or datetime.now()
+    anchor = _parse_isoish_datetime(member.get("createdAt"))
+    if not anchor:
+        # Fall back so legacy profiles without createdAt still enforce from last change
+        anchor = _parse_isoish_datetime(member.get("passwordLastChangedAt")) or datetime.min
     plc_dt = _parse_isoish_datetime(member.get("passwordLastChangedAt")) or _parse_isoish_datetime(
         member.get("createdAt")
     )
     if not plc_dt:
         plc_dt = datetime.min
-    return _compute_password_cycle_state(anchor, period_days, plc_dt, now_dt)
+    state = _compute_password_cycle_state(anchor, period_days, plc_dt, now_dt)
+    state["anchorSource"] = "createdAt"
+    return state
 
 
 def save_member(member_data: Dict[str, Any], acting_user_id: Optional[Any] = None) -> int:

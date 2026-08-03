@@ -398,6 +398,10 @@
                     <div class="dt-recipe-shell create-recipe-step1-page dt-create-recipe-page dt-quick-test-page">
                         <div class="dt-recipe-scroll" id="dt-qt-scroll">
                             <div class="dt-recipe-block">
+                                <h2 class="section-title" id="dt-qt-title">Quick Test</h2>
+                                <p class="section-subtitle" id="dt-qt-subtitle">Enter product, batch, mode, media and mesh to begin.</p>
+                            </div>
+                            <div class="dt-recipe-block">
                                 <label class="dt-recipe-label" for="dt-qt-name">Product name</label>
                                 <input type="text" id="dt-qt-name" class="input-field dt-recipe-name-input"
                                     placeholder="e.g. Paracetamol 500 mg"
@@ -466,13 +470,13 @@
                                     <div class="form-group">
                                         <label for="dt-qt-media">Media</label>
                                         <input type="text" id="dt-qt-media" class="input-field recipe-param-input"
-                                            placeholder="Optional"
+                                            placeholder="e.g. Water"
                                             onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                     </div>
                                     <div class="form-group">
                                         <label for="dt-qt-mesh">Mesh</label>
                                         <input type="text" id="dt-qt-mesh" class="input-field recipe-param-input"
-                                            placeholder="Optional"
+                                            placeholder="e.g. 10#"
                                             onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                     </div>
                                 </div>
@@ -584,8 +588,9 @@
                                 <div class="dt-recipe-params-grid create-recipe-form-fields">
                                     <div class="form-group">
                                         <label for="dt-recipe-temp">Temperature (°C)</label>
-                                        <input type="text" id="dt-recipe-temp" class="input-field recipe-param-input"
-                                            value="37.0" placeholder="37.0" inputmode="decimal"
+                                        <input type="text" id="dt-recipe-temp" class="input-field recipe-param-input decimal-input"
+                                            value="37.0" placeholder="37.0" inputmode="decimal" data-decimal-input="true"
+                                            autocomplete="off"
                                             onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                     </div>
                                     <div class="form-group" id="dt-recipe-duration-row" style="display:none;">
@@ -920,17 +925,18 @@
                 <div class="page" id="page-disable-recipes">
                     <div class="manage-recipes-container disable-recipes-page">
                         <h2 class="section-title">Disabled Recipes</h2>
-                        <p class="section-subtitle">Disintegration recipes removed from active use (requires recipe management approval to disable).</p>
+                        <p class="section-subtitle">Disintegration recipes removed from active use. Enabling requires recipe management approval.</p>
                         <div class="recipe-list-container">
                             <p class="empty-state-message" id="disable-recipes-message">No disabled recipes.</p>
                             <table class="manage-recipes-table disable-recipes-table" style="display: none;">
                                 <thead>
                                     <tr>
                                         <th>Product Name</th>
-                                        <th>Test Mode</th>
-                                        <th>RPM</th>
+                                        <th>Mode</th>
+                                        <th>Temp °C</th>
                                         <th>Disabled By</th>
                                         <th>Disabled At</th>
+                                        <th class="actions-col">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="disable-recipes-table-body"></tbody>
@@ -938,6 +944,20 @@
                         </div>
                         <div class="validation-actions-row">
                             <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
+                        </div>
+                    </div>
+                    <div id="recipe-enable-overlay" class="modal-overlay" style="display: none;">
+                        <div class="modal-card">
+                            <h2 class="section-title">Enable Recipe</h2>
+                            <p class="section-subtitle">Recipe management approval is required to enable this recipe.</p>
+                            <div class="form-group">
+                                <label for="recipe-enable-remarks">Remarks (optional)</label>
+                                <textarea id="recipe-enable-remarks" class="input-field" rows="3" placeholder="Enable remarks"></textarea>
+                            </div>
+                            <div class="validation-actions-row">
+                                <button type="button" class="btn btn-secondary" onclick="closeRecipeEnableModal()">Cancel</button>
+                                <button type="button" class="btn btn-primary" onclick="submitRecipeEnable()">Continue</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1486,7 +1506,8 @@
                         <div class="dt-temp-validation-content">
                             <div class="dt-temp-set-row" id="temp-validation-set-temp-container">
                                 <label for="temp-validation-set-temp-input">Set Temp (°C)</label>
-                                <input type="text" id="temp-validation-set-temp-input" class="input-field validation-temp-input" value="37.0" inputmode="decimal"
+                                <input type="text" id="temp-validation-set-temp-input" class="input-field validation-temp-input decimal-input" value="37.0"
+                                    inputmode="decimal" data-decimal-input="true" autocomplete="off"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                 <button type="button" class="btn btn-secondary" onclick="applyValidationSetTemp()">Apply</button>
                             </div>
@@ -1660,7 +1681,8 @@
                                 </div>
                                 <div class="form-group dt-cal-field dt-cal-field-measured">
                                     <label for="calibration-measured-temp-input">Measured (Reference)</label>
-                                    <input type="text" id="calibration-measured-temp-input" class="input-field" inputmode="decimal" placeholder="Enter measured temp"
+                                    <input type="text" id="calibration-measured-temp-input" class="input-field decimal-input" inputmode="decimal"
+                                        data-decimal-input="true" autocomplete="off" placeholder="Enter measured temp"
                                         onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                 </div>
                             </div>
@@ -2254,7 +2276,9 @@
                             <div class="dt-heater-card" id="heater-control-basket-1">
                                 <h3>Basket 1 Temperature</h3>
                                 <div class="dt-heater-temp-row">
-                                    <input type="number" id="set-temp-1" class="input-field" value="37.0" min="20" max="55" step="0.1"
+                                    <input type="text" id="set-temp-1" class="input-field decimal-input" value="37.0"
+                                        inputmode="decimal" data-decimal-input="true" data-osk-prompt="Basket 1 temperature"
+                                        autocomplete="off"
                                         onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                     <span>°C</span>
                                 </div>
@@ -2265,7 +2289,9 @@
                             <div class="dt-heater-card" id="heater-control-basket-2">
                                 <h3>Basket 2 Temperature</h3>
                                 <div class="dt-heater-temp-row">
-                                    <input type="number" id="set-temp-2" class="input-field" value="37.0" min="20" max="55" step="0.1"
+                                    <input type="text" id="set-temp-2" class="input-field decimal-input" value="37.0"
+                                        inputmode="decimal" data-decimal-input="true" data-osk-prompt="Basket 2 temperature"
+                                        autocomplete="off"
                                         onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                     <span>°C</span>
                                 </div>
@@ -2401,6 +2427,7 @@
                             <div class="form-group">
                                 <label>Password Reset Period (Days)</label>
                                 <input type="number" id="factory-password-reset-days" class="input-field" min="1" max="3650" placeholder="30" value="30">
+                                <p class="section-subtitle" style="margin-top:6px;font-size:13px;">Counted from each user’s profile creation date. After this many days they must set a new password at login.</p>
                             </div>
                             <div class="form-group">
                                 <label>Biometric Login</label>
@@ -2441,11 +2468,11 @@
         </div>
     </div>
     <div id="keyboard-root"></div>
-    <script src="/keyboard.js?v=5"></script>
+    <script src="/keyboard.js?v=6"></script>
     <script src="/input-focus.js?v=2"></script>
     <script src="/rbac.js?v=11"></script>
-    <script src="/script.js?v=115"></script>
-    <script src="/dt_client.js?v=32"></script>
+    <script src="/script.js?v=116"></script>
+    <script src="/dt_client.js?v=34"></script>
 </body>
 
 </html>

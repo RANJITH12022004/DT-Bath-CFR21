@@ -22,7 +22,7 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 
 STROKE_DURATION_SEC = 60
 # After START,STROKE the basket travels to the stroke start position before counting.
-STROKE_TRAVEL_DELAY_SEC = 1.5
+STROKE_TRAVEL_DELAY_SEC = 2.5
 STROKE_MIN = 29
 STROKE_MAX = 32
 TEMP_HOLD_SEC = 120
