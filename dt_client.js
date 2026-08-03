@@ -489,8 +489,12 @@
         var on = !!DT.heaterOn[b];
         el.classList.toggle('is-on', on);
         el.classList.toggle('is-off', !on);
+        el.style.opacity = on ? '1' : '0.6';
         var span = el.querySelector('span');
-        if (span) span.textContent = on ? 'Heater On' : 'Heater Off';
+        if (span) {
+          span.textContent = on ? 'Heater On' : 'Heater Off';
+          span.style.color = on ? '#f59e0b' : '#6b7280';
+        }
       }
       syncHeaterControlUi(b);
     });
@@ -671,10 +675,10 @@
 
     var phase = DT.btnPhase[basket] || 'idle';
 
-    // Preheat in progress → confirm stop
+    // Preheat in progress → confirm stop (settings heater or formal preheat)
     if (phase === 'preheating' || DT.preheatInProgress[basket]) {
       var doAbortPreheat = function () {
-        // Settings-only heater (no test run) — stop via hardware PHW
+        // Settings-only heater (no formal test run) — stop via hardware PHW
         if (DT.heaterManual[basket] && !DT.running[basket]) {
           stopManualHeater(basket).then(function () {
             var tEl = document.getElementById('timer' + basket);
@@ -1388,12 +1392,13 @@
     return (b === 1 || b === 2) ? b : 1;
   }
 
-  /** True if the sibling basket still has an active test session (preheat/ready/running). */
+  /**
+   * True only if the sibling basket's test has actually started (motors running).
+   * Preheat / ready on the other beaker must NOT block opening this basket's report.
+   */
   function siblingBasketStillActive(basket) {
     var other = basket === 2 ? 1 : 2;
-    if (DT.running[other]) return true;
-    var phase = DT.btnPhase[other] || 'idle';
-    return phase === 'preheating' || phase === 'ready' || phase === 'running';
+    return (DT.btnPhase[other] || 'idle') === 'running';
   }
 
   function enqueuePendingReport(reportId) {
@@ -1455,7 +1460,7 @@
     enqueuePendingReport(rid);
 
     if (siblingActive) {
-      toast('Basket ' + basket + ' complete — report opens when both tests finish', 'info');
+      toast('Basket ' + basket + ' complete — report opens when the other running test finishes', 'info');
       go('home');
       return;
     }
@@ -2625,24 +2630,37 @@
         DT.heaterOn[basket] = turningOn;
         if (turningOn) {
           DT.heaterManual[basket] = true;
-          // Dr Reddy: settings heater does NOT arm the dashboard Start/Preheat session.
-          // TR / setpoint-ready only apply after dashboard Preheat creates a formal run.
+          // Mirror settings heater onto home dashboard (Preheating + Heater On).
+          // Manual heat does not create a formal run — TR will not arm Start until
+          // dashboard Preheat is used (or this session is upgraded by Preheat).
+          if (!DT.running[basket] || DT.heaterManual[basket]) {
+            if (DT.btnPhase[basket] !== 'running' && DT.btnPhase[basket] !== 'ready') {
+              setStartBtnPhase(basket, 'preheating');
+            }
+          }
         } else {
           // Turning off from settings — stop formal preheat run if active, else clear manual heat
-          if (DT.running[basket] && (DT.btnPhase[basket] === 'preheating' || DT.preheatInProgress[basket])) {
+          if (DT.running[basket] && !DT.heaterManual[basket] &&
+              (DT.btnPhase[basket] === 'preheating' || DT.preheatInProgress[basket] || DT.btnPhase[basket] === 'ready')) {
             api('/api/data/dt/runs/' + basket + '/stop', {
               method: 'POST',
               body: { aborted: true, reason: 'preheat_abort' },
             }).then(function () {
               finishBasketUi(basket);
+              updateHeaterIndicators();
             }).catch(function () {
               DT.heaterManual[basket] = false;
               finishBasketUi(basket);
+              updateHeaterIndicators();
             });
             toast('Heater ' + basket + ' OFF', 'success');
             return;
           }
           DT.heaterManual[basket] = false;
+          DT.preheatInProgress[basket] = false;
+          if (!DT.running[basket] && DT.btnPhase[basket] !== 'running') {
+            setStartBtnPhase(basket, 'idle');
+          }
         }
         updateHeaterIndicators();
         toast('Heater ' + basket + (turningOn ? ' ON' : ' OFF'), 'success');
@@ -2679,13 +2697,20 @@
   document.addEventListener('DOMContentLoaded', boot);
   setTimeout(boot, 400);
 
-  // Refresh dashboard holes when returning home
+  // Refresh dashboard / heater UI when returning home or opening heater settings
   var _origGoToPage = window.goToPage;
   if (typeof _origGoToPage === 'function') {
     window.goToPage = function (pageName) {
       var r = _origGoToPage.apply(this, arguments);
-      if (String(pageName) === 'home' || String(pageName) === 'page-home') {
+      var p = String(pageName || '');
+      if (p === 'home' || p === 'page-home') {
         setTimeout(refreshDashboard, 50);
+      } else if (p === 'heater-control' || p === 'page-heater-control') {
+        setTimeout(function () {
+          updateHeaterIndicators();
+          syncHeaterControlUi(1);
+          syncHeaterControlUi(2);
+        }, 50);
       }
       return r;
     };
