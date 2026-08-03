@@ -56,7 +56,7 @@ def generate_report(
     return report
 
 
-def enrich_factory_settings(factory_settings: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_factory_settings(factory_settings: Dict[str, Any], beaker: Any = None) -> Dict[str, Any]:
     """Merge display defaults; keep policy fields (auto logout, password reset period, etc.)."""
     fs_in = dict(factory_settings or {})
     out = dict(fs_in)
@@ -71,11 +71,20 @@ def enrich_factory_settings(factory_settings: Dict[str, Any]) -> Dict[str, Any]:
             "nextValidationDate": fs_in.get("nextValidationDate") or "N/A",
         }
     )
-    dates = _resolve_validation_dates(fs_in)
-    if dates.get("lastValidationDate"):
-        out["lastValidationDate"] = dates["lastValidationDate"]
-    if dates.get("nextValidationDate"):
-        out["nextValidationDate"] = dates["nextValidationDate"]
+    # Prefer per-beaker dates when beaker is known
+    beaker_dates = get_beaker_validation_dates(fs_in, beaker) if beaker is not None else {}
+    if beaker_dates.get("lastValidationDate"):
+        out["lastValidationDate"] = beaker_dates["lastValidationDate"]
+    if beaker_dates.get("nextValidationDate"):
+        out["nextValidationDate"] = beaker_dates["nextValidationDate"]
+    if beaker is None:
+        dates = _resolve_validation_dates(fs_in)
+        if dates.get("lastValidationDate"):
+            out["lastValidationDate"] = dates["lastValidationDate"]
+        if dates.get("nextValidationDate"):
+            out["nextValidationDate"] = dates["nextValidationDate"]
+    if isinstance(fs_in.get("validationDatesByBeaker"), dict):
+        out["validationDatesByBeaker"] = fs_in["validationDatesByBeaker"]
     return out
 
 
@@ -419,60 +428,92 @@ def build_test_report_derived(
         "setTemperature": set_temp if set_temp not in (None, "") else "--",
         "minTemp": td.get("minTemp"),
         "maxTemp": td.get("maxTemp"),
+        "meanTemp": td.get("meanTemp"),
         "setDuration": set_dur,
         "durationSeconds": duration_sec,
         "durationFormatted": td.get("duration") or format_duration_hhmmss(duration_sec),
         "vesselTimes": td.get("vesselTimes") or {},
+        "holeCompletionTimes": td.get("holeCompletionTimes") or {},
         "batchNumber": td.get("batchNumber") or recipe.get("batchNumber") or td.get("batch1") or td.get("batch2"),
         "productName": recipe.get("productName") or recipe.get("name") or td.get("productName") or td.get("name"),
     }
 
 
+def _format_elapsed_hhmmss(seconds: Any) -> str:
+    try:
+        sec = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "--"
+    hh = sec // 3600
+    mm = (sec % 3600) // 60
+    ss = sec % 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _tap_times_seconds(test_data: Dict[str, Any]) -> list:
+    """Ordered tube-tap elapsed times (seconds) from holeCompletionTimes or vesselTimes."""
+    times: list = []
+    hct = test_data.get("holeCompletionTimes") or {}
+    if isinstance(hct, dict) and hct:
+        for v in hct.values():
+            try:
+                times.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        times.sort()
+        return times
+    vt = test_data.get("vesselTimes") or {}
+    if isinstance(vt, dict) and vt:
+        parsed = []
+        for v in vt.values():
+            s = str(v or "").strip()
+            parts = s.split(":")
+            try:
+                if len(parts) == 3:
+                    parsed.append(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+                elif len(parts) == 2:
+                    parsed.append(int(parts[0]) * 60 + int(parts[1]))
+            except (TypeError, ValueError):
+                continue
+        parsed.sort()
+        return parsed
+    return times
+
+
 def compute_test_report_statistics(test_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Disintegration statistics from test/report data."""
+    """
+    Manual-mode tap-time statistics for disintegration reports.
+    Timer mode → no statistics. 1-tube basket → N/A. 3/6 tubes → First / Second / Completion.
+    """
     if not isinstance(test_data, dict):
         return None
 
-    stats: Dict[str, Any] = {}
-    min_t = _parse_density_number(test_data.get("minTemp"))
-    max_t = _parse_density_number(test_data.get("maxTemp"))
-    set_t = _parse_density_number(test_data.get("setTemperature"))
-    if set_t is not None:
-        stats["Set temperature (°C)"] = {"value": round(set_t, 2)}
-    if min_t is not None:
-        stats["Min temperature (°C)"] = {"value": round(min_t, 2)}
-    if max_t is not None:
-        stats["Max temperature (°C)"] = {"value": round(max_t, 2)}
+    mode = str(test_data.get("mode") or "").strip().lower()
+    if mode == "timer":
+        return None
 
-    basket = test_data.get("basket") or test_data.get("beaker")
-    if basket is not None:
-        try:
-            stats["Basket"] = {"value": int(basket)}
-        except (TypeError, ValueError):
-            pass
-    cfg = test_data.get("basketConfig")
-    if cfg is not None:
-        try:
-            stats["Tube count"] = {"value": int(cfg)}
-        except (TypeError, ValueError):
-            pass
-    mode = test_data.get("mode")
-    if mode:
-        stats["Mode"] = {"value": str(mode)}
-    dur = test_data.get("durationSeconds")
-    if dur is not None:
-        try:
-            stats["Duration (s)"] = {"value": int(dur)}
-        except (TypeError, ValueError):
-            pass
-    strokes = _parse_density_number(test_data.get("strokesPerMin"))
-    if strokes is not None:
-        stats["Strokes/min"] = {"value": round(strokes, 1)}
-    max_dev = _parse_density_number(test_data.get("maxDeviation"))
-    if max_dev is not None:
-        stats["Max deviation (°C)"] = {"value": round(max_dev, 3)}
+    try:
+        cfg = int(test_data.get("basketConfig") or 6)
+    except (TypeError, ValueError):
+        cfg = 6
 
-    return stats if stats else None
+    na = {"value": "N/A"}
+    if cfg <= 1:
+        return {
+            "First Tap": dict(na),
+            "Second Tap": dict(na),
+            "Completion": dict(na),
+        }
+
+    times = _tap_times_seconds(test_data)
+    first = _format_elapsed_hhmmss(times[0]) if len(times) >= 1 else "N/A"
+    second = _format_elapsed_hhmmss(times[1]) if len(times) >= 2 else "N/A"
+    completion = _format_elapsed_hhmmss(times[-1]) if times else "N/A"
+    return {
+        "First Tap": {"value": first},
+        "Second Tap": {"value": second},
+        "Completion": {"value": completion},
+    }
 
 
 def enrich_report_context(report_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -480,6 +521,7 @@ def enrich_report_context(report_data: Dict[str, Any]) -> Dict[str, Any]:
         return report_data
     factory_settings = data_service.get_factory_settings()
     fs = report_data.get("factorySettings") or {}
+    beaker = _report_beaker_number(report_data)
     for k, default in [
         ("companyName", "N/A"),
         ("modelNo", "N/A"),
@@ -489,11 +531,23 @@ def enrich_report_context(report_data: Dict[str, Any]) -> Dict[str, Any]:
     ]:
         if not fs.get(k):
             fs[k] = factory_settings.get(k) or default
-    dates = _resolve_validation_dates({**factory_settings, **fs})
-    if dates.get("lastValidationDate"):
-        fs["lastValidationDate"] = dates["lastValidationDate"]
-    if dates.get("nextValidationDate"):
-        fs["nextValidationDate"] = dates["nextValidationDate"]
+    # Stamp beaker-specific last/next validation dates onto factorySettings for print/preview
+    merged_fs = {**factory_settings, **fs}
+    if isinstance(factory_settings.get("validationDatesByBeaker"), dict) and "validationDatesByBeaker" not in fs:
+        merged_fs["validationDatesByBeaker"] = factory_settings["validationDatesByBeaker"]
+    beaker_dates = get_beaker_validation_dates(merged_fs, beaker)
+    if beaker_dates.get("lastValidationDate"):
+        fs["lastValidationDate"] = beaker_dates["lastValidationDate"]
+    if beaker_dates.get("nextValidationDate"):
+        fs["nextValidationDate"] = beaker_dates["nextValidationDate"]
+    if beaker is None:
+        dates = _resolve_validation_dates(merged_fs)
+        if dates.get("lastValidationDate") and not fs.get("lastValidationDate"):
+            fs["lastValidationDate"] = dates["lastValidationDate"]
+        if dates.get("nextValidationDate") and not fs.get("nextValidationDate"):
+            fs["nextValidationDate"] = dates["nextValidationDate"]
+    if isinstance(merged_fs.get("validationDatesByBeaker"), dict):
+        fs["validationDatesByBeaker"] = merged_fs["validationDatesByBeaker"]
     report_data["factorySettings"] = fs
     if str(report_data.get("type") or "").strip().lower() == "test":
         td = report_data.get("testData") if isinstance(report_data.get("testData"), dict) else report_data
@@ -506,6 +560,11 @@ def enrich_report_context(report_data: Dict[str, Any]) -> Dict[str, Any]:
             report_data["statistics"] = computed
             if isinstance(report_data.get("testData"), dict):
                 report_data["testData"]["statistics"] = computed
+        elif str((td or {}).get("mode") or "").strip().lower() == "timer":
+            # Timer mode has no tap-time statistics
+            report_data["statistics"] = {}
+            if isinstance(report_data.get("testData"), dict):
+                report_data["testData"]["statistics"] = {}
         recipe = report_data.get("recipe") if isinstance(report_data.get("recipe"), dict) else {}
         report_data["reportDerived"] = build_test_report_derived(
             td if isinstance(td, dict) else {},
@@ -554,32 +613,145 @@ def _add_years(dt: datetime, years: int = 1) -> datetime:
         return dt.replace(month=2, day=28, year=dt.year + int(years or 1))
 
 
-def _validation_dates_from_last(dt: datetime) -> Dict[str, str]:
-    """Last validation date and next due exactly one calendar year later."""
-    next_dt = _add_years(dt, 1)
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Add calendar months; day clamps to last day of target month."""
+    months = int(months or 0)
+    year = dt.year + (dt.month - 1 + months) // 12
+    month = (dt.month - 1 + months) % 12 + 1
+    day = dt.day
+    # Clamp day for shorter months
+    for d in range(day, 0, -1):
+        try:
+            return dt.replace(year=year, month=month, day=d)
+        except ValueError:
+            continue
+    return dt.replace(year=year, month=month, day=1)
+
+
+def _validation_dates_from_last(dt: datetime, months: int = 12) -> Dict[str, str]:
+    """Last validation date and next due after N calendar months (default 12)."""
+    try:
+        m = int(months or 12)
+    except (TypeError, ValueError):
+        m = 12
+    if m not in (3, 6, 12):
+        m = 12
+    next_dt = _add_months(dt, m)
     return {
         "lastValidationDate": dt.strftime("%d-%m-%Y"),
         "nextValidationDate": next_dt.strftime("%d-%m-%Y"),
+        "dueIntervalMonths": m,
     }
 
 
+def get_beaker_validation_dates(
+    factory_settings: Optional[Dict[str, Any]] = None,
+    beaker: Any = None,
+) -> Dict[str, str]:
+    """Return last/next validation dates for a beaker (1|2), with legacy fallback."""
+    fs = factory_settings if isinstance(factory_settings, dict) else (data_service.get_factory_settings() or {})
+    by = fs.get("validationDatesByBeaker") if isinstance(fs.get("validationDatesByBeaker"), dict) else {}
+    key = None
+    try:
+        b = int(beaker)
+        if b in (1, 2):
+            key = str(b)
+    except (TypeError, ValueError):
+        key = None
+    entry = by.get(key) if key and isinstance(by.get(key), dict) else None
+    if entry:
+        last = entry.get("lastValidationDate") or "N/A"
+        nxt = entry.get("nextValidationDate") or "N/A"
+        months = entry.get("dueIntervalMonths")
+        out = {"lastValidationDate": last, "nextValidationDate": nxt}
+        if months is not None:
+            out["dueIntervalMonths"] = months
+        return out
+    # Legacy instrument-wide pair
+    return {
+        "lastValidationDate": fs.get("lastValidationDate") or "N/A",
+        "nextValidationDate": fs.get("nextValidationDate") or "N/A",
+    }
+
+
+def apply_pending_validation_due(report: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    On validation approval: apply report.pendingValidationDue into
+    factorySettings.validationDatesByBeaker[beaker].
+    """
+    if not isinstance(report, dict):
+        return {}
+    pending = report.get("pendingValidationDue")
+    if not isinstance(pending, dict) or not pending:
+        return {}
+    try:
+        beaker = int(pending.get("beaker") or report.get("beaker") or report.get("basket") or 1)
+    except (TypeError, ValueError):
+        beaker = 1
+    if beaker not in (1, 2):
+        beaker = 1
+    last = str(pending.get("lastValidationDate") or "").strip()
+    nxt = str(pending.get("nextValidationDate") or "").strip()
+    try:
+        months = int(pending.get("months") or pending.get("dueIntervalMonths") or 12)
+    except (TypeError, ValueError):
+        months = 12
+    if months not in (3, 6, 12):
+        months = 12
+    if not last or not nxt:
+        # Compute from today if missing
+        now = datetime.now()
+        computed = _validation_dates_from_last(now, months)
+        last = last or computed["lastValidationDate"]
+        nxt = nxt or computed["nextValidationDate"]
+    stored = dict(data_service.get_factory_settings() or {})
+    by = dict(stored.get("validationDatesByBeaker") or {}) if isinstance(stored.get("validationDatesByBeaker"), dict) else {}
+    by[str(beaker)] = {
+        "lastValidationDate": last,
+        "nextValidationDate": nxt,
+        "dueIntervalMonths": months,
+    }
+    stored["validationDatesByBeaker"] = by
+    # Do not overwrite the other beaker's global display; keep legacy fields as this beaker's
+    # for older UIs that only read the instrument-wide pair.
+    stored["lastValidationDate"] = last
+    stored["nextValidationDate"] = nxt
+    stored["dueIntervalMonths"] = months
+    data_service.save_factory_settings(stored)
+    return dict(by[str(beaker)])
+
+
 def _resolve_validation_dates(factory_settings: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    """Single source for validation dates: latest validation report, else stored last; next always +1 year."""
+    """Legacy instrument-wide resolve (used when no beaker context). Prefer stored pair."""
+    fs = factory_settings or {}
+    last_dt = _parse_display_date(fs.get("lastValidationDate"))
+    if last_dt:
+        months = fs.get("dueIntervalMonths") or 12
+        try:
+            months = int(months)
+        except (TypeError, ValueError):
+            months = 12
+        if months not in (3, 6, 12):
+            months = 12
+        # If next already stored, keep it
+        if fs.get("nextValidationDate"):
+            return {
+                "lastValidationDate": fs.get("lastValidationDate"),
+                "nextValidationDate": fs.get("nextValidationDate"),
+                "dueIntervalMonths": months,
+            }
+        return _validation_dates_from_last(last_dt, months)
     try:
         computed = _compute_validation_dates_from_reports()
         if computed.get("lastValidationDate"):
             return computed
     except Exception as exc:
         print(f"[REPORT] Validation date compute failed: {exc}")
-    fs = factory_settings or {}
-    last_dt = _parse_display_date(fs.get("lastValidationDate"))
-    if last_dt:
-        return _validation_dates_from_last(last_dt)
     return {}
 
 
 def sync_factory_validation_dates() -> Dict[str, str]:
-    """Persist resolved validation dates into factory settings storage."""
+    """Legacy sync: keep stored last/next if present; otherwise derive +12 months."""
     stored = data_service.get_factory_settings() or {}
     dates = _resolve_validation_dates(stored)
     if not dates:
@@ -587,6 +759,8 @@ def sync_factory_validation_dates() -> Dict[str, str]:
     updated = dict(stored)
     updated["lastValidationDate"] = dates["lastValidationDate"]
     updated["nextValidationDate"] = dates["nextValidationDate"]
+    if dates.get("dueIntervalMonths") is not None:
+        updated["dueIntervalMonths"] = dates["dueIntervalMonths"]
     data_service.save_factory_settings(updated)
     return dates
 
@@ -613,7 +787,29 @@ def _compute_validation_dates_from_reports() -> Dict[str, str]:
             latest_dt = dt
     if latest_dt is None:
         return {}
-    return _validation_dates_from_last(latest_dt)
+    return _validation_dates_from_last(latest_dt, 12)
+
+
+def _report_beaker_number(report_data: Dict[str, Any]) -> Optional[int]:
+    td = report_data.get("testData") if isinstance(report_data.get("testData"), dict) else {}
+    for src in (report_data, td):
+        if not isinstance(src, dict):
+            continue
+        for key in ("beaker", "basket"):
+            try:
+                b = int(src.get(key))
+                if b in (1, 2):
+                    return b
+            except (TypeError, ValueError):
+                continue
+    derived = report_data.get("reportDerived") if isinstance(report_data.get("reportDerived"), dict) else {}
+    try:
+        b = int(derived.get("basket") or derived.get("beaker"))
+        if b in (1, 2):
+            return b
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -641,15 +837,45 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
         "reportApprovalStatus": report.get("reportApprovalStatus"),
         "approvalPassFail": report.get("approvalPassFail"),
         "approvalRemarks": report.get("approvalRemarks"),
+        "minTemp": report.get("minTemp")
+        if report.get("minTemp") is not None
+        else (td.get("minTemp") if isinstance(td, dict) else None),
+        "maxTemp": report.get("maxTemp")
+        if report.get("maxTemp") is not None
+        else (td.get("maxTemp") if isinstance(td, dict) else None),
+        "meanTemp": report.get("meanTemp")
+        if report.get("meanTemp") is not None
+        else (td.get("meanTemp") if isinstance(td, dict) else None),
         "abortCause": report.get("abortCause")
         or (td.get("abortCause") if isinstance(td, dict) else None),
+        "mode": report.get("mode")
+        or (td.get("mode") if isinstance(td, dict) else None),
+        "basketConfig": report.get("basketConfig")
+        if report.get("basketConfig") is not None
+        else (td.get("basketConfig") if isinstance(td, dict) else None),
+        "vesselTimes": report.get("vesselTimes")
+        or (td.get("vesselTimes") if isinstance(td, dict) else None)
+        or {},
+        "holeCompletionTimes": report.get("holeCompletionTimes")
+        or (td.get("holeCompletionTimes") if isinstance(td, dict) else None)
+        or {},
         "operatedByUsername": report.get("operatedByUsername")
         or (td.get("operatedByUsername") if isinstance(td, dict) else None)
-        or (td.get("employeeId") if isinstance(td, dict) else None),
+        or (td.get("employeeId") if isinstance(td, dict) else None)
+        or report.get("operatorUsername")
+        or (td.get("operatorUsername") if isinstance(td, dict) else None)
+        or report.get("operatorId")
+        or (td.get("operatorId") if isinstance(td, dict) else None),
         "operatorName": report.get("operatorName")
         or (td.get("operatorName") if isinstance(td, dict) else None),
         "employeeId": report.get("employeeId")
-        or (td.get("employeeId") if isinstance(td, dict) else None),
+        or (td.get("employeeId") if isinstance(td, dict) else None)
+        or report.get("operatorId")
+        or (td.get("operatorId") if isinstance(td, dict) else None)
+        or report.get("operatorUsername")
+        or (td.get("operatorUsername") if isinstance(td, dict) else None)
+        or report.get("operatedByUsername")
+        or (td.get("operatedByUsername") if isinstance(td, dict) else None),
         "reportDerived": report.get("reportDerived")
         or build_test_report_derived(
             td if isinstance(td, dict) else {},

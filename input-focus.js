@@ -100,6 +100,11 @@ function attachInputFocusHandlers(root){
     if(inp._cursor_focus_bound) return;
     inp._cursor_focus_bound = true;
     inp.addEventListener('focus', (ev)=>{
+      if (inp.readOnly || inp.disabled || inp.classList.contains('input-readonly') ||
+          inp.classList.contains('profile-identity-field')) {
+        try { inp.blur(); } catch (e) {}
+        return;
+      }
       const loginScreen = document.getElementById('screen-login');
       const loginActive = loginScreen && loginScreen.classList.contains('active');
       if (loginActive) {

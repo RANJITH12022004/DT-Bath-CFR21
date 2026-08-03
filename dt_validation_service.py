@@ -21,6 +21,8 @@ _audit_fn: Optional[Callable] = None
 _sessions: Dict[str, Dict[str, Any]] = {}
 
 STROKE_DURATION_SEC = 60
+# After START,STROKE the basket travels to the stroke start position before counting.
+STROKE_TRAVEL_DELAY_SEC = 1.5
 STROKE_MIN = 29
 STROKE_MAX = 32
 TEMP_HOLD_SEC = 120
@@ -55,7 +57,15 @@ def get_session(kind: str, basket: int) -> Optional[Dict[str, Any]]:
         out = dict(s)
     # Live remaining countdown for UI (1-min stroke / 2-min temp hold)
     state = out.get("state")
-    if kind == "stroke" and state == "RUNNING":
+    if kind == "stroke" and state == "STARTING":
+        # Travel-to-start delay — timer has not begun yet
+        out["remainingSec"] = int(out.get("durationSec") or STROKE_DURATION_SEC)
+        out["travelRemainingSec"] = max(
+            0.0,
+            float(out.get("travelDelaySec") or STROKE_TRAVEL_DELAY_SEC)
+            - (time.time() - float(out.get("commandAtEpoch") or time.time())),
+        )
+    elif kind == "stroke" and state == "RUNNING":
         started = float(out.get("startedAtEpoch") or 0)
         dur = float(out.get("durationSec") or STROKE_DURATION_SEC)
         out["remainingSec"] = max(0, int(round(dur - (time.time() - started))))
@@ -82,11 +92,12 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
     key = f"stroke:{basket}"
     with _lock:
         existing = _sessions.get(key)
-        if existing and existing.get("state") == "RUNNING":
+        if existing and existing.get("state") in ("STARTING", "RUNNING"):
             return {"ok": False, "error": "stroke validation already running"}
 
-    baseline = hw.reset_stroke_baseline()
     # Dt_Dr_Reddy / setting up.md: START,STROKE,Bx,A (stroke-only, not test START)
+    # Timer / pulse window starts only after STROKE_TRAVEL_DELAY_SEC (basket travels to start).
+    command_at = time.time()
     hw_result = hw.cmd_start_stroke(basket)
     if not hw_result.get("ok"):
         return {"ok": False, "error": hw_result.get("error") or "failed to start stroke motor", "hardware": hw_result}
@@ -94,13 +105,17 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
     session = {
         "kind": "stroke",
         "basket": basket,
-        "state": "RUNNING",
-        "startedAt": _now_iso(),
-        "startedAtEpoch": time.time(),
+        "state": "STARTING",
+        "commandAt": _now_iso(),
+        "commandAtEpoch": command_at,
+        "travelDelaySec": STROKE_TRAVEL_DELAY_SEC,
+        "startedAt": None,
+        "startedAtEpoch": None,
         "durationSec": STROKE_DURATION_SEC,
-        "baseline": baseline,
+        "baseline": None,
         "pulsesSeen": 0,
         "strokesPerMin": None,
+        "remainingSec": STROKE_DURATION_SEC,
         "status": None,
         "passed": None,
         "sensorSilent": False,
@@ -115,10 +130,15 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
         _sessions[key] = session
     _audit(
         "Validation started",
-        f"Stroke validation | Beaker {basket} | duration 60 s",
+        f"Stroke validation | Beaker {basket} | travel {STROKE_TRAVEL_DELAY_SEC}s then 60 s count",
         entity_type="validation",
         entity_id=f"stroke-{basket}",
-        extra={"basket": basket, "kind": "stroke", "mock": hw.is_mock_mode()},
+        extra={
+            "basket": basket,
+            "kind": "stroke",
+            "travelDelaySec": STROKE_TRAVEL_DELAY_SEC,
+            "mock": hw.is_mock_mode(),
+        },
     )
     threading.Thread(
         target=_stroke_worker,
@@ -154,6 +174,8 @@ def _build_stroke_report(session: Dict[str, Any], basket: int) -> Dict[str, Any]
         "operatorName": session.get("operatorName"),
         "operatorId": session.get("operatorId"),
         "operatorUsername": session.get("operatorUsername"),
+        "employeeId": session.get("operatorId") or session.get("operatorUsername"),
+        "operatedByUsername": session.get("operatorUsername") or session.get("operatorId"),
         "mock": session.get("mock"),
         "sensorSilent": session.get("sensorSilent"),
         "error": session.get("error"),
@@ -171,10 +193,39 @@ def _stroke_worker(basket: int) -> None:
     try:
         with _lock:
             session = _sessions.get(key) or {}
-            baseline = int((session.get("baseline") or {}).get(stroke_key) or 0)
-            started = float(session.get("startedAtEpoch") or time.time())
+            command_at = float(session.get("commandAtEpoch") or time.time())
+            travel_delay = float(session.get("travelDelaySec") or STROKE_TRAVEL_DELAY_SEC)
+
+        # Wait for basket to reach stroke start position before counting.
+        while True:
+            with _lock:
+                cur_sess = _sessions.get(key)
+                if not cur_sess or cur_sess.get("state") == "ABORTED":
+                    return
+            elapsed = time.time() - command_at
+            if elapsed >= travel_delay:
+                break
+            time.sleep(0.05)
+
+        # Baseline AFTER travel so move-to-start pulses are not counted.
+        baseline = hw.reset_stroke_baseline()
+        measure_start = time.time()
+        with _lock:
+            cur_sess = _sessions.get(key)
+            if not cur_sess or cur_sess.get("state") == "ABORTED":
+                return
+            _sessions[key].update({
+                "state": "RUNNING",
+                "baseline": baseline,
+                "startedAt": _now_iso(),
+                "startedAtEpoch": measure_start,
+                "pulsesSeen": 0,
+                "remainingSec": STROKE_DURATION_SEC,
+            })
+            started = measure_start
+
         deadline = started + STROKE_DURATION_SEC
-        last_count = baseline
+        last_count = int((baseline or {}).get(stroke_key) or 0)
         pulses = 0
         saw_any_line = False
         while time.time() < deadline:
@@ -256,6 +307,7 @@ def _stroke_worker(basket: int) -> None:
                 "strokesPerMin": strokes_per_min,
                 "status": status,
                 "sensorSilent": silent,
+                "travelDelaySec": STROKE_TRAVEL_DELAY_SEC,
                 "mock": hw.is_mock_mode(),
             },
         )
@@ -489,6 +541,8 @@ def _temp_worker(basket: int) -> None:
             "operatorName": session.get("operatorName"),
             "operatorId": session.get("operatorId"),
             "operatorUsername": session.get("operatorUsername"),
+            "employeeId": session.get("operatorId") or session.get("operatorUsername"),
+            "operatedByUsername": session.get("operatorUsername") or session.get("operatorId"),
             "mock": session.get("mock"),
             "error": error,
             "createdAt": _now_iso(),
@@ -583,3 +637,224 @@ def consume_report(kind: str, basket: int) -> Optional[Dict[str, Any]]:
             return None
         report = session.get("report")
         return dict(report) if report else None
+
+
+def _stroke_run_from_payload(stroke: Dict[str, Any], basket: int) -> Dict[str, Any]:
+    """Normalize a stroke result (session report or client snapshot) into a validationRuns entry."""
+    s = dict(stroke or {})
+    status = s.get("status") or "FAILED"
+    pulses = s.get("pulsesSeen")
+    if pulses is None:
+        pulses = s.get("actualStrokes")
+    if pulses is None:
+        pulses = s.get("strokesPerMin")
+    spm = s.get("strokesPerMin")
+    if spm is None:
+        spm = pulses
+    return {
+        "validationSubtype": "stroke",
+        "usp": "Stroke",
+        "status": status,
+        "strokesPerMin": spm,
+        "pulsesSeen": pulses,
+        "actualStrokes": pulses,
+        "actualTapCount": pulses,
+        "requiredRange": s.get("requiredRange") or f"{STROKE_MIN}-{STROKE_MAX}",
+        "requiredMin": s.get("requiredMin", STROKE_MIN),
+        "requiredMax": s.get("requiredMax", STROKE_MAX),
+        "durationSec": s.get("durationSec") or STROKE_DURATION_SEC,
+        "beaker": basket,
+        "basket": basket,
+        "sensorSilent": s.get("sensorSilent"),
+        "error": s.get("error"),
+        "completedAt": s.get("completedAt") or s.get("testEndTime") or s.get("endedAt"),
+        "testStartTime": s.get("testStartTime") or s.get("startedAt"),
+        "testEndTime": s.get("testEndTime") or s.get("endedAt") or s.get("completedAt"),
+    }
+
+
+def _temp_run_from_payload(temp: Dict[str, Any], basket: int) -> Dict[str, Any]:
+    t = dict(temp or {})
+    return {
+        "validationSubtype": "temp",
+        "usp": "Temperature",
+        "status": t.get("status") or "FAILED",
+        "setTemperature": t.get("setTemperature"),
+        "minTemp": t.get("minTemp"),
+        "maxTemp": t.get("maxTemp"),
+        "maxDeviation": t.get("maxDeviation"),
+        "requiredDeviation": t.get("requiredDeviation", TEMP_DEVIATION_LIMIT),
+        "beaker": basket,
+        "basket": basket,
+        "error": t.get("error"),
+        "durationSec": t.get("durationSec") or TEMP_HOLD_SEC,
+        "completedAt": t.get("completedAt") or t.get("testEndTime") or t.get("endedAt"),
+        "testStartTime": t.get("testStartTime") or t.get("holdStartedAt") or t.get("startedAt"),
+        "testEndTime": t.get("testEndTime") or t.get("endedAt") or t.get("completedAt"),
+    }
+
+
+def build_combined_validation_report(
+    basket: int,
+    *,
+    stroke_payload: Optional[Dict[str, Any]] = None,
+    temp_payload: Optional[Dict[str, Any]] = None,
+    pending_due: Optional[Dict[str, Any]] = None,
+    operator: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build one pending validation report with stroke + temp runs.
+    Consumes completed temp session report when temp_payload is omitted.
+    """
+    basket = int(basket)
+    stroke_src = dict(stroke_payload or {})
+    if not stroke_src:
+        stroke_src = consume_report("stroke", basket) or {}
+    temp_src = dict(temp_payload or {})
+    if not temp_src:
+        temp_src = consume_report("temp", basket) or {}
+        # Also clear stroke if still present
+        try:
+            consume_report("stroke", basket)
+        except Exception:
+            pass
+
+    stroke_run = _stroke_run_from_payload(stroke_src, basket)
+    temp_run = _temp_run_from_payload(temp_src, basket)
+    stroke_pass = str(stroke_run.get("status") or "").upper() == "PASSED"
+    temp_pass = str(temp_run.get("status") or "").upper() == "PASSED"
+    overall = "PASSED" if (stroke_pass and temp_pass) else "FAILED"
+
+    op = operator or {}
+    op_name = (
+        stroke_src.get("operatorName")
+        or temp_src.get("operatorName")
+        or op.get("name")
+    )
+    op_id = (
+        stroke_src.get("operatorId")
+        or temp_src.get("operatorId")
+        or op.get("employeeId")
+        or op.get("id")
+    )
+    op_user = (
+        stroke_src.get("operatorUsername")
+        or temp_src.get("operatorUsername")
+        or op.get("username")
+    )
+
+    due = dict(pending_due or {}) if isinstance(pending_due, dict) else {}
+    if due:
+        due.setdefault("dueKind", "validation")
+        due.setdefault("beaker", basket)
+
+    report = {
+        "type": "validation",
+        "validationSubtype": "combined",
+        "name": f"Validation Report – Stroke & Temperature (Basket {basket})",
+        "status": overall,
+        "beaker": basket,
+        "basket": basket,
+        "validationRuns": [stroke_run, temp_run],
+        # Flat convenience fields (stroke primary + temp)
+        "strokesPerMin": stroke_run.get("strokesPerMin"),
+        "pulsesSeen": stroke_run.get("pulsesSeen"),
+        "actualStrokes": stroke_run.get("actualStrokes"),
+        "requiredRange": stroke_run.get("requiredRange"),
+        "setTemperature": temp_run.get("setTemperature"),
+        "minTemp": temp_run.get("minTemp"),
+        "maxTemp": temp_run.get("maxTemp"),
+        "maxDeviation": temp_run.get("maxDeviation"),
+        "requiredDeviation": temp_run.get("requiredDeviation"),
+        "operatorName": op_name,
+        "operatorId": op_id,
+        "operatorUsername": op_user,
+        "employeeId": op_id or op_user,
+        "operatedByUsername": op_user or op_id,
+        "mock": bool(stroke_src.get("mock") or temp_src.get("mock") or hw.is_mock_mode()),
+        "pendingValidationDue": due or None,
+        "createdAt": _now_iso(),
+        "completedAt": temp_run.get("completedAt") or stroke_run.get("completedAt") or _now_iso(),
+        "testStartTime": stroke_run.get("testStartTime"),
+        "testEndTime": temp_run.get("testEndTime") or stroke_run.get("testEndTime"),
+    }
+    return report
+
+
+def build_aborted_combined_validation_report(
+    basket: int,
+    *,
+    stroke_payload: Optional[Dict[str, Any]] = None,
+    temp_payload: Optional[Dict[str, Any]] = None,
+    phase: Optional[str] = None,
+    operator: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build one pending aborted validation report for Beaker 1/2.
+    Uses client stroke snapshot when provided; otherwise consumes session reports
+    after abort_stroke/abort_temp have stamped them.
+    """
+    basket = int(basket)
+    stroke_src = dict(stroke_payload or {}) if isinstance(stroke_payload, dict) else {}
+    if not stroke_src:
+        stroke_src = consume_report("stroke", basket) or {}
+    temp_src = dict(temp_payload or {}) if isinstance(temp_payload, dict) else {}
+    if not temp_src:
+        temp_src = consume_report("temp", basket) or {}
+
+    phase_l = str(phase or "").strip().lower()
+    stroke_done = bool(stroke_src) and str(stroke_src.get("status") or "").upper() in (
+        "PASSED",
+        "FAILED",
+        "ABORTED",
+    )
+    # Mid-stroke abort: force aborted stroke run even if session snapshot is partial
+    if not stroke_src or phase_l == "stroke" or (
+        phase_l in ("", "stroke") and not stroke_done
+    ):
+        if not stroke_src:
+            stroke_src = {}
+        stroke_src = dict(stroke_src)
+        stroke_src["status"] = "ABORTED"
+        stroke_src["aborted"] = True
+        stroke_src.setdefault("error", "aborted by operator")
+    elif str(stroke_src.get("status") or "").upper() not in ("PASSED", "FAILED", "ABORTED"):
+        stroke_src = dict(stroke_src)
+        stroke_src["status"] = "ABORTED"
+        stroke_src["aborted"] = True
+        stroke_src.setdefault("error", "aborted by operator")
+
+    # Temp not started or in progress → aborted run
+    temp_finished = str(temp_src.get("status") or "").upper() in ("PASSED", "FAILED")
+    if not temp_src or not temp_finished:
+        temp_src = dict(temp_src or {})
+        temp_src["status"] = "ABORTED"
+        temp_src["aborted"] = True
+        if not temp_src.get("error"):
+            temp_src["error"] = (
+                "not started — session aborted"
+                if phase_l in ("stroke", "between", "") and not temp_finished
+                else "aborted by operator"
+            )
+
+    report = build_combined_validation_report(
+        basket,
+        stroke_payload=stroke_src,
+        temp_payload=temp_src,
+        pending_due=None,
+        operator=operator,
+    )
+    report["status"] = "ABORTED"
+    report["aborted"] = True
+    report["abortCause"] = "operator"
+    report["pendingValidationDue"] = None
+    report["name"] = f"Validation Report – Stroke & Temperature (Basket {basket})"
+    # Mark runs aborted where needed
+    runs = []
+    for run in report.get("validationRuns") or []:
+        r = dict(run or {})
+        if str(r.get("status") or "").upper() not in ("PASSED", "FAILED"):
+            r["status"] = "ABORTED"
+        runs.append(r)
+    report["validationRuns"] = runs
+    return report

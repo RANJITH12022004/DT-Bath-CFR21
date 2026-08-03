@@ -7,6 +7,7 @@ Reference-aligned A4 and thermal printing over serial.
 import logging
 import os
 import pathlib
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -15,6 +16,11 @@ try:
     import serial
 except ImportError:
     serial = None
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 try:
     import bridge_services
@@ -63,8 +69,17 @@ THERMAL_CANDIDATES = ["/dev/ttyAMA3", "/dev/ttyUSB0", "/dev/ttyUSB1", "COM3", "C
 THERMAL_WIDTH = 32
 THERMAL_LINE_CHUNK = 32
 A4_TEXT_WIDTH = 80
-# Blank lines after content so date/time and footer clear the cutter (avoid half-cut).
-THERMAL_POST_PRINT_FEED_LINES = 10
+# Blank lines after printed date/time so footer clears the cutter (avoid half-cut).
+THERMAL_POST_PRINT_FEED_LINES = 3
+# ESC/POS raster width for 58mm thermal (must be multiple of 8).
+THERMAL_RASTER_WIDTH = 384
+THERMAL_LOGO_PRINT_WIDTH = 384  # full RLE mark + RAISE LAB EQUIPMENT across slip
+_ASSETS_DIR = pathlib.Path(__file__).resolve().parent / "assets"
+_THERMAL_LOGO_CANDIDATES = (
+    _ASSETS_DIR / "rle_favicon.png",
+    _ASSETS_DIR / "favicon-32.png",
+    _ASSETS_DIR / "rle_logo.png",
+)
 
 _PRINTER_INIT_SEQ = b"\x1b\x40"
 _log = logging.getLogger(__name__)
@@ -74,6 +89,12 @@ _a4_port = None
 _a4_baud = None
 _thermal_port = None
 _thermal_baud = None
+_print_locks = {
+    "a4": threading.Lock(),
+    "thermal": threading.Lock(),
+}
+_thermal_logo_raster_cache: Optional[bytes] = None
+_thermal_logo_raster_mtime: Optional[float] = None
 
 
 def init(config):
@@ -145,6 +166,139 @@ def _send_printer_init(ser) -> None:
     ser.write(_PRINTER_INIT_SEQ)
     ser.flush()
     time.sleep(0.05)
+
+
+def _resolve_thermal_logo_path() -> Optional[pathlib.Path]:
+    for path in _THERMAL_LOGO_CANDIDATES:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _pil_to_escpos_raster(img: "Image.Image", width_pixels: int) -> bytes:
+    """Convert a PIL image to ESC/POS GS v 0 raster bytes (width multiple of 8)."""
+    width_pixels = max(8, int(width_pixels) - (int(width_pixels) % 8))
+    img = img.convert("L")
+    w, h = img.size
+    if w != width_pixels:
+        new_h = max(1, int(round(h * (width_pixels / float(w)))))
+        img = img.resize((width_pixels, new_h), Image.LANCZOS)
+        w, h = img.size
+    # Dark pixels print (1), light stay white (0)
+    bw = img.point(lambda p: 0 if p > 160 else 1, "1")
+    m = 0
+    xL = (w // 8) & 0xFF
+    xH = ((w // 8) >> 8) & 0xFF
+    yL = h & 0xFF
+    yH = (h >> 8) & 0xFF
+    header = bytes([0x1D, 0x76, 0x30, m, xL, xH, yL, yH])
+    row_bytes = w // 8
+    raw = bw.tobytes()
+    out = bytearray(header)
+    for row in range(h):
+        start = row * row_bytes
+        out.extend(raw[start : start + row_bytes])
+    return bytes(out)
+
+
+def _build_centered_thermal_logo_raster(
+    logo_path: pathlib.Path,
+    *,
+    paper_width: int = THERMAL_RASTER_WIDTH,
+    logo_width: int = THERMAL_LOGO_PRINT_WIDTH,
+) -> bytes:
+    if Image is None:
+        raise RuntimeError("Pillow (PIL) is required for thermal logo printing")
+    paper_width = max(8, int(paper_width) - (int(paper_width) % 8))
+    logo_width = max(8, int(logo_width) - (int(logo_width) % 8))
+    logo_width = min(logo_width, paper_width)
+
+    src = Image.open(logo_path)
+    src.load()
+
+    if src.mode in ("1", "L"):
+        mono = src.convert("L")
+    else:
+        # Color brand art (navy bg + blue/orange mark) → mono for thermal
+        rgba = src.convert("RGBA")
+        gray = Image.new("L", rgba.size, 255)
+        px = rgba.load()
+        gp = gray.load()
+        w0, h0 = rgba.size
+        for y in range(h0):
+            for x in range(w0):
+                r, g, b, a = px[x, y]
+                if a < 20:
+                    continue
+                if r < 50 and g < 55 and b < 70:
+                    continue
+                if (r + g + b) < 90:
+                    continue
+                # Any visible brand color → black
+                if (r + g + b) > 120 or max(r, g, b) > 100:
+                    gp[x, y] = 0
+        mono = gray
+
+    # Trim whitespace
+    inv = Image.eval(mono, lambda p: 255 - p)
+    bbox = inv.getbbox()
+    if bbox:
+        mono = mono.crop(bbox)
+
+    new_h = max(1, int(round(mono.height * (logo_width / float(max(1, mono.width))))))
+    mono = mono.resize((logo_width, new_h), Image.LANCZOS)
+    # Hard threshold after scale
+    mono = mono.point(lambda p: 0 if p < 160 else 255)
+
+    canvas = Image.new("L", (paper_width, mono.height), 255)
+    ox = max(0, (paper_width - logo_width) // 2)
+    canvas.paste(mono, (ox, 0))
+    return _pil_to_escpos_raster(canvas, paper_width)
+
+
+def get_thermal_logo_raster() -> Optional[bytes]:
+    """Cached ESC/POS raster for the RLE favicon printed at the top of thermal slips."""
+    global _thermal_logo_raster_cache, _thermal_logo_raster_mtime
+    path = _resolve_thermal_logo_path()
+    if path is None or Image is None:
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    if _thermal_logo_raster_cache is not None and _thermal_logo_raster_mtime == mtime:
+        return _thermal_logo_raster_cache
+    try:
+        raster = _build_centered_thermal_logo_raster(path)
+        _thermal_logo_raster_cache = raster
+        _thermal_logo_raster_mtime = mtime
+        return raster
+    except Exception as e:
+        _log.warning("thermal logo raster build failed: %s", e)
+        return None
+
+
+def _send_bytes_chunked_raw(ser, data: bytes, baud: int, chunk_size: int = 512) -> None:
+    delay = 0.08 if baud <= 9600 else 0.04
+    for i in range(0, len(data), chunk_size):
+        ser.write(data[i : i + chunk_size])
+        ser.flush()
+        if i + chunk_size < len(data):
+            time.sleep(delay)
+
+
+def _send_thermal_logo(ser, baud: int) -> bool:
+    raster = get_thermal_logo_raster()
+    if not raster:
+        return False
+    _send_bytes_chunked_raw(ser, raster, baud, chunk_size=512 if baud <= 9600 else 1024)
+    ser.write(b"\n")
+    ser.flush()
+    time.sleep(0.05)
+    return True
 
 
 def _send_bytes_chunked(ser, data: bytes, baud: int, chunk_size: int = 64) -> None:
@@ -229,10 +383,7 @@ def _send_text_to_thermal(ser, text: str, baud: int) -> None:
             ser.write(payload)
             ser.flush()
             time.sleep(line_delay)
-    for _ in range(THERMAL_POST_PRINT_FEED_LINES):
-        ser.write(b"\n")
-        ser.flush()
-        time.sleep(0.06)
+    # Trailing blank feed is already included in formatted thermal text.
     time.sleep(0.5)
 
 
@@ -331,6 +482,21 @@ def _strip_approver_role_label(name: Any) -> str:
         if head:
             return head
     return s
+
+
+def _resolve_employee_id(report_data: Any = None, td: Any = None) -> str:
+    """Employee ID for print/preview — accept DT operatorId aliases too."""
+    for src in (report_data, td):
+        if not isinstance(src, dict):
+            continue
+        for key in ("employeeId", "operatorId", "operatorUsername", "operatedByUsername"):
+            val = src.get(key)
+            if val is None:
+                continue
+            text = str(val).strip()
+            if text and text != "--":
+                return text
+    return "--"
 
 
 def _wrap_lines(lines: list, width: int) -> list:
@@ -479,18 +645,16 @@ def _drum_approval_results(report_data: Dict[str, Any], td: Dict[str, Any]) -> l
 def _approval_result_pairs(
     report_data: Dict[str, Any], td: Dict[str, Any], report_type: str = "test"
 ) -> list:
-    """Approval pass/fail lines: single Result for validation, drum rows for test reports."""
+    """Approval pass/fail lines: single Result (Hardness-Cfr / DT-CFR)."""
+    result = _effective_approval_result(report_data, td)
     rtype = str(report_type or "test").strip().lower()
-    if rtype == "validation":
-        result = _effective_approval_result(report_data, td)
-        if not result:
-            result = _validation_overall_status_label(
-                td if isinstance(td, dict) else {},
-                report_data if isinstance(report_data, dict) else {},
-            )
-        normalized = _normalize_pass_fail(result)
-        return [("Result", normalized or _cell_str(result))]
-    return _drum_approval_results(report_data, td)
+    if rtype == "validation" and not result:
+        result = _validation_overall_status_label(
+            td if isinstance(td, dict) else {},
+            report_data if isinstance(report_data, dict) else {},
+        )
+    normalized = _normalize_pass_fail(result)
+    return [("Pass / Fail", normalized or _cell_str(result) or "--")]
 
 
 def _effective_step_row_count(td: Dict[str, Any]) -> int:
@@ -990,33 +1154,57 @@ def _validation_overall_status_label(td: Dict[str, Any], report_data: Dict[str, 
     return s or "--"
 
 
+def _validation_duration_sec(run: Dict[str, Any]):
+    """Seconds for a validation run, if available."""
+    if not isinstance(run, dict):
+        return None
+    for key in ("validationDurationSec", "durationSeconds", "durationSec", "elapsedSeconds"):
+        val = run.get(key)
+        if val in (None, "", "--"):
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _validation_time_minutes(run: Dict[str, Any]):
+    """Duration in minutes for thermal display (legacy friability + DT)."""
+    dur = _validation_duration_sec(run)
+    if dur is not None:
+        return round(dur / 60.0, 2) if dur >= 60 else round(dur / 60.0, 3)
+    for key in ("durationMinutes", "setDurationMinutes", "timeMinutes"):
+        val = run.get(key) if isinstance(run, dict) else None
+        if val in (None, "", "--"):
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _format_thermal_validation_runs_block(runs: list, width: int = THERMAL_WIDTH) -> list:
+    """Thermal VALIDATION RESULTS — DT stroke / temperature / calibration."""
     w = width
     lines = ["", "VALIDATION RESULTS", _thermal_sep("-", w)]
-    for idx, run in enumerate(runs):
+    for idx, run in enumerate(runs or []):
+        if not isinstance(run, dict):
+            continue
         if idx > 0:
             lines.append("")
         lines.append(_validation_usp_label(run))
-        if _is_friability_validation_run(run):
-            lines.append(f"RPM: {_cell_str(run.get('rpm') or run.get('tapsMin'))}")
-            lines.append(f"Duration (min): {_cell_str(_validation_time_minutes(run))}")
-            lines.append(f"Expected rotations: {_validation_expected_display(run)}")
-            lines.append(f"Actual rotations: {_cell_str(_validation_actual_value(run))}")
-        else:
-            lines.append(f"Taps/Min: {_cell_str(run.get('tapsMin'))}")
-            lines.append(f"Drop(mm): {_cell_str(run.get('dropHeight'))}")
-            lines.append(f"Expected: {_validation_expected_display(run)}")
-            lines.append(f"Actual: {_cell_str(_validation_actual_value(run))}")
+        for label, value in _validation_run_detail_pairs(run):
+            lines.append(f"{label}: {_cell_str(value)}")
         dur = _validation_duration_sec(run)
         if dur is not None:
             try:
                 lines.append(f"Duration: {int(dur)} s")
             except (TypeError, ValueError):
                 pass
-        start = run.get("validationStartTime") or run.get("testStartTime")
-        if start:
-            lines.append(f"Start Time: {_format_ts_readable(start)}")
-        lines.append(f"Status: {_cell_str(run.get('status'))}")
+    if not any(isinstance(r, dict) for r in (runs or [])):
+        lines.append("No validation data")
     lines.extend(["", _thermal_sep("-", w), ""])
     return lines
 
@@ -1182,16 +1370,59 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
     if str(mode).lower() == "timer":
         set_dur = td.get("setDuration") or td.get("setDurationMinutes")
         if set_dur is not None:
-            detail_pairs.insert(6, ("Set Duration", set_dur))
+            detail_pairs.insert(4, ("Set Duration", set_dur))
+
+    # STATISTICS: tap times (manual 3/6); N/A for 1-tube; omitted for timer
+    stats = report_data.get("statistics") if isinstance(report_data.get("statistics"), dict) else None
+    if not stats and isinstance(td.get("statistics"), dict):
+        stats = td.get("statistics")
+    if not stats:
+        try:
+            from report_service import compute_test_report_statistics
+
+            stats = compute_test_report_statistics(td if isinstance(td, dict) else {}) or {}
+        except Exception:
+            stats = {}
+    mode_l = str(mode).lower()
+    show_stats = mode_l != "timer"
+    stats_pairs = []
+    if show_stats:
+        if isinstance(stats, dict) and stats:
+            for key in ("First Tap", "Second Tap", "Completion"):
+                if key in stats and isinstance(stats[key], dict):
+                    stats_pairs.append((key, stats[key].get("value", "N/A")))
+                elif key in stats:
+                    stats_pairs.append((key, stats[key]))
+            if not stats_pairs:
+                for key, val in stats.items():
+                    if key.startswith("Mean temperature") or key.startswith("Min temperature") or key.startswith("Max temperature"):
+                        continue
+                    if isinstance(val, dict):
+                        stats_pairs.append((key, val.get("value", "--")))
+                    else:
+                        stats_pairs.append((key, val))
+        if not stats_pairs:
+            stats_pairs = [
+                ("First Tap", "N/A"),
+                ("Second Tap", "N/A"),
+                ("Completion", "N/A"),
+            ]
 
     if thermal:
         lines.extend(["", "TEST DETAILS"])
         for k, v in detail_pairs:
             lines.append(f"{k}: {_cell_str(v)}")
+        if show_stats:
+            lines.extend(["", "STATISTICS"])
+            for k, v in stats_pairs:
+                lines.append(f"{k}: {_cell_str(v)}")
     else:
         eq = _section_sep("=", width, False)
         lines.extend(["", eq, "TEST DETAILS", dash if dash else ""])
         _append_two_column_pairs(lines, [(k, _cell_str(v)) for k, v in detail_pairs], width)
+        if show_stats:
+            lines.extend(["", eq, "STATISTICS", dash if dash else ""])
+            _append_two_column_pairs(lines, [(k, _cell_str(v)) for k, v in stats_pairs], width)
 
     vessel_times = td.get("vesselTimes") or report_data.get("vesselTimes") or {}
     if isinstance(vessel_times, dict) and vessel_times and str(mode).lower() == "manual":
@@ -1255,7 +1486,8 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
     title = "DISINTEGRATION VALIDATION REPORT" if rtype == "validation" else "DISINTEGRATION TEST REPORT"
     lines: list = []
     if thermal:
-        lines.extend([sep, "RAISE LAB EQUIPMENT", "Tablet Disintegration Tester", ""])
+        # Logo raster already includes RAISE LAB EQUIPMENT — do not repeat the brand line.
+        lines.extend([sep, "Tablet Disintegration Tester", ""])
     else:
         lines.extend([sep, "RAISE LAB EQUIPMENT".center(width), "Tablet Disintegration Tester".center(width), ""])
     lines.append(title if thermal else title.center(width))
@@ -1328,7 +1560,8 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
                 f"Basket: {derived.get('basket', td.get('basket', '--'))}",
                 f"Mode: {derived.get('mode', td.get('mode', '--'))}",
                 f"Set Temp: {derived.get('setTemperature', '--')} C",
-                f"Min/Max Temp: {td.get('minTemp', '--')}/{td.get('maxTemp', '--')} C",
+                f"Min Temp: {td.get('minTemp', report_data.get('minTemp', '--'))} C",
+                f"Max Temp: {td.get('maxTemp', report_data.get('maxTemp', '--'))} C",
                 f"Tubes: {derived.get('basketConfig', td.get('basketConfig', '--'))}",
                 f"Duration: {derived.get('durationFormatted', '--')}",
                 f"Test Start Date: {start_date}",
@@ -1347,8 +1580,8 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
                     ("Basket", derived.get("basket", td.get("basket", "--"))),
                     ("Mode", derived.get("mode", td.get("mode", "--"))),
                     ("Set Temp (°C)", derived.get("setTemperature", "--")),
-                    ("Min Temp (°C)", td.get("minTemp", "--")),
-                    ("Max Temp (°C)", td.get("maxTemp", "--")),
+                    ("Min Temp (°C)", td.get("minTemp", report_data.get("minTemp", "--"))),
+                    ("Max Temp (°C)", td.get("maxTemp", report_data.get("maxTemp", "--"))),
                     ("Tube Count", derived.get("basketConfig", td.get("basketConfig", "--"))),
                     ("Duration", derived.get("durationFormatted", "--")),
                     ("Test Start Date", start_date),
@@ -1371,7 +1604,7 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
         lines.extend(
             [
                 f"Operated by: {report_data.get('operatorName') or td.get('operatorName', '--')}",
-                f"Employee ID: {td.get('employeeId', '--')}",
+                f"Employee ID: {_resolve_employee_id(report_data, td)}",
             ]
         )
         for label, value in approval_pairs:
@@ -1391,7 +1624,7 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
             lines,
             [
                 ("Operated by", report_data.get("operatorName") or td.get("operatorName", "--")),
-                ("Employee ID", td.get("employeeId", "--")),
+                ("Employee ID", _resolve_employee_id(report_data, td)),
             ] + approval_pairs + [
                 ("Approved By", _strip_approver_role_label(report_data.get("approvedBy"))),
                 ("Approver ID", report_data.get("approvedByUsername", "--")),
@@ -1415,6 +1648,12 @@ def format_for_a4_printer(
     include_printed_timestamp: bool = True,
     timestamp_kind: str = "printed",
 ) -> str:
+    try:
+        from report_service import enrich_report_context
+
+        report_data = enrich_report_context(dict(report_data or {}))
+    except Exception:
+        pass
     text = _format_report_text(report_data, width=A4_TEXT_WIDTH).rstrip("\n")
     if not include_printed_timestamp:
         return text
@@ -1450,6 +1689,12 @@ def _thermal_trailing_feed() -> str:
 def format_for_thermal_printer(
     report_data: Dict[str, Any], *, timestamp_kind: str = "printed"
 ) -> str:
+    try:
+        from report_service import enrich_report_context
+
+        report_data = enrich_report_context(dict(report_data or {}))
+    except Exception:
+        pass
     text = _format_report_text(report_data, width=THERMAL_WIDTH).rstrip("\n")
     footer = "\n".join(_report_timestamp_footer_lines(timestamp_kind))
     return text + "\n\n" + footer + _thermal_trailing_feed()
@@ -1480,89 +1725,110 @@ def save_report_text_files(report_data: Dict[str, Any], report_id: int, reports_
 
 
 def print_report_from_file(txt_path: pathlib.Path, port: str, baud: int, printer_type: str = "a4") -> Dict[str, Any]:
-    txt_path = pathlib.Path(txt_path)
-    if not txt_path.exists() or not txt_path.is_file():
-        return {"success": False, "error": f"Report file not found: {txt_path}", "port": port}
-    if not serial:
-        return {"success": False, "error": "pyserial not installed", "port": port}
-    if printer_type == "thermal":
-        try:
-            port = _probe_port(port, THERMAL_CANDIDATES)
-        except FileNotFoundError as e:
-            return {"success": False, "error": f"Printer port not found: {e.filename or port}", "port": port}
-    elif not _port_exists(port):
-        return {"success": False, "error": f"Printer port not found: {port}", "port": port}
+    kind = "thermal" if printer_type == "thermal" else "a4"
+    lock = _print_locks[kind]
+    if not lock.acquire(blocking=False):
+        return {"success": False, "error": f"{kind.upper()} printer busy — wait for the current print to finish", "port": port}
     try:
-        data = txt_path.read_bytes()
-        if printer_type == "a4":
+        txt_path = pathlib.Path(txt_path)
+        if not txt_path.exists() or not txt_path.is_file():
+            return {"success": False, "error": f"Report file not found: {txt_path}", "port": port}
+        if not serial:
+            return {"success": False, "error": "pyserial not installed", "port": port}
+        if printer_type == "thermal":
+            try:
+                port = _probe_port(port, THERMAL_CANDIDATES)
+            except FileNotFoundError as e:
+                return {"success": False, "error": f"Printer port not found: {e.filename or port}", "port": port}
+        elif not _port_exists(port):
+            return {"success": False, "error": f"Printer port not found: {port}", "port": port}
+        try:
+            data = txt_path.read_bytes()
+            if printer_type == "a4":
+                ser = _open_a4_serial(port, baud)
+                try:
+                    ser.reset_output_buffer()
+                    ser.flush()
+                    _send_printer_init(ser)
+                    _send_bytes_chunked(ser, data, baud, chunk_size=512)
+                    time.sleep(0.5)
+                    return {"success": True, "port": port}
+                finally:
+                    ser.close()
+            ser = serial.Serial(port=port, baudrate=baud, timeout=2.0)
+            try:
+                _send_printer_init(ser)
+                time.sleep(0.2)
+                _send_thermal_logo(ser, baud)
+                _send_text_to_thermal(ser, data.decode("utf-8", errors="replace"), baud)
+                time.sleep(0.5)
+                return {"success": True, "port": port}
+            finally:
+                ser.close()
+        except Exception as e:
+            return {"success": False, "error": str(e), "port": port}
+    finally:
+        lock.release()
+
+
+def print_a4_report(report_data: Dict[str, Any], printer_port: Optional[str] = None) -> Dict[str, Any]:
+    lock = _print_locks["a4"]
+    if not lock.acquire(blocking=False):
+        return {"success": False, "error": "A4 printer busy — wait for the current print to finish"}
+    try:
+        port = printer_port or _a4_port
+        baud = _a4_baud
+        if not serial:
+            return {"success": False, "error": "pyserial not installed", "port": port}
+        if not _port_exists(port):
+            return {"success": False, "error": f"A4 printer port not found: {port}", "port": port}
+        try:
+            text = format_for_a4_printer(report_data).rstrip() + "\r\n\x0c"
             ser = _open_a4_serial(port, baud)
             try:
                 ser.reset_output_buffer()
                 ser.flush()
                 _send_printer_init(ser)
-                _send_bytes_chunked(ser, data, baud, chunk_size=512)
+                _send_text_to_a4(ser, text, baud)
                 time.sleep(0.5)
                 return {"success": True, "port": port}
             finally:
                 ser.close()
-        ser = serial.Serial(port=port, baudrate=baud, timeout=2.0)
-        try:
-            _send_printer_init(ser)
-            time.sleep(0.2)
-            _send_text_to_thermal(ser, data.decode("utf-8", errors="replace"), baud)
-            time.sleep(0.5)
-            return {"success": True, "port": port}
-        finally:
-            ser.close()
-    except Exception as e:
-        return {"success": False, "error": str(e), "port": port}
-
-
-def print_a4_report(report_data: Dict[str, Any], printer_port: Optional[str] = None) -> Dict[str, Any]:
-    port = printer_port or _a4_port
-    baud = _a4_baud
-    if not serial:
-        return {"success": False, "error": "pyserial not installed", "port": port}
-    if not _port_exists(port):
-        return {"success": False, "error": f"A4 printer port not found: {port}", "port": port}
-    try:
-        text = format_for_a4_printer(report_data).rstrip() + "\r\n\x0c"
-        ser = _open_a4_serial(port, baud)
-        try:
-            ser.reset_output_buffer()
-            ser.flush()
-            _send_printer_init(ser)
-            _send_text_to_a4(ser, text, baud)
-            time.sleep(0.5)
-            return {"success": True, "port": port}
-        finally:
-            ser.close()
-    except Exception as e:
-        return {"success": False, "error": str(e), "port": port}
+        except Exception as e:
+            return {"success": False, "error": str(e), "port": port}
+    finally:
+        lock.release()
 
 
 def print_thermal_report(report_data: Dict[str, Any], printer_port: Optional[str] = None) -> Dict[str, Any]:
-    port = printer_port or _thermal_port
-    baud = _thermal_baud
-    if not serial:
-        return {"success": False, "error": "pyserial not installed", "port": port}
+    lock = _print_locks["thermal"]
+    if not lock.acquire(blocking=False):
+        return {"success": False, "error": "Thermal printer busy — wait for the current print to finish"}
     try:
-        port = _probe_port(port, THERMAL_CANDIDATES)
-    except FileNotFoundError as e:
-        return {"success": False, "error": f"Thermal printer port not found: {e.filename or port}", "port": port}
-    try:
-        text = format_for_thermal_printer(report_data)
-        ser = serial.Serial(port=port, baudrate=baud, timeout=2.0)
+        port = printer_port or _thermal_port
+        baud = _thermal_baud
+        if not serial:
+            return {"success": False, "error": "pyserial not installed", "port": port}
         try:
-            _send_printer_init(ser)
-            time.sleep(0.2)
-            _send_text_to_thermal(ser, text, baud)
-            time.sleep(0.5)
-            return {"success": True, "port": port}
-        finally:
-            ser.close()
-    except Exception as e:
-        return {"success": False, "error": str(e), "port": port}
+            port = _probe_port(port, THERMAL_CANDIDATES)
+        except FileNotFoundError as e:
+            return {"success": False, "error": f"Thermal printer port not found: {e.filename or port}", "port": port}
+        try:
+            text = format_for_thermal_printer(report_data)
+            ser = serial.Serial(port=port, baudrate=baud, timeout=2.0)
+            try:
+                _send_printer_init(ser)
+                time.sleep(0.2)
+                _send_thermal_logo(ser, baud)
+                _send_text_to_thermal(ser, text, baud)
+                time.sleep(0.5)
+                return {"success": True, "port": port}
+            finally:
+                ser.close()
+        except Exception as e:
+            return {"success": False, "error": str(e), "port": port}
+    finally:
+        lock.release()
 
 
 def _recipe_mode_label(recipe: Dict[str, Any]) -> str:
@@ -1686,49 +1952,62 @@ def _format_recipe_text(recipe_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
 
 
 def print_recipe_a4(recipe_data: Dict[str, Any], printer_port: Optional[str] = None) -> Dict[str, Any]:
-    port = printer_port or _a4_port
-    baud = _a4_baud
-    if not serial:
-        return {"success": False, "error": "pyserial not installed", "port": port}
-    if not _port_exists(port):
-        return {"success": False, "error": f"A4 printer port not found: {port}", "port": port}
+    lock = _print_locks["a4"]
+    if not lock.acquire(blocking=False):
+        return {"success": False, "error": "A4 printer busy — wait for the current print to finish"}
     try:
-        text = _format_recipe_text(recipe_data, width=A4_TEXT_WIDTH).rstrip() + "\r\n\x0c"
-        ser = _open_a4_serial(port, baud)
+        port = printer_port or _a4_port
+        baud = _a4_baud
+        if not serial:
+            return {"success": False, "error": "pyserial not installed", "port": port}
+        if not _port_exists(port):
+            return {"success": False, "error": f"A4 printer port not found: {port}", "port": port}
         try:
-            ser.reset_output_buffer()
-            ser.flush()
-            _send_printer_init(ser)
-            _send_text_to_a4(ser, text, baud)
-            time.sleep(0.5)
-            return {"success": True, "port": port}
-        finally:
-            ser.close()
-    except Exception as e:
-        return {"success": False, "error": str(e), "port": port}
+            text = _format_recipe_text(recipe_data, width=A4_TEXT_WIDTH).rstrip() + "\r\n\x0c"
+            ser = _open_a4_serial(port, baud)
+            try:
+                ser.reset_output_buffer()
+                ser.flush()
+                _send_printer_init(ser)
+                _send_text_to_a4(ser, text, baud)
+                time.sleep(0.5)
+                return {"success": True, "port": port}
+            finally:
+                ser.close()
+        except Exception as e:
+            return {"success": False, "error": str(e), "port": port}
+    finally:
+        lock.release()
 
 
 def print_recipe_thermal(recipe_data: Dict[str, Any], printer_port: Optional[str] = None) -> Dict[str, Any]:
-    port = printer_port or _thermal_port
-    baud = _thermal_baud
-    if not serial:
-        return {"success": False, "error": "pyserial not installed", "port": port}
+    lock = _print_locks["thermal"]
+    if not lock.acquire(blocking=False):
+        return {"success": False, "error": "Thermal printer busy — wait for the current print to finish"}
     try:
-        port = _probe_port(port, THERMAL_CANDIDATES)
-    except FileNotFoundError as e:
-        return {"success": False, "error": f"Thermal printer port not found: {e.filename or port}", "port": port}
-    try:
-        text = _format_recipe_text(recipe_data, width=THERMAL_WIDTH).rstrip("\n")
-        footer = "\n".join(_thermal_printed_timestamp_lines())
-        text = text + "\n\n" + footer + _thermal_trailing_feed()
-        ser = serial.Serial(port=port, baudrate=baud, timeout=2.0)
+        port = printer_port or _thermal_port
+        baud = _thermal_baud
+        if not serial:
+            return {"success": False, "error": "pyserial not installed", "port": port}
         try:
-            _send_printer_init(ser)
-            time.sleep(0.2)
-            _send_text_to_thermal(ser, text, baud)
-            time.sleep(0.5)
-            return {"success": True, "port": port}
-        finally:
-            ser.close()
-    except Exception as e:
-        return {"success": False, "error": str(e), "port": port}
+            port = _probe_port(port, THERMAL_CANDIDATES)
+        except FileNotFoundError as e:
+            return {"success": False, "error": f"Thermal printer port not found: {e.filename or port}", "port": port}
+        try:
+            text = _format_recipe_text(recipe_data, width=THERMAL_WIDTH).rstrip("\n")
+            footer = "\n".join(_thermal_printed_timestamp_lines())
+            text = text + "\n\n" + footer + _thermal_trailing_feed()
+            ser = serial.Serial(port=port, baudrate=baud, timeout=2.0)
+            try:
+                _send_printer_init(ser)
+                time.sleep(0.2)
+                _send_thermal_logo(ser, baud)
+                _send_text_to_thermal(ser, text, baud)
+                time.sleep(0.5)
+                return {"success": True, "port": port}
+            finally:
+                ser.close()
+        except Exception as e:
+            return {"success": False, "error": str(e), "port": port}
+    finally:
+        lock.release()

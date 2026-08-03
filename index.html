@@ -7,8 +7,10 @@
     <meta name="viewport"
         content="width=1024, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Tablet Disintegration Tester</title>
-    <link rel="stylesheet" href="/styles.css?v=58" id="app-main-css"
-        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=58&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="/styles.css?v=62" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=62&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -154,34 +156,6 @@
                         <input type="radio" name="test-run-completion-pass-fail" value="FAIL" class="test-run-completion-pf-input">
                         <span class="test-run-completion-card">Fail</span>
                     </label>
-                </div>
-            </div>
-            <div id="test-run-completion-passfail-dual" style="display: none;">
-                <div class="form-group test-run-completion-passfail-group" style="margin: 0.75rem 0;">
-                    <span class="test-run-completion-passfail-label">Result</span>
-                    <div class="test-run-completion-passfail-cards" role="radiogroup" aria-label="Pass or Fail">
-                        <label class="test-run-completion-card-wrap">
-                            <input type="radio" name="test-run-completion-drum1-pass-fail" value="PASS" checked class="test-run-completion-pf-input">
-                            <span class="test-run-completion-card">Pass</span>
-                        </label>
-                        <label class="test-run-completion-card-wrap">
-                            <input type="radio" name="test-run-completion-drum1-pass-fail" value="FAIL" class="test-run-completion-pf-input">
-                            <span class="test-run-completion-card">Fail</span>
-                        </label>
-                    </div>
-                </div>
-                <div class="form-group test-run-completion-passfail-group" style="margin: 0.75rem 0;">
-                    <span class="test-run-completion-passfail-label">Drum 2</span>
-                    <div class="test-run-completion-passfail-cards" role="radiogroup" aria-label="Drum 2 Pass or Fail">
-                        <label class="test-run-completion-card-wrap">
-                            <input type="radio" name="test-run-completion-drum2-pass-fail" value="PASS" checked class="test-run-completion-pf-input">
-                            <span class="test-run-completion-card">Pass</span>
-                        </label>
-                        <label class="test-run-completion-card-wrap">
-                            <input type="radio" name="test-run-completion-drum2-pass-fail" value="FAIL" class="test-run-completion-pf-input">
-                            <span class="test-run-completion-card">Fail</span>
-                        </label>
-                    </div>
                 </div>
             </div>
             <div class="form-group">
@@ -401,22 +375,6 @@
                         </div>
                     </div>
 
-                    <!-- AR Number modal (DT load flow) -->
-                    <div id="ar-number-modal" class="modal-overlay param-config-modal" style="display:none;">
-                        <div class="role-modal">
-                            <h3 class="param-config-modal-title">Enter AR Number</h3>
-                            <div class="form-group">
-                                <label>AR Number</label>
-                                <input type="text" id="load-recipe-ar-input" class="input-field" placeholder="Enter AR number"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                            </div>
-                            <div class="role-modal-buttons">
-                                <button type="button" class="btn-role-select btn-role-cancel" onclick="dtCloseArModal()">Cancel</button>
-                                <button type="button" class="btn-role-select btn-role-user" onclick="dtConfirmArNumber()">Continue</button>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- Beaker select modal (recipe load / calibration) -->
                     <div id="dt-beaker-select-modal" class="modal-overlay" style="display:none;">
                         <div class="role-modal" style="max-width:560px;">
@@ -436,59 +394,97 @@
                 </div>
 
 <!-- Quick Test -->
-                <div class="page" id="page-quick-test">
-                    <div class="validation-type-page create-recipe-step1-page quick-test-page">
-                        <div class="create-recipe-form-fields form-grid create-recipe-form-grid">
-                            <div class="form-group full-width">
-                                <label>Product / Test Name</label>
-                                <input type="text" id="dt-qt-name" class="input-field" placeholder="Product name"
+                <div class="page dt-setup-form-page" id="page-quick-test">
+                    <div class="dt-recipe-shell create-recipe-step1-page dt-create-recipe-page dt-quick-test-page">
+                        <div class="dt-recipe-scroll" id="dt-qt-scroll">
+                            <div class="dt-recipe-block">
+                                <label class="dt-recipe-label" for="dt-qt-name">Product name</label>
+                                <input type="text" id="dt-qt-name" class="input-field dt-recipe-name-input"
+                                    placeholder="e.g. Paracetamol 500 mg"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                             </div>
-                            <div class="form-group">
-                                <label>Batch Number</label>
-                                <input type="text" id="dt-qt-batch" class="input-field" placeholder="Batch"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+
+                            <div class="dt-recipe-block">
+                                <div class="dt-recipe-label-row">
+                                    <span class="dt-recipe-label">Test mode</span>
+                                    <span class="dt-recipe-label-hint">How the run ends</span>
+                                </div>
+                                <div class="dt-recipe-mode-grid" role="radiogroup" aria-label="Test mode">
+                                    <label class="dt-recipe-mode-card is-active" data-mode="manual" id="qt-mode-manual">
+                                        <input type="radio" name="qt-mode-ui" id="qt-mode-manual-radio" value="manual" checked
+                                            onchange="dtSelectQuickTestMode('manual')">
+                                        <span class="dt-recipe-mode-icon" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M18 11V6a2 2 0 0 0-4 0v5"></path>
+                                                <path d="M14 10V4a2 2 0 0 0-4 0v8"></path>
+                                                <path d="M10 10.5V6a2 2 0 0 0-4 0v8"></path>
+                                                <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-4a8 8 0 0 1-8-8 2 2 0 1 1 4 0"></path>
+                                            </svg>
+                                        </span>
+                                        <span class="dt-recipe-mode-copy">
+                                            <strong>Manual</strong>
+                                            <small>Operator stops</small>
+                                        </span>
+                                    </label>
+                                    <label class="dt-recipe-mode-card" data-mode="timer" id="qt-mode-timer">
+                                        <input type="radio" name="qt-mode-ui" id="qt-mode-timer-radio" value="timer"
+                                            onchange="dtSelectQuickTestMode('timer')">
+                                        <span class="dt-recipe-mode-icon" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <circle cx="12" cy="13" r="8"></circle>
+                                                <path d="M12 9v4l2.5 1.5"></path>
+                                                <path d="M9 2h6"></path>
+                                            </svg>
+                                        </span>
+                                        <span class="dt-recipe-mode-copy">
+                                            <strong>Timer</strong>
+                                            <small>Auto-stop</small>
+                                        </span>
+                                    </label>
+                                </div>
+                                <input type="hidden" id="dt-qt-mode" value="manual">
                             </div>
-                            <div class="form-group">
-                                <label>Set Temperature (°C)</label>
-                                <input type="number" id="dt-qt-temp" class="input-field" min="20" max="55" step="0.1" value="37"
-                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                            </div>
-                            <div class="form-group">
-                                <label>Mode</label>
-                                <select id="dt-qt-mode" class="input-field" onchange="dtToggleQtDuration()">
-                                    <option value="manual">Manual (tap tubes)</option>
-                                    <option value="timer">Timer</option>
-                                </select>
-                            </div>
-                            <div class="form-group" id="dt-qt-duration-row" style="display:none;">
-                                <label>Duration (min : sec)</label>
-                                <div style="display:flex;gap:8px;">
-                                    <input type="number" id="dt-qt-dur-min" class="input-field" min="0" max="999" value="30" placeholder="MM"
-                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                                    <input type="number" id="dt-qt-dur-sec" class="input-field" min="0" max="59" value="0" placeholder="SS"
-                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+
+                            <div class="dt-recipe-block">
+                                <div class="dt-recipe-label-row">
+                                    <span class="dt-recipe-label">Parameters</span>
+                                    <span class="dt-recipe-label-hint" id="dt-qt-params-hint">Batch · media · mesh</span>
+                                </div>
+                                <div class="dt-recipe-params-grid create-recipe-form-fields">
+                                    <div class="form-group">
+                                        <label for="dt-qt-batch">Batch number</label>
+                                        <input type="text" id="dt-qt-batch" class="input-field recipe-param-input"
+                                            placeholder="e.g. AF13564w"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
+                                    <div class="form-group" id="dt-qt-duration-row" style="display:none;">
+                                        <label for="dt-qt-duration">Duration (HH:MM:SS)</label>
+                                        <input type="text" id="dt-qt-duration" class="input-field recipe-param-input"
+                                            value="00:30:00" placeholder="00:30:00"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="dt-qt-media">Media</label>
+                                        <input type="text" id="dt-qt-media" class="input-field recipe-param-input"
+                                            placeholder="Optional"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="dt-qt-mesh">Mesh</label>
+                                        <input type="text" id="dt-qt-mesh" class="input-field recipe-param-input"
+                                            placeholder="Optional"
+                                            onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                                    </div>
                                 </div>
                             </div>
-                            <div class="form-group">
-                                <label>Basket</label>
-                                <select id="dt-qt-basket" class="input-field">
-                                    <option value="1">Basket 1</option>
-                                    <option value="2">Basket 2</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Tube Count</label>
-                                <select id="dt-qt-tubes" class="input-field">
-                                    <option value="1">1</option>
-                                    <option value="3">3</option>
-                                    <option value="6" selected>6</option>
-                                </select>
-                            </div>
+
+                            <p class="dt-recipe-hint" id="dt-qt-basket-hint">Beaker 1 — uses dashboard set temperature.</p>
                         </div>
-                        <button type="button" class="btn btn-primary validation-start-btn" onclick="dtStartQuickRun()">
-                            Start Preheat
-                        </button>
+
+                        <footer class="dt-recipe-footer quick-test-actions">
+                            <button type="button" class="btn btn-secondary" onclick="dtCancelQuickTest()">Cancel</button>
+                            <button type="button" class="btn btn-primary" id="dt-qt-start-btn" onclick="dtStartQuickRun()">Start Test</button>
+                        </footer>
                     </div>
                 </div>
 
@@ -529,7 +525,7 @@
                 </div>
 
                                 <!-- Create Recipe — single scroll (CFR compact) -->
-                <div class="page" id="page-create-recipe-step1">
+                <div class="page dt-setup-form-page" id="page-create-recipe-step1">
                     <div class="dt-recipe-shell create-recipe-step1-page dt-create-recipe-page">
                         <div class="dt-recipe-scroll" id="dt-recipe-scroll">
                             <div class="dt-recipe-block">
@@ -1153,6 +1149,12 @@
                                     </thead>
                                     <tbody id="report-test-data-body"></tbody>
                                 </table>
+                                <div id="report-statistics-section">
+                                    <h3>STATISTICS</h3>
+                                    <table class="report-ident-table report-statistics-table" id="report-statistics-table">
+                                        <tbody id="report-statistics-body"></tbody>
+                                    </table>
+                                </div>
                             </div>
                             <h3>REMARKS</h3>
                             <div class="report-remarks-box" id="report-remarks-box"></div>
@@ -1166,13 +1168,17 @@
                                 <tr>
                                     <th>Approved By</th>
                                     <td id="report-approved-by"></td>
-                                    <th id="report-drum1-pass-fail-label">Drum 1 Pass / Fail</th>
+                                    <th>Pass / Fail</th>
                                     <td id="report-drum1-pass-fail"></td>
                                 </tr>
-                                <tr id="report-drum2-pass-fail-row">
-                                    <th>Drum 2 Pass / Fail</th>
-                                    <td id="report-drum2-pass-fail"></td>
-                                    <th></th>
+                                <tr id="report-approval-remarks-row">
+                                    <th>Approval remarks</th>
+                                    <td id="report-approval-remarks" colspan="3"></td>
+                                </tr>
+                                <tr id="report-drum2-pass-fail-row" style="display:none;">
+                                    <th id="report-drum1-pass-fail-label" style="display:none;">Pass / Fail</th>
+                                    <td id="report-drum2-pass-fail" style="display:none;"></td>
+                                    <td id="report-approval-pass-fail" style="display:none;"></td>
                                     <td></td>
                                 </tr>
                             </table>
@@ -1192,34 +1198,6 @@
                                             <input type="radio" name="report-approve-pass-fail" value="FAIL" class="report-approve-pf-input">
                                             <span class="report-approve-card">Fail</span>
                                         </label>
-                                    </div>
-                                </div>
-                                <div id="report-approve-passfail-dual" style="display: none;">
-                                    <div class="form-group report-approve-passfail-group">
-                                        <span class="report-approve-passfail-label">Drum 1</span>
-                                        <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Drum 1 Pass or Fail">
-                                            <label class="report-approve-card-wrap">
-                                                <input type="radio" name="report-approve-drum1-pass-fail" value="PASS" checked class="report-approve-pf-input">
-                                                <span class="report-approve-card">Pass</span>
-                                            </label>
-                                            <label class="report-approve-card-wrap">
-                                                <input type="radio" name="report-approve-drum1-pass-fail" value="FAIL" class="report-approve-pf-input">
-                                                <span class="report-approve-card">Fail</span>
-                                            </label>
-                                        </div>
-                                    </div>
-                                    <div class="form-group report-approve-passfail-group">
-                                        <span class="report-approve-passfail-label">Drum 2</span>
-                                        <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Drum 2 Pass or Fail">
-                                            <label class="report-approve-card-wrap">
-                                                <input type="radio" name="report-approve-drum2-pass-fail" value="PASS" checked class="report-approve-pf-input">
-                                                <span class="report-approve-card">Pass</span>
-                                            </label>
-                                            <label class="report-approve-card-wrap">
-                                                <input type="radio" name="report-approve-drum2-pass-fail" value="FAIL" class="report-approve-pf-input">
-                                                <span class="report-approve-card">Fail</span>
-                                            </label>
-                                        </div>
                                     </div>
                                 </div>
                                 <div class="form-group full-width">
@@ -1415,23 +1393,58 @@
                     </div>
                 </div>
 
-                <!-- Validation type select (Stroke / Temperature cards) -->
+                <!-- Calibrate: select beaker (same flow style as validate-beaker) -->
+                <div class="page" id="page-calibrate-beaker">
+                    <div class="validation-main-container">
+                        <div class="text-center" style="margin-bottom:18px;">
+                            <h2 class="section-title" style="margin-bottom:6px;">Select Beaker to Calibrate</h2>
+                            <p class="section-subtitle">Choose basket 1 or 2 for temperature calibration</p>
+                        </div>
+                        <div class="validation-settings-grid dt-validate-beaker-grid">
+                            <button type="button" class="settings-card settings-validate" onclick="selectBeakerForCalibration(1)">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </div>
+                                <h3>Beaker 1</h3>
+                                <p>Basket 1</p>
+                            </button>
+                            <button type="button" class="settings-card settings-calibrate" onclick="selectBeakerForCalibration(2)">
+                                <div class="settings-icon">
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M4.5 3h15"></path>
+                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
+                                        <path d="M6 14h12"></path>
+                                    </svg>
+                                </div>
+                                <h3>Beaker 2</h3>
+                                <p>Basket 2</p>
+                            </button>
+                        </div>
+                        <div style="text-align:center;margin-top:20px;">
+                            <button type="button" class="btn btn-secondary" onclick="goToPage('validate')">Back</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Validation type select (legacy; combined flow starts stroke from beaker select) -->
                 <div class="page" id="page-validate-type-select">
                     <div class="validation-type-page">
                         <p class="section-subtitle text-center" style="margin-bottom:16px;">
-                            Beaker <span id="val-beaker-num" class="text-accent">1</span> selected — choose validation type
+                            Beaker <span id="val-beaker-num" class="text-accent">1</span> — Stroke then Temperature
                         </p>
                         <div class="validation-type-grid create-recipe-grid--pair dt-val-type-cards">
-                            <label class="validation-type-settings-card validation-type-btn dt-val-card-stroke" id="val-stroke">
-                                <input type="radio" name="val-type" value="stroke" onchange="updateValidationSelection()">
-                                <h3>Stroke Validation</h3>
+                            <div class="validation-type-settings-card dt-val-card-stroke selected">
+                                <h3>1. Stroke Validation</h3>
                                 <p class="step1-card-sublabel">29–32 strokes/min · 60s</p>
-                            </label>
-                            <label class="validation-type-settings-card validation-type-btn dt-val-card-temp" id="val-temp">
-                                <input type="radio" name="val-type" value="temp" onchange="updateValidationSelection()">
-                                <h3>Temperature Validation</h3>
+                            </div>
+                            <div class="validation-type-settings-card dt-val-card-temp selected">
+                                <h3>2. Temperature Validation</h3>
                                 <p class="step1-card-sublabel">Hold ±0.5°C · 2 min</p>
-                            </label>
+                            </div>
                         </div>
                         <button type="button" class="btn btn-primary validation-start-btn" onclick="startValidationProcess()" style="margin-top:18px;width:100%;max-width:420px;display:block;margin-left:auto;margin-right:auto;">
                             Start Validation
@@ -1826,13 +1839,13 @@
                             <div class="profile-edit-form">
                                 <div class="form-group full-width">
                                     <label>Full Name</label>
-                                    <input type="text" id="profile-fullname" class="input-field input-readonly"
-                                        placeholder="Full name" readonly tabindex="-1">
+                                    <input type="text" id="profile-fullname" class="input-field input-readonly profile-identity-field"
+                                        placeholder="Full name" readonly disabled tabindex="-1" aria-readonly="true">
                                 </div>
                                 <div class="form-group full-width">
                                     <label>User ID</label>
-                                    <input type="text" id="profile-userid" class="input-field input-readonly"
-                                        placeholder="User ID" readonly tabindex="-1" autocomplete="off">
+                                    <input type="text" id="profile-userid" class="input-field input-readonly profile-identity-field"
+                                        placeholder="User ID" readonly disabled tabindex="-1" autocomplete="off" aria-readonly="true">
                                 </div>
                                 <div class="form-group full-width">
                                     <label>Password</label>
@@ -2382,6 +2395,10 @@
                                 <input type="number" id="factory-max-supervisors" class="input-field" min="1" max="99" placeholder="3" value="3">
                             </div>
                             <div class="form-group">
+                                <label>Max QA</label>
+                                <input type="number" id="factory-max-qa" class="input-field" min="1" max="99" placeholder="3" value="3">
+                            </div>
+                            <div class="form-group">
                                 <label>Password Reset Period (Days)</label>
                                 <input type="number" id="factory-password-reset-days" class="input-field" min="1" max="3650" placeholder="30" value="30">
                             </div>
@@ -2411,12 +2428,24 @@
             </div>
         </main>
     </div>
+    <div id="validation-due-modal-overlay" class="validation-due-modal-overlay" style="display:none;" aria-hidden="true">
+        <div class="validation-due-modal" role="dialog" aria-labelledby="validation-due-modal-title">
+            <h2 id="validation-due-modal-title" class="validation-due-modal-title">Next Validation Due</h2>
+            <p class="validation-due-modal-sub">Select the interval until the next validation for this beaker. Dates are applied when the report is approved.</p>
+            <div class="validation-due-modal-actions">
+                <button type="button" class="btn btn-primary validation-due-btn" onclick="selectValidationDueMonths(3)">3 Months</button>
+                <button type="button" class="btn btn-primary validation-due-btn" onclick="selectValidationDueMonths(6)">6 Months</button>
+                <button type="button" class="btn btn-primary validation-due-btn" onclick="selectValidationDueMonths(12)">12 Months</button>
+            </div>
+            <button type="button" class="btn btn-secondary validation-due-cancel" onclick="cancelValidationDueModal()">Cancel</button>
+        </div>
+    </div>
     <div id="keyboard-root"></div>
     <script src="/keyboard.js?v=5"></script>
-    <script src="/input-focus.js?v=1"></script>
-    <script src="/rbac.js?v=8"></script>
-    <script src="/script.js?v=100"></script>
-    <script src="/dt_client.js?v=17"></script>
+    <script src="/input-focus.js?v=2"></script>
+    <script src="/rbac.js?v=11"></script>
+    <script src="/script.js?v=115"></script>
+    <script src="/dt_client.js?v=32"></script>
 </body>
 
 </html>

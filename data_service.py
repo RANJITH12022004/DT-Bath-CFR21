@@ -169,6 +169,7 @@ def _normalize_factory_settings_dict(settings: Dict[str, Any]) -> Dict[str, Any]
         ("maxUsers", 10, 1, 999),
         ("maxAdmins", 2, 1, 99),
         ("maxSupervisors", 3, 1, 99),
+        ("maxQa", 3, 1, 99),
         ("passwordResetPeriodDays", 30, 1, 3650),
         ("autoLogoutMinutes", 0, 0, 10080),
     ]:
@@ -179,6 +180,8 @@ def _normalize_factory_settings_dict(settings: Dict[str, Any]) -> Dict[str, Any]
             except (ValueError, TypeError):
                 val = default
             merged[key] = val
+        else:
+            merged[key] = default
     return merged
 
 
@@ -537,11 +540,12 @@ def count_active_supervisor_members() -> int:
 
 
 def _check_member_limits(members: List[Dict], member_data: Dict[str, Any], existing_member: Optional[Dict] = None):
-    """Check factory limits for users, admins, supervisors. Raise ValueError if exceeded."""
+    """Check factory limits for users, admins, supervisors/reviewers, and QA. Raise ValueError if exceeded."""
     fs = get_factory_settings()
     max_users = int(fs.get("maxUsers") or 10)
     max_admins = int(fs.get("maxAdmins") or 2)
     max_supervisors = int(fs.get("maxSupervisors") or 3)
+    max_qa = int(fs.get("maxQa") or 3)
 
     def count_role(ms: List, r: str) -> int:
         return sum(1 for m in ms if str(m.get("role", "")).strip().lower() == r)
@@ -550,6 +554,7 @@ def _check_member_limits(members: List[Dict], member_data: Dict[str, Any], exist
     users = count_role(members, "user")
     admins = count_role(members, "admin")
     supervisors = count_role(members, "supervisor")
+    qa = count_role(members, "qa")
 
     if existing_member:
         old_role = str(existing_member.get("role", "")).strip().lower()
@@ -559,6 +564,8 @@ def _check_member_limits(members: List[Dict], member_data: Dict[str, Any], exist
             admins -= 1
         elif old_role == "supervisor":
             supervisors -= 1
+        elif old_role == "qa":
+            qa -= 1
 
     if new_role == "user":
         users += 1
@@ -566,6 +573,8 @@ def _check_member_limits(members: List[Dict], member_data: Dict[str, Any], exist
         admins += 1
     elif new_role == "supervisor":
         supervisors += 1
+    elif new_role == "qa":
+        qa += 1
 
     if users > max_users:
         raise ValueError("Your limit for users reached. Contact support for upgrade.")
@@ -573,6 +582,8 @@ def _check_member_limits(members: List[Dict], member_data: Dict[str, Any], exist
         raise ValueError("Your limit for admins reached. Contact support for upgrade.")
     if supervisors > max_supervisors:
         raise ValueError("Your limit for reviewers reached. Contact support for upgrade.")
+    if qa > max_qa:
+        raise ValueError("Your limit for QA profiles reached. Contact support for upgrade.")
 
 
 def _member_username_key(member: Dict[str, Any]) -> str:
@@ -1200,13 +1211,7 @@ def get_factory_settings() -> Dict[str, Any]:
     settings = _load_json_file(settings_path, default={})
     if not isinstance(settings, dict):
         settings = {}
-    if "biometricEnabled" not in settings:
-        settings["biometricEnabled"] = True
-    if "passwordResetPeriodDays" not in settings:
-        settings["passwordResetPeriodDays"] = 30
-    if "autoLogoutMinutes" not in settings:
-        settings["autoLogoutMinutes"] = 0
-    return settings
+    return _normalize_factory_settings_dict(settings)
 
 
 def save_factory_settings(settings: Dict[str, Any]):

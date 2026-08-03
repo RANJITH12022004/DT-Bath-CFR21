@@ -33,6 +33,7 @@ _CMD_DELETE = 0x0C
 _CMD_EMPTY = 0x0D
 _CMD_TEMPLATE_COUNT = 0x1D
 _CMD_VERIFY_PASSWORD = 0x13
+_CMD_AURA_LED = 0x35
 
 _CONFIRM_OK = 0x00
 _CONFIRM_NO_FINGER = 0x02
@@ -42,6 +43,51 @@ _CONFIRM_FEATURE_FAIL = 0x07
 _CONFIRM_NO_MATCH = 0x09
 _CONFIRM_NOT_FOUND = 0x0A
 _CONFIRM_ENROLL_MISMATCH = 0x0A
+
+_cancel_requested = threading.Event()
+_scan_active = threading.Event()
+
+
+def request_cancel():
+    """Signal any in-progress finger wait/capture to stop ASAP (UI Cancel)."""
+    _cancel_requested.set()
+
+
+def clear_cancel():
+    _cancel_requested.clear()
+
+
+def is_cancel_requested():
+    return _cancel_requested.is_set()
+
+
+def _idle_sensor_led():
+    """Best-effort turn off R307 Aura LED after cancel/timeout."""
+    # AuraLedControl: control=0x04 off, speed=0, color=0x01 (ignored when off), times=0
+    try:
+        _exec(bytes([_CMD_AURA_LED, 0x04, 0x00, 0x01, 0x00]), timeout_sec=1.0)
+    except Exception:
+        pass
+    # Fallback wake/idle nudge for modules without Aura LED support
+    try:
+        verify_sensor()
+    except Exception:
+        pass
+
+
+def cancel_and_idle():
+    """Stop active scan and turn sensor LED off."""
+    request_cancel()
+    # Wait briefly for in-flight GenImg to finish and release the lock
+    deadline = time.time() + 2.5
+    while _scan_active.is_set() and time.time() < deadline:
+        time.sleep(0.05)
+    try:
+        _idle_sensor_led()
+    except Exception:
+        pass
+    return {"ok": True, "cancelled": True}
+
 
 
 def _configured_port():
@@ -226,21 +272,31 @@ def get_template_count():
 
 def _wait_for_finger(timeout_sec=10.0):
     end = time.time() + timeout_sec
-    while time.time() < end:
-        got = _exec(bytes([_CMD_GEN_IMAGE]), timeout_sec=1.5)
-        if got.get("ok"):
-            return {"ok": True}
-        if got.get("code") in (_CONFIRM_NO_FINGER, _CONFIRM_IMAGE_MESSY):
-            time.sleep(0.2)
-            continue
-        return got
-    return {"ok": False, "error": "Timed out waiting for finger"}
+    _scan_active.set()
+    try:
+        while time.time() < end:
+            if _cancel_requested.is_set():
+                return {"ok": False, "error": "cancelled", "cancelled": True, "code": None}
+            got = _exec(bytes([_CMD_GEN_IMAGE]), timeout_sec=1.5)
+            if _cancel_requested.is_set():
+                return {"ok": False, "error": "cancelled", "cancelled": True, "code": None}
+            if got.get("ok"):
+                return {"ok": True}
+            if got.get("code") in (_CONFIRM_NO_FINGER, _CONFIRM_IMAGE_MESSY):
+                time.sleep(0.15)
+                continue
+            return got
+        return {"ok": False, "error": "Timed out waiting for finger"}
+    finally:
+        _scan_active.clear()
 
 
 def _capture_to_buffer(buffer_id, timeout_sec=10.0):
     wait = _wait_for_finger(timeout_sec=timeout_sec)
     if not wait.get("ok"):
         return wait
+    if _cancel_requested.is_set():
+        return {"ok": False, "error": "cancelled", "cancelled": True, "code": None}
     return _exec(bytes([_CMD_IMAGE_2_TZ, buffer_id]), timeout_sec=2.0)
 
 
@@ -250,10 +306,15 @@ def capture_enroll_finger(buffer_id, timeout_sec=10.0):
     buffer_id = int(buffer_id)
     if buffer_id not in (0x01, 0x02):
         return {"ok": False, "error": "buffer_id must be 1 or 2"}
+    clear_cancel()
     verify = verify_sensor()
     if not verify.get("ok"):
         return verify
-    return _capture_to_buffer(buffer_id, timeout_sec=timeout_sec)
+    try:
+        return _capture_to_buffer(buffer_id, timeout_sec=timeout_sec)
+    finally:
+        if _cancel_requested.is_set():
+            _idle_sensor_led()
 
 
 def finalize_enroll(template_id):
@@ -280,6 +341,7 @@ def enroll(template_id, capture_timeout_sec=10.0):
     template_id = int(template_id)
     if template_id <= 0 or template_id > 1000:
         return {"ok": False, "error": "templateId must be between 1 and 1000"}
+    clear_cancel()
     verify = verify_sensor()
     if not verify.get("ok"):
         return verify
@@ -287,6 +349,8 @@ def enroll(template_id, capture_timeout_sec=10.0):
     first = capture_enroll_finger(0x01, timeout_sec=capture_timeout_sec)
     if not first.get("ok"):
         return first
+    if _cancel_requested.is_set():
+        return {"ok": False, "error": "cancelled", "cancelled": True}
     time.sleep(1.0)
     second = capture_enroll_finger(0x02, timeout_sec=capture_timeout_sec)
     if not second.get("ok"):
@@ -295,25 +359,31 @@ def enroll(template_id, capture_timeout_sec=10.0):
 
 
 def identify(timeout_sec=10.0):
+    clear_cancel()
     verify = verify_sensor()
     if not verify.get("ok"):
         return verify
-    cap = _capture_to_buffer(0x01, timeout_sec=timeout_sec)
-    if not cap.get("ok"):
-        return cap
-    # Search in sensor library page 0, count 1000
-    search_payload = bytes([_CMD_SEARCH, 0x01]) + (0).to_bytes(2, "big") + (1000).to_bytes(2, "big")
-    found = _exec(search_payload, timeout_sec=2.0)
-    if not found.get("ok"):
-        if found.get("code") in (_CONFIRM_NO_MATCH, _CONFIRM_NOT_FOUND):
-            return {"ok": False, "error": "Fingerprint not recognized", "code": found.get("code")}
-        return found
-    payload = found.get("payload", b"")
-    if len(payload) < 5:
-        return {"ok": False, "error": "Invalid identify response"}
-    template_id = int.from_bytes(payload[1:3], "big")
-    confidence = int.from_bytes(payload[3:5], "big")
-    return {"ok": True, "templateId": template_id, "confidence": confidence}
+    try:
+        cap = _capture_to_buffer(0x01, timeout_sec=timeout_sec)
+        if not cap.get("ok"):
+            return cap
+        if _cancel_requested.is_set():
+            return {"ok": False, "error": "cancelled", "cancelled": True, "code": None}
+        # Search in sensor library page 0, count 1000
+        search_payload = bytes([_CMD_SEARCH, 0x01]) + (0).to_bytes(2, "big") + (1000).to_bytes(2, "big")
+        found = _exec(search_payload, timeout_sec=2.0)
+        if not found.get("ok"):
+            if found.get("code") in (_CONFIRM_NO_MATCH, _CONFIRM_NOT_FOUND):
+                return {"ok": False, "error": "Fingerprint not recognized", "code": found.get("code")}
+            return found
+        payload = found.get("payload", b"")
+        if len(payload) < 5:
+            return {"ok": False, "error": "Invalid identify response"}
+        template_id = int.from_bytes(payload[1:3], "big")
+        confidence = int.from_bytes(payload[3:5], "big")
+        return {"ok": True, "templateId": template_id, "confidence": confidence}
+    finally:
+        _idle_sensor_led()
 
 
 def delete_template(template_id):
@@ -323,4 +393,20 @@ def delete_template(template_id):
 
 
 def clear_templates():
-    return _exec(bytes([_CMD_EMPTY]), timeout_sec=3.0)
+    """Delete all fingerprint templates on the sensor (factory reset)."""
+    request_cancel()
+    deadline = time.time() + 3.0
+    while _scan_active.is_set() and time.time() < deadline:
+        time.sleep(0.05)
+    clear_cancel()
+    emptied = _exec(bytes([_CMD_EMPTY]), timeout_sec=5.0)
+    _idle_sensor_led()
+    if not emptied.get("ok"):
+        return emptied
+    count = get_template_count()
+    remaining = count.get("count") if count.get("ok") else None
+    return {
+        "ok": True,
+        "cleared": True,
+        "templatesRemaining": remaining if remaining is not None else 0,
+    }

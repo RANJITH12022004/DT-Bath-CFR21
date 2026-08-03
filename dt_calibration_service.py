@@ -223,6 +223,8 @@ def calibrate(
         "operatorName": payload["operatorName"],
         "operatorId": payload["operatorId"],
         "operatorUsername": payload["operatorUsername"],
+        "employeeId": payload.get("operatorId") or payload.get("operatorUsername"),
+        "operatedByUsername": payload.get("operatorUsername") or payload.get("operatorId"),
         "approvedBy": payload.get("verifierName"),
         "approvedByUsername": payload.get("verifierUsername"),
         "mock": payload["mock"],

@@ -16,11 +16,13 @@
     setTemp: { 1: 37.0, 2: 37.0 },
     products: { 1: null, 2: null },
     batches: { 1: null, 2: null },
-    ars: { 1: null, 2: null },
+    fromRecipe: { 1: false, 2: false },
     durations: { 1: null, 2: null },
     media: { 1: null, 2: null },
     mesh: { 1: null, 2: null },
     heaterOn: { 1: false, 2: false },
+    /** True when heat was started from Settings (hardware PHW only, no test run). */
+    heaterManual: { 1: false, 2: false },
     configured: { 1: true, 2: true },
     running: { 1: false, 2: false },
     /** Dashboard start-btn phase: idle | preheating | ready | running */
@@ -32,6 +34,8 @@
     calBeaker: 1,
     calSessionActive: false,
     latestTemps: {},
+    /** Report IDs waiting to open while the other basket is still in a test. */
+    pendingReportQueue: [],
   };
 
   // Declared early so nav-lock helpers can close over them (assigned in validation section).
@@ -40,9 +44,90 @@
   var _valBasket = 1;
   var _tempValRunning = false;
   var _valSaveLock = false;
+  /** After validation COMPLETE, before Complete & Save — nav stays locked. */
+  var _valAwaitingSave = null;
+  /** Combined Stroke→Temp session for one beaker. */
+  var _valSession = null;
+
+  function clearValAwaitingSave() {
+    _valAwaitingSave = null;
+  }
+
+  function clearValSession() {
+    _valSession = null;
+  }
+
+  function setValAwaitingSave(kind, basket) {
+    _valAwaitingSave = {
+      kind: kind === 'temp' ? 'temp' : 'stroke',
+      basket: basket === 2 ? 2 : 1,
+    };
+  }
+
+  function valSessionActive() {
+    return !!(_valSession && _valSession.basket);
+  }
+
+  window.dtIsValidationAwaitingSave = function () {
+    return !!(_valAwaitingSave || (_valSession && (_valSession.tempDone || _valSession.phase === 'awaiting_due')));
+  };
+
+  window.dtIsValidationInProgress = function () {
+    if (_valAwaitingSave) return false;
+    if (_valSession && (_valSession.phase === 'stroke' || _valSession.phase === 'temp') && !_valSession.tempDone) {
+      // Between stroke complete and temp start still counts as in-progress session
+      if (_valPollTimer || _tempValRunning || _valKind) return true;
+      if (_valSession.strokeDone && !_valSession.tempDone) return true;
+    }
+    return !!(!_valAwaitingSave && (_valPollTimer || _tempValRunning || _valKind));
+  };
+
+  window.dtValidationAwaitingSavePage = function () {
+    if (_valAwaitingSave) {
+      return _valAwaitingSave.kind === 'temp' ? 'temp-validation' : 'stroke-validation';
+    }
+    if (_valSession) {
+      if (_valSession.tempDone || _valSession.phase === 'awaiting_due' || _valSession.phase === 'temp') {
+        return 'temp-validation';
+      }
+      return 'stroke-validation';
+    }
+    return null;
+  };
+
+  /** True once a beaker test has actually started (motors running), not during preheat/ready. */
+  function dtBasketTestStarted(basket) {
+    return (DT.btnPhase[basket] || 'idle') === 'running';
+  }
+
+  function dtAnyBasketTestStarted() {
+    return dtBasketTestStarted(1) || dtBasketTestStarted(2);
+  }
+
+  /** Preheat / ready / formal run session before motors — used for auto-logout & logout warn. */
+  window.dtIsPreheatOrReadyActive = function () {
+    for (var b = 1; b <= 2; b++) {
+      if (DT.preheatInProgress[b]) return true;
+      var phase = DT.btnPhase[b] || 'idle';
+      if (phase === 'preheating' || phase === 'ready') return true;
+      // Formal preheat session (home Preheat) before Start
+      if (DT.running[b] && phase !== 'running') return true;
+    }
+    return false;
+  };
 
   function syncDtNavLock() {
-    var locked = !!(DT.running[1] || DT.running[2] || _valPollTimer || _tempValRunning || _valKind || DT.calSessionActive);
+    // Nav locks only when the test has started, or validation/calibration is active.
+    // Preheat (home or settings heater) must stay freely navigable.
+    var locked = !!(
+      dtAnyBasketTestStarted() ||
+      _valPollTimer ||
+      _tempValRunning ||
+      _valKind ||
+      _valAwaitingSave ||
+      valSessionActive() ||
+      DT.calSessionActive
+    );
     var app = document.querySelector('.app-container');
     if (app) app.classList.toggle('dt-op-locked', locked);
     var sidebar = document.querySelector('.sidebar');
@@ -55,15 +140,14 @@
     }
   }
 
-  /** True while a DT test, stroke/temp validation, or calibration session is active. */
+  /**
+   * True while navigation should be guarded (abort-to-leave).
+   * Preheat / ready do NOT count — only an actual started test, validation, or calibration.
+   */
   window.dtIsOperationRunning = function () {
-    if (DT.running[1] || DT.running[2]) return true;
-    if (_valPollTimer || _tempValRunning || _valKind) return true;
+    if (dtAnyBasketTestStarted()) return true;
+    if (_valPollTimer || _tempValRunning || _valKind || _valAwaitingSave || valSessionActive()) return true;
     if (DT.calSessionActive) return true;
-    // Do NOT treat merely being on a validation page as running — idle Start screen is not active.
-    var active = document.querySelector('.page.active');
-    var id = active ? active.id : '';
-    if (id === 'page-calibration-type-select' && DT.calSessionActive) return true;
     return false;
   };
 
@@ -71,15 +155,23 @@
   window.dtNavAllowedDuringOp = function (pageName) {
     pageName = String(pageName || '');
     if (pageName === 'report-preview' || pageName === 'approval-verify') return true;
-    if (DT.running[1] || DT.running[2]) {
+    if (dtAnyBasketTestStarted()) {
       return pageName === 'home' || pageName === 'test-run';
+    }
+    if (_valAwaitingSave || valSessionActive()) {
+      // Combined session may be on stroke or temp page
+      if (_valSession) {
+        if (_valSession.phase === 'stroke' && !_valSession.strokeDone) return pageName === 'stroke-validation';
+        return pageName === 'temp-validation' || pageName === 'stroke-validation';
+      }
+      return pageName === (_valAwaitingSave.kind === 'temp' ? 'temp-validation' : 'stroke-validation');
     }
     if (_valPollTimer || _tempValRunning || _valKind) {
       if (_valKind === 'temp' || _tempValRunning) return pageName === 'temp-validation';
       return pageName === 'stroke-validation';
     }
     if (DT.calSessionActive) {
-      return pageName === 'calibration-type-select';
+      return pageName === 'calibration-type-select' || pageName === 'calibrate-beaker';
     }
     return true;
   };
@@ -100,8 +192,14 @@
         })
       );
     });
+    if (_valAwaitingSave) {
+      clearValAwaitingSave();
+    }
+    if (_valSession) {
+      clearValSession();
+    }
     if (_valPollTimer || _tempValRunning || _valKind) {
-      try { window.stopValidation({ stay: true }); } catch (e) {}
+      try { window.stopValidation({ stay: true, force: true, confirmed: true }); } catch (e) {}
     }
     DT.calSessionActive = false;
     syncDtNavLock();
@@ -233,25 +331,31 @@
     basket = basket === 2 ? 2 : 1;
     DT.btnPhase[basket] = phase;
     var startBtn = document.getElementById('start' + basket);
-    if (!startBtn) return;
-    startBtn.classList.remove('is-stop', 'is-preheating', 'is-ready');
-    startBtn.disabled = false;
-    if (phase === 'preheating') {
-      startBtn.textContent = 'Preheating';
-      startBtn.classList.add('is-preheating');
+    if (startBtn) {
+      startBtn.classList.remove('is-stop', 'is-preheating', 'is-ready');
+      startBtn.disabled = false;
+      if (phase === 'preheating') {
+        startBtn.textContent = 'Preheating';
+        startBtn.classList.add('is-preheating');
+        DT.preheatInProgress[basket] = true;
+      } else if (phase === 'ready') {
+        startBtn.textContent = 'Start';
+        startBtn.classList.add('is-ready');
+        DT.preheatInProgress[basket] = false;
+      } else if (phase === 'running') {
+        startBtn.textContent = 'Abort';
+        startBtn.classList.add('is-stop');
+        DT.preheatInProgress[basket] = false;
+      } else {
+        startBtn.textContent = 'Preheat';
+        DT.preheatInProgress[basket] = false;
+      }
+    } else if (phase === 'preheating') {
       DT.preheatInProgress[basket] = true;
-    } else if (phase === 'ready') {
-      startBtn.textContent = 'Start';
-      startBtn.classList.add('is-ready');
-      DT.preheatInProgress[basket] = false;
-    } else if (phase === 'running') {
-      startBtn.textContent = 'Abort';
-      startBtn.classList.add('is-stop');
-      DT.preheatInProgress[basket] = false;
     } else {
-      startBtn.textContent = 'Preheat';
       DT.preheatInProgress[basket] = false;
     }
+    syncDtNavLock();
   }
 
   function markBasketReady(basket, reason) {
@@ -312,25 +416,134 @@
     if (b) b.textContent = Number(DT.setTemp[2] || 37).toFixed(1);
   }
 
+  function formatProductBatchLine(product, batch) {
+    var name = String(product || '').trim();
+    if (!name) return '';
+    var b = String(batch || '').trim();
+    if (b) return name + ' | Batch: ' + b;
+    return name;
+  }
+
   function updateProductNames() {
     var el = document.getElementById('dashboard-product-names');
     if (!el) return;
     var parts = [];
-    if (DT.products[1]) parts.push('B1: ' + DT.products[1]);
-    if (DT.products[2]) parts.push('B2: ' + DT.products[2]);
+    // Always label the beaker so a single loaded recipe shows B1: / B2:
+    if (DT.products[1]) {
+      parts.push('B1: ' + formatProductBatchLine(DT.products[1], DT.batches[1]));
+    }
+    if (DT.products[2]) {
+      parts.push('B2: ' + formatProductBatchLine(DT.products[2], DT.batches[2]));
+    }
     el.textContent = parts.join('  |  ');
   }
+
+  /** Clear loaded recipe / beaker setup so the next login starts with a blank dashboard. */
+  window.dtResetSessionUi = function () {
+    DT.loadCtx = null;
+    DT.recipeDraft = null;
+    DT.beakerPick = null;
+    DT.beakerPickPurpose = null;
+    DT.calSessionActive = false;
+    DT.selectedBasket = 1;
+    DT.pendingReportQueue = [];
+    try { clearValAwaitingSave(); } catch (e0) {}
+    try { clearValSession(); } catch (e0b) {}
+    try { window.pendingRecipeToLoad = null; } catch (e) {}
+    [1, 2].forEach(function (b) {
+      DT.products[b] = null;
+      DT.batches[b] = null;
+      DT.fromRecipe[b] = false;
+      DT.durations[b] = null;
+      DT.media[b] = null;
+      DT.mesh[b] = null;
+      DT.modes[b] = 'manual';
+      DT.setTemp[b] = 37.0;
+      DT.heaterOn[b] = false;
+      DT.heaterManual[b] = false;
+      DT.running[b] = false;
+      DT.preheatInProgress[b] = false;
+      DT.btnPhase[b] = 'idle';
+      stopRunPoll(b);
+      var tEl = document.getElementById('timer' + b);
+      if (tEl) tEl.textContent = '00:00:00';
+      var container = document.getElementById('basket' + b + '-container');
+      if (container) {
+        var ring = container.querySelector('.basket-active-ring');
+        if (ring) ring.remove();
+        container.classList.remove('completed');
+        container.querySelectorAll('.basket-hole').forEach(function (el) {
+          el.classList.remove('completed');
+        });
+      }
+      setStartBtnPhase(b, 'idle');
+      updateModeButtonsUI(b);
+      var setTempEl = document.getElementById('set-temp-' + b);
+      if (setTempEl) setTempEl.value = '37.0';
+    });
+    updateProductNames();
+    updateHeaterIndicators();
+    syncDtNavLock();
+    var banner = document.getElementById('dt-ready-banner');
+    if (banner) banner.style.display = 'none';
+    var arModal = document.getElementById('dt-ar-modal');
+    if (arModal) arModal.style.display = 'none';
+    var beakerModal = document.getElementById('dt-beaker-select-modal');
+    if (beakerModal) beakerModal.style.display = 'none';
+  };
 
   function updateHeaterIndicators() {
     [1, 2].forEach(function (b) {
       var el = document.getElementById('heater' + b);
-      if (!el) return;
-      var on = !!DT.heaterOn[b];
-      el.classList.toggle('is-on', on);
-      el.classList.toggle('is-off', !on);
-      var span = el.querySelector('span');
-      if (span) span.textContent = on ? 'Heater On' : 'Heater Off';
+      if (el) {
+        var on = !!DT.heaterOn[b];
+        el.classList.toggle('is-on', on);
+        el.classList.toggle('is-off', !on);
+        var span = el.querySelector('span');
+        if (span) span.textContent = on ? 'Heater On' : 'Heater Off';
+      }
+      syncHeaterControlUi(b);
     });
+  }
+
+  function syncHeaterControlUi(basket) {
+    basket = basket === 2 ? 2 : 1;
+    var on = !!DT.heaterOn[basket];
+    var btn = document.getElementById('heater-control-btn-' + basket);
+    var label = document.getElementById('control-text-' + basket);
+    if (label) label.textContent = on ? 'Stop' : 'Start';
+    if (btn) {
+      btn.classList.toggle('btn-primary', !on);
+      btn.classList.toggle('btn-danger', on);
+      btn.classList.toggle('is-heater-stop', on);
+    }
+    var setTempEl = document.getElementById('set-temp-' + basket);
+    if (setTempEl && DT.setTemp[basket] != null) {
+      var cur = parseFloat(setTempEl.value);
+      if (!(cur > 0) || Math.abs(cur - Number(DT.setTemp[basket])) > 0.05) {
+        setTempEl.value = Number(DT.setTemp[basket]).toFixed(1);
+      }
+    }
+  }
+
+  function stopManualHeater(basket) {
+    basket = basket === 2 ? 2 : 1;
+    var t1 = 0;
+    var t2 = 0;
+    if (basket === 1) {
+      t2 = (DT.configured[2] && DT.heaterOn[2]) ? Number(DT.setTemp[2] || 0) : 0;
+    } else {
+      t1 = (DT.configured[1] && DT.heaterOn[1]) ? Number(DT.setTemp[1] || 0) : 0;
+    }
+    return api('/api/hardware/dt/preheat', { method: 'POST', body: { t1: t1, t2: t2 } })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.error || 'Heater stop failed');
+        DT.heaterOn[basket] = false;
+        DT.heaterManual[basket] = false;
+        DT.preheatInProgress[basket] = false;
+        setStartBtnPhase(basket, 'idle');
+        updateHeaterIndicators();
+      });
   }
 
   function updateBasketStates() {
@@ -471,6 +684,16 @@
     // Preheat in progress → confirm stop
     if (phase === 'preheating' || DT.preheatInProgress[basket]) {
       var doAbortPreheat = function () {
+        // Settings-only heater (no test run) — stop via hardware PHW
+        if (DT.heaterManual[basket] && !DT.running[basket]) {
+          stopManualHeater(basket).then(function () {
+            var tEl = document.getElementById('timer' + basket);
+            if (tEl) tEl.textContent = '00:00:00';
+            toast('Preheating stopped for basket ' + basket, 'info');
+            go('home');
+          }).catch(function (e) { toast(e.message || 'Failed to stop preheating', 'error'); });
+          return;
+        }
         api('/api/data/dt/runs/' + basket + '/stop', {
           method: 'POST',
           body: { aborted: true, reason: 'preheat_abort' },
@@ -497,9 +720,13 @@
       return;
     }
 
-    // Ready → confirm motor start
+    // Ready → Start (after preheat). No recipe / no product → Quick Test setup first.
     if (phase === 'ready') {
       DT.selectedBasket = basket;
+      if (!DT.fromRecipe[basket] && !DT.products[basket]) {
+        openQuickTestSetup(basket);
+        return;
+      }
       promptConfirmStart(basket);
       return;
     }
@@ -519,13 +746,178 @@
       return;
     }
 
-    // Idle → begin preheat
-    var product = DT.products[basket] || ('Manual Test B' + basket);
+    // Idle → begin preheat (Quick Test opens later on Start if no recipe)
+    beginPreheatFromSetup(basket);
+  };
+
+  function openQuickTestSetup(basket) {
+    basket = basket === 2 ? 2 : 1;
+    DT._quickTestBasket = basket;
+    DT.selectedBasket = basket;
+    resetQuickTestForm();
+    var hint = document.getElementById('dt-qt-basket-hint');
+    if (hint) {
+      hint.textContent = 'Beaker ' + basket + ' — uses dashboard set temperature (' +
+        Number(DT.setTemp[basket] || 37).toFixed(1) + ' °C).';
+    }
+    go('quick-test');
+  }
+
+  function resetQuickTestForm() {
+    var nameEl = document.getElementById('dt-qt-name');
+    var batchEl = document.getElementById('dt-qt-batch');
+    var mediaEl = document.getElementById('dt-qt-media');
+    var meshEl = document.getElementById('dt-qt-mesh');
+    var durEl = document.getElementById('dt-qt-duration');
+    if (nameEl) nameEl.value = '';
+    if (batchEl) batchEl.value = '';
+    if (mediaEl) mediaEl.value = '';
+    if (meshEl) meshEl.value = '';
+    if (durEl) durEl.value = '00:30:00';
+    window.dtSelectQuickTestMode('manual');
+  }
+
+  window.dtSelectQuickTestMode = function (mode) {
+    mode = mode === 'timer' ? 'timer' : 'manual';
+    var hidden = document.getElementById('dt-qt-mode');
+    if (hidden) hidden.value = mode;
+    var man = document.getElementById('qt-mode-manual');
+    var tim = document.getElementById('qt-mode-timer');
+    var manRadio = document.getElementById('qt-mode-manual-radio');
+    var timRadio = document.getElementById('qt-mode-timer-radio');
+    if (man) man.classList.toggle('is-active', mode === 'manual');
+    if (tim) tim.classList.toggle('is-active', mode === 'timer');
+    if (manRadio) manRadio.checked = mode === 'manual';
+    if (timRadio) timRadio.checked = mode === 'timer';
+    var row = document.getElementById('dt-qt-duration-row');
+    if (row) row.style.display = mode === 'timer' ? '' : 'none';
+    var page = document.getElementById('page-quick-test');
+    if (page) page.classList.toggle('is-timer-mode', mode === 'timer');
+    var paramsHint = document.getElementById('dt-qt-params-hint');
+    if (paramsHint) {
+      paramsHint.textContent = mode === 'timer' ? 'Batch · duration · media · mesh' : 'Batch · media · mesh';
+    }
+  };
+
+  window.dtToggleQtDuration = function () {
+    var mode = (document.getElementById('dt-qt-mode') || {}).value || 'manual';
+    window.dtSelectQuickTestMode(mode);
+  };
+
+  window.dtCancelQuickTest = function () {
+    DT._quickTestBasket = null;
+    go('home');
+  };
+
+  window.dtStartQuickRun = function () {
+    var basket = DT._quickTestBasket === 2 ? 2 : (DT.selectedBasket === 2 ? 2 : 1);
+    var name = ((document.getElementById('dt-qt-name') || {}).value || '').trim();
+    var batch = ((document.getElementById('dt-qt-batch') || {}).value || '').trim();
+    var mode = ((document.getElementById('dt-qt-mode') || {}).value || 'manual');
+    var media = ((document.getElementById('dt-qt-media') || {}).value || '').trim();
+    var mesh = ((document.getElementById('dt-qt-mesh') || {}).value || '').trim();
+    var durStr = ((document.getElementById('dt-qt-duration') || {}).value || '').trim();
+    if (!name) {
+      toast('Enter a product name', 'error');
+      return;
+    }
+    if (!batch) {
+      toast('Enter a batch number', 'error');
+      return;
+    }
+    var duration = null;
+    if (mode === 'timer') {
+      duration = parseHHMMSS(durStr);
+      if (!(duration > 0)) {
+        toast('Enter a valid duration (HH:MM:SS) for timer mode', 'error');
+        return;
+      }
+    }
+    var temp = Number(DT.setTemp[basket] || 37);
+    DT.products[basket] = name;
+    DT.batches[basket] = batch;
+    DT.fromRecipe[basket] = false;
+    DT.modes[basket] = mode;
+    DT.durations[basket] = duration;
+    DT.media[basket] = media || null;
+    DT.mesh[basket] = mesh || null;
+    DT.configured[basket] = true;
+    updateModeButtonsUI(basket);
+    updateProductNames();
+    updateBasketStates();
+
+    var params = {
+      productName: name,
+      recipeName: name,
+      setTemperature: temp,
+      mode: mode,
+      durationMinutes: duration,
+      basketConfig: DT.basketConfig,
+      batchNumber: batch,
+      media: media || null,
+      mesh: mesh || null,
+    };
+    DT._runParams = DT._runParams || {};
+    DT._runParams[basket] = Object.assign({}, DT._runParams[basket] || {}, params);
+    DT._quickTestBasket = null;
+
+    var startBtn = document.getElementById('dt-qt-start-btn');
+    if (startBtn) startBtn.disabled = true;
+
+    var afterSetup = function () {
+      if (typeof logAuditEvent === 'function') {
+        try {
+          logAuditEvent('Quick test started', name + ', batch ' + batch + ', beaker ' + basket, {
+            eventType: 'lifecycle',
+          });
+        } catch (e) {}
+      }
+      DT.selectedBasket = basket;
+      go('home');
+      // Already preheated — start motors now (no second confirm)
+      window.dtConfirmStart();
+    };
+
+    // If a preheat/ready session is active, patch setup onto the run then confirm
+    if (DT.btnPhase[basket] === 'ready' || DT.btnPhase[basket] === 'preheating' || DT.running[basket]) {
+      api('/api/data/dt/runs/' + basket + '/setup', {
+        method: 'POST',
+        body: {
+          productName: name,
+          batchNumber: batch,
+          mode: mode,
+          durationMinutes: duration,
+          media: media || null,
+          mesh: mesh || null,
+          recipeName: name,
+        },
+      }).then(function (res) {
+        if (!res.ok) throw new Error(res.error || 'Failed to apply setup');
+        afterSetup();
+      }).catch(function (e) {
+        if (startBtn) startBtn.disabled = false;
+        toast(e.message || 'Failed to apply setup', 'error');
+      });
+      return;
+    }
+
+    // Fallback: no active preheat (e.g. opened Quick Test from menu) → start preheat
+    if (startBtn) startBtn.disabled = false;
+    beginPreheatFromSetup(basket);
+  };
+
+  function beginPreheatFromSetup(basket) {
+    basket = basket === 2 ? 2 : 1;
+    var product = DT.products[basket] || ('Beaker ' + basket);
     var temp = Number(DT.setTemp[basket] || 37);
     var mode = DT.modes[basket] || 'manual';
     var dur = DT.durations[basket];
-    if (mode === 'timer' && !(dur > 0)) {
-      toast('Timer mode needs a duration — load a timer recipe or set duration', 'error');
+    // Idle preheat without recipe: use manual mode until Quick Test sets timer details on Start
+    if (!DT.fromRecipe[basket] && !DT.products[basket]) {
+      mode = 'manual';
+      dur = null;
+    } else if (mode === 'timer' && !(dur > 0)) {
+      toast('Timer mode needs a duration — set duration on Quick Test or load a timer recipe', 'error');
       return;
     }
     DT.selectedBasket = basket;
@@ -537,11 +929,10 @@
       durationMinutes: dur,
       basketConfig: DT.basketConfig,
       batchNumber: DT.batches[basket] || '',
-      arNumber: DT.ars[basket] || '',
       media: DT.media[basket],
       mesh: DT.mesh[basket],
     });
-  };
+  }
 
   // -------------------- Recipe create / load --------------------
 
@@ -645,7 +1036,7 @@
     go('manage-recipes');
   };
 
-  // DT load flow: Batch → AR → Beaker → apply to dashboard
+  // DT load flow: Batch → Beaker → test dashboard (no AR number)
   window.loadRecipeById = function (id) {
     return api('/api/data/recipes/' + id).then(function (res) {
       var recipe = res.recipe || res;
@@ -655,7 +1046,7 @@
         toast('This recipe is pending QA approval and cannot be loaded', 'error');
         return;
       }
-      DT.loadCtx = { recipe: recipe, batch: '', ar: '', beaker: null };
+      DT.loadCtx = { recipe: recipe, batch: '', beaker: null };
       window.pendingRecipeToLoad = recipe;
       var title = document.getElementById('batch-modal-title');
       if (title) title.textContent = 'Enter Batch Number';
@@ -679,29 +1070,18 @@
     DT.loadCtx.batch = batch;
     var overlay = document.getElementById('batch-number-modal');
     if (overlay) overlay.style.display = 'none';
-    var arModal = document.getElementById('ar-number-modal');
-    var arInput = document.getElementById('load-recipe-ar-input');
-    if (arModal) arModal.style.display = 'flex';
-    if (arInput) { arInput.value = ''; arInput.focus(); }
+    if (typeof _closeModalOSK === 'function') {
+      try { _closeModalOSK(); } catch (e) {}
+    }
+    // Go to test dashboard immediately, then pick beaker (no AR step)
+    go('home');
+    var recipeName = DT.loadCtx.recipe.productName || DT.loadCtx.recipe.name || 'Recipe';
+    openBeakerSelect('load', 'Select beaker for “' + recipeName + '”');
   };
 
-  window.dtCloseArModal = function () {
-    var arModal = document.getElementById('ar-number-modal');
-    if (arModal) arModal.style.display = 'none';
-    DT.loadCtx = null;
-    window.pendingRecipeToLoad = null;
-  };
-
-  window.dtConfirmArNumber = function () {
-    var arInput = document.getElementById('load-recipe-ar-input');
-    var ar = arInput ? arInput.value.trim() : '';
-    if (!ar) { toast('Please enter an AR number', 'error'); return; }
-    if (!DT.loadCtx) return;
-    DT.loadCtx.ar = ar;
-    var arModal = document.getElementById('ar-number-modal');
-    if (arModal) arModal.style.display = 'none';
-    openBeakerSelect('load', 'Select beaker for “' + (DT.loadCtx.recipe.name || 'Recipe') + '”');
-  };
+  // AR number removed for DT-CFR
+  window.dtCloseArModal = function () {};
+  window.dtConfirmArNumber = function () {};
 
   function openBeakerSelect(purpose, subtitle) {
     DT.beakerPickPurpose = purpose;
@@ -759,7 +1139,7 @@
     }
 
     if (purpose === 'load' && DT.loadCtx && DT.loadCtx.recipe) {
-      applyRecipeToDashboard(DT.loadCtx.recipe, DT.loadCtx.batch, DT.loadCtx.ar, pick);
+      applyRecipeToDashboard(DT.loadCtx.recipe, DT.loadCtx.batch, pick);
       DT.loadCtx = null;
       window.pendingRecipeToLoad = null;
       go('home');
@@ -767,7 +1147,7 @@
     }
   };
 
-  function applyRecipeToDashboard(recipe, batch, ar, beakerPick) {
+  function applyRecipeToDashboard(recipe, batch, beakerPick) {
     var product = recipe.productName || recipe.name || 'Recipe';
     var temperature = parseFloat(recipe.temp != null ? recipe.temp : recipe.setTemperature) || 37.0;
     var mode = recipe.mode || 'manual';
@@ -779,7 +1159,7 @@
     targets.forEach(function (b) {
       DT.products[b] = product;
       DT.batches[b] = batch || '';
-      DT.ars[b] = ar || '';
+      DT.fromRecipe[b] = true;
       DT.setTemp[b] = temperature;
       DT.modes[b] = mode;
       DT.durations[b] = duration;
@@ -793,7 +1173,7 @@
     updateBasketStates();
     if (typeof logAuditEvent === 'function') {
       try {
-        logAuditEvent('Loaded recipe', product + ', batch ' + (batch || '--') + ', AR ' + (ar || '--'), {
+        logAuditEvent('Loaded recipe', product + ', batch ' + (batch || '--'), {
           eventType: 'lifecycle',
         });
       } catch (e) {}
@@ -802,8 +1182,10 @@
 
   window.dtRunRecipe = function (recipe) {
     if (!recipe) return;
-    DT.loadCtx = { recipe: recipe, batch: '', ar: '', beaker: null };
+    DT.loadCtx = { recipe: recipe, batch: '', beaker: null };
     window.pendingRecipeToLoad = recipe;
+    var title = document.getElementById('batch-modal-title');
+    if (title) title.textContent = 'Enter Batch Number';
     var overlay = document.getElementById('batch-number-modal');
     var input = document.getElementById('load-recipe-batch-input');
     if (overlay) overlay.style.display = 'flex';
@@ -816,11 +1198,22 @@
     opts = opts || {};
     DT.running[basket] = false;
     DT.heaterOn[basket] = false;
+    DT.heaterManual[basket] = false;
     DT.preheatInProgress[basket] = false;
     if (DT._confirmPending) DT._confirmPending[basket] = false;
     stopRunPoll(basket);
     syncDtNavLock();
     setStartBtnPhase(basket, 'idle');
+    // Clear quick-test setup so the next Start after preheat (no recipe) opens Quick Test again.
+    // Recipe-loaded product stays until another recipe is loaded.
+    if (!DT.fromRecipe || !DT.fromRecipe[basket]) {
+      DT.products[basket] = null;
+      DT.batches[basket] = null;
+      DT.media[basket] = null;
+      DT.mesh[basket] = null;
+      DT.durations[basket] = null;
+      updateProductNames();
+    }
     var container = document.getElementById('basket' + basket + '-container');
     if (container) {
       var ring = container.querySelector('.basket-active-ring');
@@ -844,7 +1237,7 @@
     ensureSse();
     DT.selectedBasket = basket;
     DT.basketConfig = params.basketConfig || DT.basketConfig || 6;
-    DT.running[basket] = true; // run session active (preheat phase counts for nav lock)
+    DT.running[basket] = true; // formal preheat/run session (nav locks only once motors start)
     syncDtNavLock();
     DT._runParams = DT._runParams || {};
     DT._runParams[basket] = params;
@@ -863,7 +1256,6 @@
         batchNumber: params.batchNumber,
         recipeId: params.recipeId,
         recipeName: params.recipeName || params.productName,
-        arNumber: params.arNumber,
         media: params.media,
         mesh: params.mesh,
       },
@@ -871,11 +1263,15 @@
       if (!res.ok) throw new Error(res.error || 'Preheat failed');
       toast('Preheating basket ' + basket + '…', 'info');
       DT.heaterOn[basket] = true;
+      DT.heaterManual[basket] = false;
       updateHeaterIndicators();
       startRunPoll(basket);
     }).catch(function (e) {
       DT.running[basket] = false;
+      DT.heaterOn[basket] = false;
+      DT.heaterManual[basket] = false;
       setStartBtnPhase(basket, 'idle');
+      updateHeaterIndicators();
       toast(e.message || 'Preheat failed', 'error');
     });
   }
@@ -962,22 +1358,93 @@
     return rid != null ? rid : null;
   }
 
+  function basketFromResponse(res, fallback) {
+    var run = (res && res.run) || {};
+    var report = (res && (res.savedReport || res.report)) || {};
+    var b = run.basket != null ? run.basket : (report.basket != null ? report.basket : report.beaker);
+    b = parseInt(b, 10);
+    if (b === 1 || b === 2) return b;
+    b = parseInt(fallback, 10);
+    return (b === 1 || b === 2) ? b : 1;
+  }
+
+  /** True if the sibling basket still has an active test session (preheat/ready/running). */
+  function siblingBasketStillActive(basket) {
+    var other = basket === 2 ? 1 : 2;
+    if (DT.running[other]) return true;
+    var phase = DT.btnPhase[other] || 'idle';
+    return phase === 'preheating' || phase === 'ready' || phase === 'running';
+  }
+
+  function enqueuePendingReport(reportId) {
+    if (reportId == null) return;
+    DT.pendingReportQueue = DT.pendingReportQueue || [];
+    var id = reportId;
+    for (var i = 0; i < DT.pendingReportQueue.length; i++) {
+      if (String(DT.pendingReportQueue[i]) === String(id)) return;
+    }
+    DT.pendingReportQueue.push(id);
+  }
+
+  /** Open the next queued pending report for approval. Returns true if one was opened. */
+  window.dtOpenNextPendingReport = function () {
+    DT.pendingReportQueue = DT.pendingReportQueue || [];
+    while (DT.pendingReportQueue.length) {
+      var rid = DT.pendingReportQueue.shift();
+      if (rid == null) continue;
+      if (typeof openReportPreview === 'function') {
+        try {
+          openReportPreview(rid, { setGate: true });
+          return true;
+        } catch (e) {}
+      }
+    }
+    return false;
+  };
+
+  window.dtHasPendingReports = function () {
+    return !!(DT.pendingReportQueue && DT.pendingReportQueue.length);
+  };
+
   function openPendingTestReport(res, opts) {
     opts = opts || {};
+    var basket = basketFromResponse(res, opts.basket);
+    var siblingActive = siblingBasketStillActive(basket);
+
     if (opts.aborted) {
+      // Aborted reports stay closed, but if the sibling just finished waiting, open its queue.
+      if (!siblingActive && DT.pendingReportQueue && DT.pendingReportQueue.length) {
+        if (window.dtOpenNextPendingReport()) return;
+      }
       go('home');
       return;
     }
+
     var rid = reportIdFromResponse(res);
-    if (rid && typeof openReportPreview === 'function') {
-      try {
-        openReportPreview(rid, { setGate: true });
-        return;
-      } catch (e) {}
+    if (rid == null) {
+      if (!siblingActive && DT.pendingReportQueue && DT.pendingReportQueue.length) {
+        if (window.dtOpenNextPendingReport()) return;
+      }
+      go('home');
+      if (typeof loadReports === 'function') {
+        try { loadReports(); } catch (e2) {}
+      }
+      return;
     }
+
+    enqueuePendingReport(rid);
+
+    if (siblingActive) {
+      toast('Basket ' + basket + ' complete — report opens when both tests finish', 'info');
+      go('home');
+      return;
+    }
+
+    // Both idle: open oldest queued report (leave any remaining for after approval).
+    if (window.dtOpenNextPendingReport()) return;
     go('home');
     if (typeof loadReports === 'function') {
-      try { loadReports(); } catch (e2) {}
+      try { loadReports(); } catch (e3) {}
     }
   }
 
@@ -1027,11 +1494,11 @@
         if (run.state === 'COMPLETE' || run.state === 'ABORTED') {
           finishBasketUi(basket);
           toast(run.status || run.state, run.aborted ? 'error' : 'success');
-          openPendingTestReport(res, { aborted: !!run.aborted });
+          openPendingTestReport(res, { aborted: !!run.aborted, basket: basket });
         } else if (run.state === 'IDLE' && DT.running[basket]) {
           // Server cleared the run after auto-save; treat as finished.
           finishBasketUi(basket);
-          openPendingTestReport(res, { aborted: false });
+          openPendingTestReport(res, { aborted: false, basket: basket });
         }
       }).catch(function () {});
     }, 1000);
@@ -1100,7 +1567,7 @@
             aborted ? 'Test stopped' : 'Test complete — report pending approval',
             aborted ? 'error' : 'success'
           );
-          openPendingTestReport(res, { aborted: aborted });
+          openPendingTestReport(res, { aborted: aborted, basket: basket });
         }
       })
       .catch(function (e) { toast(e.message || 'Tap failed', 'error'); });
@@ -1115,7 +1582,7 @@
       if (!res.ok) throw new Error(res.error || 'Stop failed');
       finishBasketUi(basket);
       toast(aborted ? 'Test aborted' : 'Test stopped', aborted ? 'error' : 'success');
-      openPendingTestReport(res, { aborted: !!aborted });
+      openPendingTestReport(res, { aborted: !!aborted, basket: basket });
     }).catch(function (e) { toast(e.message || 'Stop failed', 'error'); });
   };
 
@@ -1141,12 +1608,17 @@
   }
 
   window.selectBeakerForValidation = function (beakerId) {
+    if (typeof userCanRunValidation === 'function' && !userCanRunValidation()) {
+      if (typeof denyPermission === 'function') denyPermission('run validation');
+      return;
+    }
     _valBasket = beakerId === 2 ? 2 : 1;
     var hidden = document.getElementById('dt-val-basket');
     if (hidden) hidden.value = String(_valBasket);
     var numEl = document.getElementById('val-beaker-num');
     if (numEl) numEl.textContent = String(_valBasket);
-    go('validate-type-select');
+    // Fixed flow: Beaker → Stroke → Temp → combined report
+    beginCombinedValidationSession(_valBasket);
   };
 
   window.updateValidationSelection = function () {
@@ -1157,42 +1629,95 @@
     if (temp) temp.classList.toggle('selected', !!(selected && selected.value === 'temp'));
   };
 
+  function beginCombinedValidationSession(basket) {
+    basket = basket === 2 ? 2 : 1;
+    clearValAwaitingSave();
+    _valSession = {
+      basket: basket,
+      phase: 'stroke',
+      strokeDone: false,
+      tempDone: false,
+      strokeSnapshot: null,
+    };
+    resetStrokeValidationUi(basket);
+    syncDtNavLock();
+    go('stroke-validation');
+  }
+
   window.startValidationProcess = function () {
+    // Legacy type-select Start — still begins combined Stroke→Temp for selected beaker
     if (typeof userCanRunValidation === 'function' && !userCanRunValidation()) {
       if (typeof denyPermission === 'function') denyPermission('run validation');
       return;
     }
-    var selected = document.querySelector('input[name="val-type"]:checked');
-    if (!selected) {
-      toast('Please select a validation type', 'error');
-      return;
-    }
-    window.updateValidationSelection();
-    var basket = currentValBasket();
-    if (selected.value === 'stroke') {
-      resetStrokeValidationUi(basket);
-      go('stroke-validation');
-      // Do not start motors until user presses Start on the stroke screen
-    } else if (selected.value === 'temp') {
-      var tempBeaker = document.getElementById('temp-beaker');
-      if (tempBeaker) tempBeaker.textContent = String(basket);
-      _tempValRunning = false;
-      _valKind = null;
-      var msg = document.getElementById('validation-message');
-      var st = document.getElementById('validation-status');
-      if (msg) msg.textContent = 'Ready to Validate';
-      if (st) st.textContent = '-';
-      var completeTemp = document.getElementById('complete-temp-validation-btn');
-      if (completeTemp) completeTemp.style.display = 'none';
-      var startLbl = document.getElementById('validation-stop-btn-text');
-      if (startLbl) startLbl.textContent = 'START';
-      go('temp-validation');
-    }
+    beginCombinedValidationSession(currentValBasket());
   };
+
+  function resetTempValidationUi(basket) {
+    basket = basket === 2 ? 2 : 1;
+    var tempBeaker = document.getElementById('temp-beaker');
+    if (tempBeaker) tempBeaker.textContent = String(basket);
+    _tempValRunning = false;
+    _valKind = null;
+    var msg = document.getElementById('validation-message');
+    var st = document.getElementById('validation-status');
+    if (msg) msg.textContent = 'Ready to Validate';
+    if (st) st.textContent = '-';
+    var completeTemp = document.getElementById('complete-temp-validation-btn');
+    if (completeTemp) completeTemp.style.display = 'none';
+    var startLbl = document.getElementById('validation-stop-btn-text');
+    if (startLbl) startLbl.textContent = 'START';
+    var elapsed = document.getElementById('temp-validation-elapsed');
+    if (elapsed) elapsed.textContent = '02:00';
+    var card = document.getElementById('validation-result-card');
+    if (card) {
+      card.classList.remove('is-pass', 'is-fail');
+    }
+  }
+
+  function advanceToTempAfterStroke(strokeSession) {
+    var basket = currentValBasket();
+    var snap = {
+      status: strokeSession.status,
+      strokesPerMin: strokeSession.strokesPerMin,
+      pulsesSeen: strokeSession.pulsesSeen,
+      actualStrokes: strokeSession.pulsesSeen != null ? strokeSession.pulsesSeen : strokeSession.strokesPerMin,
+      requiredRange: strokeSession.requiredRange || '29-32',
+      requiredMin: strokeSession.requiredMin,
+      requiredMax: strokeSession.requiredMax,
+      durationSec: strokeSession.durationSec || 60,
+      sensorSilent: strokeSession.sensorSilent,
+      error: strokeSession.error,
+      operatorName: strokeSession.operatorName,
+      operatorId: strokeSession.operatorId,
+      operatorUsername: strokeSession.operatorUsername,
+      mock: strokeSession.mock,
+      completedAt: strokeSession.endedAt || strokeSession.completedAt,
+      testStartTime: strokeSession.startedAt,
+      testEndTime: strokeSession.endedAt,
+      beaker: basket,
+      basket: basket,
+      validationSubtype: 'stroke',
+    };
+    if (!_valSession) {
+      _valSession = { basket: basket, phase: 'temp', strokeDone: true, tempDone: false, strokeSnapshot: snap };
+    } else {
+      _valSession.strokeDone = true;
+      _valSession.phase = 'temp';
+      _valSession.strokeSnapshot = snap;
+      _valSession.tempDone = false;
+    }
+    clearValAwaitingSave();
+    resetTempValidationUi(basket);
+    syncDtNavLock();
+    toast('Stroke done — continue with temperature validation', 'success');
+    go('temp-validation');
+  }
 
   function resetStrokeValidationUi(basket) {
     basket = basket === 2 ? 2 : 1;
     _valSaveLock = false;
+    clearValAwaitingSave();
     var strokeBeaker = document.getElementById('stroke-beaker');
     if (strokeBeaker) strokeBeaker.textContent = String(basket);
     var counter = document.getElementById('stroke-counter');
@@ -1204,6 +1729,7 @@
     var stopBtn = document.getElementById('stroke-stop-btn');
     if (stopBtn) stopBtn.style.display = 'none';
     setStrokePrimaryBtn('start');
+    syncDtNavLock();
   }
 
   function setStrokePrimaryBtn(mode) {
@@ -1241,6 +1767,7 @@
   window.dtStartStrokeValidation = function () {
     var basket = currentValBasket();
     clearValPoll();
+    clearValAwaitingSave();
     setStrokePrimaryBtn('running');
     var stopBtn = document.getElementById('stroke-stop-btn');
     if (stopBtn) stopBtn.style.display = '';
@@ -1251,7 +1778,6 @@
     api('/api/data/dt/validation/stroke/' + basket + '/start', { method: 'POST', body: {} })
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Start failed');
-        toast('Stroke validation started (60s)', 'info');
         pollValidation('stroke', basket);
       })
       .catch(function (e) {
@@ -1274,6 +1800,7 @@
     var setDisp = document.getElementById('set-temp-display');
     if (setDisp) setDisp.textContent = temp.toFixed(1);
     clearValPoll();
+    clearValAwaitingSave();
     api('/api/data/dt/validation/temp/' + basket + '/start', {
       method: 'POST',
       body: { setTemperature: temp },
@@ -1315,32 +1842,73 @@
   window.stopValidation = function (opts) {
     opts = opts || {};
     var basket = currentValBasket();
-    var kind = _valKind;
-    var wasRunning = !!(kind || _tempValRunning || _valPollTimer);
+    var kind = _valKind || (_valAwaitingSave && _valAwaitingSave.kind) ||
+      (_valSession && _valSession.phase === 'temp' ? 'temp' : null) ||
+      (_valSession && _valSession.phase === 'stroke' ? 'stroke' : null);
 
-    // Idle on stroke/temp screen — leave without abort popup / without killing HW
-    if (!wasRunning) {
-      clearValPoll();
-      _tempValRunning = false;
-      _valKind = null;
-      syncDtNavLock();
-      if (!opts.stay) {
-        try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
-        go('validate-type-select');
+    // Finished validation waiting for Complete & Save / due modal — cannot leave yet
+    if ((_valAwaitingSave || (_valSession && _valSession.tempDone)) && !opts.force) {
+      if (typeof showAppModal === 'function') {
+        showAppModal(
+          'Hit Complete & Save and approve the report to exit this page.',
+          'Validation'
+        );
+      } else {
+        toast('Hit Complete & Save and approve the report to exit', 'info');
       }
       return;
     }
 
+    // Stroke done, waiting to start/finish temp — treat as in-progress session
+    var sessionBetween = !!(!_valAwaitingSave && _valSession && _valSession.strokeDone && !_valSession.tempDone);
+    var wasRunning = !!(kind || _tempValRunning || _valPollTimer || sessionBetween || valSessionActive());
+
+    // Idle — leave without abort popup / without killing HW
+    if (!wasRunning) {
+      clearValPoll();
+      _tempValRunning = false;
+      _valKind = null;
+      clearValAwaitingSave();
+      clearValSession();
+      syncDtNavLock();
+      if (!opts.stay) {
+        try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+        go('validate-beaker');
+      }
+      return;
+    }
+
+    // Running validation — confirm abort (same pattern as active test)
+    if (!opts.confirmed && !opts.force) {
+      var doConfirm = typeof showConfirmModal === 'function'
+        ? showConfirmModal(
+            'Validation is in progress. Do you want to abort and exit?',
+            'Operation in progress'
+          )
+        : Promise.resolve(true);
+      Promise.resolve(doConfirm).then(function (ok) {
+        if (!ok) return;
+        window.stopValidation(Object.assign({}, opts, { confirmed: true, force: true }));
+      });
+      return;
+    }
+
     clearValPoll();
-    var abortUrl = null;
+    var strokeSnap = (_valSession && _valSession.strokeSnapshot) || null;
+    var phase = 'stroke';
     if (kind === 'temp' || _tempValRunning) {
-      abortUrl = '/api/data/dt/validation/temp/' + basket + '/abort';
-    } else if (kind === 'stroke') {
-      abortUrl = '/api/data/dt/validation/stroke/' + basket + '/abort';
+      phase = 'temp';
+    } else if (sessionBetween || (_valSession && _valSession.strokeDone && !_valSession.tempDone)) {
+      phase = 'between';
+    } else if (kind === 'stroke' || (_valSession && _valSession.phase === 'stroke')) {
+      phase = 'stroke';
     }
     _tempValRunning = false;
     _valKind = null;
     _valSaveLock = false;
+    clearValAwaitingSave();
+    clearValSession();
+    closeValidationDueModal();
     syncDtNavLock();
     var startLbl = document.getElementById('validation-stop-btn-text');
     if (startLbl) startLbl.textContent = 'START';
@@ -1349,28 +1917,75 @@
     setStrokePrimaryBtn('start');
     var timer = document.getElementById('stroke-timer');
     if (timer) timer.textContent = '01:00';
+    var completeTemp = document.getElementById('complete-temp-validation-btn');
+    if (completeTemp) completeTemp.style.display = 'none';
 
-    var afterAbort = function () {
-      toast('Validation stopped', 'info');
-      if (!opts.stay) {
-        try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
-        go('validate-type-select');
-      }
-    };
-
-    if (abortUrl) {
-      api(abortUrl, { method: 'POST', body: {} })
-        .then(function () { afterAbort(); })
-        .catch(function () { afterAbort(); });
-    } else if (!opts.stay) {
-      try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
-      go('validate-type-select');
-    }
+    var openPreview = opts.openPreview !== false && !opts.stay;
+    saveAbortedCombinedValidationReport({
+      basket: basket,
+      phase: phase,
+      stroke: strokeSnap,
+      openPreview: openPreview,
+      stay: !!opts.stay,
+    });
   };
+
+  var _valAbortSaveLock = false;
+  function saveAbortedCombinedValidationReport(opts) {
+    opts = opts || {};
+    if (_valAbortSaveLock) return Promise.resolve(null);
+    _valAbortSaveLock = true;
+    var basket = opts.basket === 2 ? 2 : 1;
+    var strokeSnap = opts.stroke != null
+      ? opts.stroke
+      : ((_valSession && _valSession.strokeSnapshot) || null);
+    var phase = opts.phase || 'stroke';
+    var openPreview = opts.openPreview !== false && !opts.stay;
+    clearValAwaitingSave();
+    clearValSession();
+    syncDtNavLock();
+    return api('/api/data/dt/validation/' + basket + '/combined/abort', {
+      method: 'POST',
+      body: {
+        stroke: strokeSnap,
+        phase: phase,
+      },
+    })
+      .then(function (res) {
+        _valAbortSaveLock = false;
+        if (!res.ok) throw new Error(res.error || 'Abort save failed');
+        toast('Validation aborted — report pending approval', 'info');
+        var report = res.report || {};
+        var rid = report.id;
+        if (openPreview && rid && typeof openReportPreview === 'function') {
+          openReportPreview(rid, { setGate: true });
+          return res;
+        }
+        if (!opts.stay) {
+          try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+          go('validate-beaker');
+        }
+        return res;
+      })
+      .catch(function (e) {
+        _valAbortSaveLock = false;
+        toast(e.message || 'Validation aborted (report not saved)', 'error');
+        if (!opts.stay) {
+          try { _suppressDtOpNavGuardOnce = true; } catch (e2) {}
+          go('validate-beaker');
+        }
+        return null;
+      });
+  }
 
   function saveValidationAndPreview(kind, basket, opts) {
     opts = opts || {};
     if (_valSaveLock) return Promise.resolve(null);
+    // Combined Stroke→Temp: open due-interval modal instead of single-kind save
+    if (_valSession && _valSession.strokeDone && _valSession.tempDone) {
+      openValidationDueModal(basket);
+      return Promise.resolve(null);
+    }
     _valSaveLock = true;
     return api('/api/data/dt/validation/' + kind + '/' + basket + '/save', { method: 'POST', body: {} })
       .then(function (res) {
@@ -1378,10 +1993,11 @@
         toast('Validation report saved (pending approval)', 'success');
         _tempValRunning = false;
         _valKind = null;
+        clearValAwaitingSave();
+        clearValSession();
         syncDtNavLock();
         var report = res.report || {};
         var rid = report.id;
-        // Open unapproved/pending report only after operator Save & Complete
         if (rid && typeof openReportPreview === 'function') {
           openReportPreview(rid, { setGate: true });
         } else {
@@ -1398,6 +2014,106 @@
       });
   }
 
+  function formatLocalDdMmYyyy(d) {
+    var dt = d instanceof Date ? d : new Date();
+    var dd = String(dt.getDate()).padStart(2, '0');
+    var mm = String(dt.getMonth() + 1).padStart(2, '0');
+    var yy = dt.getFullYear();
+    return dd + '-' + mm + '-' + yy;
+  }
+
+  function addMonthsDdMmYyyy(baseDate, months) {
+    var d = baseDate instanceof Date ? new Date(baseDate.getTime()) : new Date();
+    var m = parseInt(months, 10) || 12;
+    var year = d.getFullYear();
+    var month = d.getMonth() + m;
+    year += Math.floor(month / 12);
+    month = ((month % 12) + 12) % 12;
+    var day = d.getDate();
+    var lastDay = new Date(year, month + 1, 0).getDate();
+    if (day > lastDay) day = lastDay;
+    return formatLocalDdMmYyyy(new Date(year, month, day));
+  }
+
+  function openValidationDueModal(basket) {
+    var overlay = document.getElementById('validation-due-modal-overlay');
+    if (!overlay) {
+      toast('Due-date modal missing', 'error');
+      return;
+    }
+    overlay.dataset.basket = String(basket === 2 ? 2 : 1);
+    overlay.style.display = 'flex';
+    syncDtNavLock();
+  }
+
+  function closeValidationDueModal() {
+    var overlay = document.getElementById('validation-due-modal-overlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+
+  window.cancelValidationDueModal = function () {
+    closeValidationDueModal();
+  };
+
+  window.selectValidationDueMonths = function (months) {
+    var m = parseInt(months, 10);
+    if (m !== 3 && m !== 6 && m !== 12) {
+      toast('Choose 3, 6, or 12 months', 'error');
+      return;
+    }
+    var overlay = document.getElementById('validation-due-modal-overlay');
+    var basket = parseInt((overlay && overlay.dataset.basket) || String(currentValBasket()), 10);
+    basket = basket === 2 ? 2 : 1;
+    closeValidationDueModal();
+    saveCombinedValidationReport(basket, m);
+  };
+
+  function saveCombinedValidationReport(basket, months) {
+    if (_valSaveLock) return;
+    _valSaveLock = true;
+    var today = new Date();
+    var last = formatLocalDdMmYyyy(today);
+    var next = addMonthsDdMmYyyy(today, months);
+    var strokeSnap = (_valSession && _valSession.strokeSnapshot) || null;
+    var body = {
+      stroke: strokeSnap,
+      pendingValidationDue: {
+        months: months,
+        lastValidationDate: last,
+        nextValidationDate: next,
+        dueKind: 'validation',
+        beaker: basket,
+      },
+    };
+    api('/api/data/dt/validation/' + basket + '/combined/save', { method: 'POST', body: body })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.error || 'Save failed');
+        toast('Validation report saved (pending approval)', 'success');
+        _tempValRunning = false;
+        _valKind = null;
+        _valSaveLock = false;
+        clearValAwaitingSave();
+        clearValSession();
+        syncDtNavLock();
+        var completeTemp = document.getElementById('complete-temp-validation-btn');
+        if (completeTemp) completeTemp.style.display = 'none';
+        var report = res.report || {};
+        var rid = report.id;
+        if (rid && typeof openReportPreview === 'function') {
+          openReportPreview(rid, { setGate: true });
+        } else {
+          try { _suppressDtOpNavGuardOnce = true; } catch (e) {}
+          go('reports');
+          if (typeof loadReports === 'function') loadReports();
+        }
+        return res;
+      })
+      .catch(function (e) {
+        _valSaveLock = false;
+        toast(e.message || 'Save failed', 'error');
+      });
+  }
+
   window.exitTempValidation = function () {
     window.stopValidation();
   };
@@ -1407,6 +2123,15 @@
     var basket = currentValBasket();
     clearValPoll();
     _valSaveLock = false;
+    // Combined session after both done → due modal
+    if (_valSession && _valSession.strokeDone && (kind === 'temp' || _valSession.tempDone)) {
+      if (!_valSession.tempDone) _valSession.tempDone = true;
+      _valSession.phase = 'awaiting_due';
+      setValAwaitingSave('temp', basket);
+      syncDtNavLock();
+      openValidationDueModal(basket);
+      return;
+    }
     saveValidationAndPreview(kind, basket, {});
   };
 
@@ -1439,7 +2164,10 @@
             : (s.strokesPerMin != null ? s.strokesPerMin : null);
           if (counter && liveCount != null) counter.textContent = String(liveCount);
           var rem = s.remainingSec;
-          if (rem == null && s.state === 'RUNNING' && s.startedAtEpoch && s.durationSec) {
+          // During travel-to-start (STARTING), keep full 60s on the timer.
+          if (s.state === 'STARTING') {
+            rem = s.durationSec != null ? s.durationSec : 60;
+          } else if (rem == null && s.state === 'RUNNING' && s.startedAtEpoch && s.durationSec) {
             rem = Math.max(0, Number(s.durationSec) - ((Date.now() / 1000) - Number(s.startedAtEpoch)));
           }
           if (s.state === 'COMPLETE' || s.state === 'ABORTED') rem = 0;
@@ -1451,31 +2179,39 @@
             clearValPoll();
             var wasAborted = s.state === 'ABORTED';
             _valKind = null;
-            syncDtNavLock();
-            var stopBtn = document.getElementById('stroke-stop-btn');
-            if (stopBtn) stopBtn.style.display = 'none';
-            var card = document.getElementById('stroke-validation-status-card');
-            var text = document.getElementById('stroke-validation-status-text');
-            var finalCount = s.pulsesSeen != null ? s.pulsesSeen
-              : (s.strokesPerMin != null ? s.strokesPerMin : null);
-            if (counter && finalCount != null) counter.textContent = String(finalCount);
-            if (card) {
-              card.style.display = '';
-              card.className = 'dt-val-status-card ' + (s.status === 'PASSED' ? 'is-pass' : 'is-fail');
-            }
-            if (text) {
-              var countLabel = finalCount != null ? (' (' + finalCount + ' strokes)' ) : '';
-              text.textContent = wasAborted
-                ? 'VALIDATION ABORTED'
-                : ((s.status === 'PASSED' ? 'VALIDATION PASSED' : 'VALIDATION FAILED') + countLabel);
-            }
-            // Wait for operator Complete & Save — do not auto-open report
             if (wasAborted) {
+              var stopBtnA = document.getElementById('stroke-stop-btn');
+              if (stopBtnA) stopBtnA.style.display = 'none';
+              var cardA = document.getElementById('stroke-validation-status-card');
+              var textA = document.getElementById('stroke-validation-status-text');
+              if (cardA) {
+                cardA.style.display = '';
+                cardA.className = 'dt-val-status-card is-fail';
+              }
+              if (textA) textA.textContent = 'VALIDATION ABORTED';
               setStrokePrimaryBtn('start');
-              toast('Stroke validation aborted', 'info');
+              // Persist aborted report for approval (operator abort via Stop already does this;
+              // this covers HW/session abort while still on the page).
+              saveAbortedCombinedValidationReport({ basket: basket, phase: 'stroke', openPreview: true });
             } else {
-              setStrokePrimaryBtn('save');
-              toast('Validation finished — press Complete & Save', 'success');
+              // Combined flow: stash stroke and continue to temperature
+              var stopBtn = document.getElementById('stroke-stop-btn');
+              if (stopBtn) stopBtn.style.display = 'none';
+              var card = document.getElementById('stroke-validation-status-card');
+              var text = document.getElementById('stroke-validation-status-text');
+              var finalCount = s.pulsesSeen != null ? s.pulsesSeen
+                : (s.strokesPerMin != null ? s.strokesPerMin : null);
+              if (counter && finalCount != null) counter.textContent = String(finalCount);
+              if (card) {
+                card.style.display = '';
+                card.className = 'dt-val-status-card ' + (s.status === 'PASSED' ? 'is-pass' : 'is-fail');
+              }
+              if (text) {
+                var countLabel = finalCount != null ? (' (' + finalCount + ' strokes)' ) : '';
+                text.textContent = ((s.status === 'PASSED' ? 'VALIDATION PASSED' : 'VALIDATION FAILED') + countLabel);
+              }
+              setStrokePrimaryBtn('running');
+              advanceToTempAfterStroke(s);
             }
           }
         }
@@ -1521,19 +2257,32 @@
             _tempValRunning = false;
             var tempAborted = s.state === 'ABORTED';
             _valKind = null;
-            syncDtNavLock();
-            var startLbl = document.getElementById('validation-stop-btn-text');
-            if (startLbl) startLbl.textContent = 'START';
-            var msg = document.getElementById('validation-message');
-            var st = document.getElementById('validation-status');
-            if (msg) msg.textContent = tempAborted ? 'Aborted' : 'Hold complete';
-            if (st) st.textContent = s.status || '-';
-            var completeTemp = document.getElementById('complete-temp-validation-btn');
-            if (completeTemp && !tempAborted) {
-              completeTemp.style.display = '';
-              toast('Validation finished — press Complete & Save', 'success');
-            } else if (tempAborted) {
-              toast('Temperature validation aborted', 'info');
+            if (tempAborted) {
+              var startLblA = document.getElementById('validation-stop-btn-text');
+              if (startLblA) startLblA.textContent = 'START';
+              var msgA = document.getElementById('validation-message');
+              var stA = document.getElementById('validation-status');
+              if (msgA) msgA.textContent = 'Aborted';
+              if (stA) stA.textContent = s.status || '-';
+              saveAbortedCombinedValidationReport({ basket: basket, phase: 'temp', openPreview: true });
+            } else {
+              if (_valSession) {
+                _valSession.tempDone = true;
+                _valSession.phase = 'awaiting_due';
+              }
+              setValAwaitingSave('temp', basket);
+              syncDtNavLock();
+              var startLbl = document.getElementById('validation-stop-btn-text');
+              if (startLbl) startLbl.textContent = 'START';
+              var msg = document.getElementById('validation-message');
+              var st = document.getElementById('validation-status');
+              if (msg) msg.textContent = 'Hold complete';
+              if (st) st.textContent = s.status || '-';
+              var completeTemp = document.getElementById('complete-temp-validation-btn');
+              if (completeTemp) {
+                completeTemp.style.display = '';
+                toast('Validation finished — press Complete & Save', 'success');
+              }
             }
           }
         }
@@ -1543,7 +2292,34 @@
 
   // -------------------- Calibration --------------------
 
+  window.selectBeakerForCalibration = function (beakerId) {
+    var pick = beakerId === 2 ? 2 : 1;
+    if (!DT.configured[pick]) {
+      toast('Configure beaker ' + pick + ' in Settings → Add Beakers', 'error');
+      return;
+    }
+    DT.calBeaker = pick;
+    DT.calSessionActive = true;
+    syncDtNavLock();
+    var numEl = document.getElementById('calibration-beaker-num');
+    if (numEl) numEl.textContent = String(DT.calBeaker);
+    var sensor = document.getElementById('dt-cal-sensor');
+    if (sensor) sensor.value = DT.calBeaker === 2 ? 'IR2' : 'IR1';
+    updateTempDisplay(DT.latestTemps || {});
+    go('calibration-type-select');
+  };
+
+  window.dtClearCalibrationSession = function () {
+    DT.calSessionActive = false;
+    syncDtNavLock();
+  };
+
   window.dtOpenCalibrationBeakerSelect = function () {
+    // Prefer dedicated page (Validate → Calibrate flow); keep modal only as fallback.
+    if (typeof goToPage === 'function') {
+      goToPage('calibrate-beaker');
+      return;
+    }
     openBeakerSelect('calibration', 'Select beaker to calibrate');
   };
 
@@ -1724,11 +2500,23 @@
   };
 
   window.dtToggleHeater = function (basket) {
+    basket = basket === 2 ? 2 : 1;
+    if (!DT.configured[basket]) {
+      toast('Configure beaker ' + basket + ' in Settings → Add Beakers', 'error');
+      return;
+    }
+    // If a full test run is active on this basket, do not use settings heater toggle
+    if (DT.running[basket] && !DT.heaterManual[basket] &&
+        (DT.btnPhase[basket] === 'running' || DT.btnPhase[basket] === 'ready')) {
+      toast('Stop the active test on beaker ' + basket + ' first', 'error');
+      return;
+    }
+
     var turningOn = !DT.heaterOn[basket];
     var input = document.getElementById('set-temp-' + basket);
     var setTempVal = parseFloat(input && input.value) || DT.setTemp[basket] || 37;
     DT.setTemp[basket] = setTempVal;
-    updateDashboardTempButton();
+    if (typeof updateDashboardTempButton === 'function') updateDashboardTempButton();
 
     var t1 = 0, t2 = 0;
     if (turningOn) {
@@ -1753,9 +2541,33 @@
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Heater command failed');
         DT.heaterOn[basket] = turningOn;
+        if (turningOn) {
+          DT.heaterManual[basket] = true;
+          // If a formal preheat run is not active, drive home Preheat UI
+          if (!DT.running[basket]) {
+            setStartBtnPhase(basket, 'preheating');
+          }
+        } else {
+          // Turning off from settings — stop formal preheat run if active, else clear manual heat
+          if (DT.running[basket] && (DT.btnPhase[basket] === 'preheating' || DT.preheatInProgress[basket])) {
+            api('/api/data/dt/runs/' + basket + '/stop', {
+              method: 'POST',
+              body: { aborted: true, reason: 'preheat_abort' },
+            }).then(function () {
+              finishBasketUi(basket);
+            }).catch(function () {
+              DT.heaterManual[basket] = false;
+              finishBasketUi(basket);
+            });
+            toast('Heater ' + basket + ' OFF', 'success');
+            return;
+          }
+          DT.heaterManual[basket] = false;
+          if (!DT.running[basket]) {
+            setStartBtnPhase(basket, 'idle');
+          }
+        }
         updateHeaterIndicators();
-        var label = document.getElementById('control-text-' + basket);
-        if (label) label.textContent = turningOn ? 'Stop' : 'Start';
         toast('Heater ' + basket + (turningOn ? ' ON' : ' OFF'), 'success');
       })
       .catch(function (e) { toast(e.message || 'Heater failed', 'error'); });
@@ -1764,11 +2576,12 @@
   // Keep quick-test helpers for compatibility
   window.startQuickTest = function () {
     ensureSse();
-    go('home');
-    toast('Use Timer/Manual on the dashboard, then press Start', 'info');
+    var basket = DT.selectedBasket === 2 ? 2 : 1;
+    if (!DT.configured[basket]) {
+      basket = DT.configured[1] ? 1 : (DT.configured[2] ? 2 : 1);
+    }
+    openQuickTestSetup(basket);
   };
-  window.dtToggleQtDuration = function () {};
-  window.dtStartQuickRun = function () {};
 
   window.showCreateRecipe = function () {
     if (typeof startRecipeCreation === 'function') startRecipeCreation();

@@ -536,18 +536,20 @@ function updateProfileFromCurrentUser(user) {
     if (roleEl) {
         roleEl.textContent = displayRoleLabel(role);
     }
-    var fullNameInput = document.getElementById('profile-fullname');
-    if (fullNameInput) {
-        fullNameInput.value = name || '';
-        fullNameInput.readOnly = true;
-        fullNameInput.classList.add('input-readonly');
+    // Full Name + User ID are identity fields — never editable for any role.
+    function lockProfileIdentityField(el, value) {
+        if (!el) return;
+        el.value = value || '';
+        el.readOnly = true;
+        el.disabled = true;
+        el.tabIndex = -1;
+        el.setAttribute('aria-readonly', 'true');
+        el.classList.add('input-readonly', 'profile-identity-field');
+        el.removeAttribute('onfocus');
+        el.blur();
     }
-    var userIdInput = document.getElementById('profile-userid');
-    if (userIdInput) {
-        userIdInput.value = user.username || '';
-        userIdInput.readOnly = true;
-        userIdInput.classList.add('input-readonly');
-    }
+    lockProfileIdentityField(document.getElementById('profile-fullname'), name);
+    lockProfileIdentityField(document.getElementById('profile-userid'), user.username || '');
 }
 
 function apiRequest(path, options) {
@@ -1137,6 +1139,9 @@ function unlockReportPreviewAfterServerStatus(preview, reportId, options) {
     if (typeof _trClearTestRunCheckpoint === 'function') _trClearTestRunCheckpoint();
     if (st === 'approved') {
         if (reportId != null) _saveReportPdfSilent(reportId);
+        if (openNextDtPendingReportAfterApproval(reportId)) {
+            return true;
+        }
         if (options.showModal !== false) {
             showAppModal('Report has been approved. You may now print or leave this screen.', 'Report');
         }
@@ -1147,6 +1152,22 @@ function unlockReportPreviewAfterServerStatus(preview, reportId, options) {
         showAppModal(closedMsg, 'Report');
     }
     return true;
+}
+
+/** After approving one dual-basket report, open the next pending approval immediately. */
+function openNextDtPendingReportAfterApproval(approvedId) {
+    if (typeof dtHasPendingReports !== 'function' || !dtHasPendingReports()) return false;
+    if (typeof dtOpenNextPendingReport !== 'function') return false;
+    try {
+        if (approvedId != null) _saveReportPdfSilent(approvedId);
+    } catch (e) {}
+    var opened = false;
+    try { opened = !!dtOpenNextPendingReport(); } catch (e2) { opened = false; }
+    if (opened) {
+        showAppModal('Report approved. Opening the next report for approval.', 'Report');
+        return true;
+    }
+    return false;
 }
 
 /** True when an aborted report was closed due to power loss (not operator Abort). */
@@ -1558,6 +1579,7 @@ var PAGE_TITLES = {
     'add-member': 'Add New Member',
     'validate': 'Validation & Calibration',
     'validate-beaker': 'Select Beaker',
+    'calibrate-beaker': 'Select Beaker',
     'validate-type-select': 'Select Validation Type',
     'stroke-validation': 'Stroke Validation',
     'temp-validation': 'Temperature Validation',
@@ -1599,6 +1621,7 @@ var PAGE_AUDIT_LABELS = {
     'add-member': 'Add New Member',
     validate: 'Validation',
     'validate-beaker': 'Select Beaker',
+    'calibrate-beaker': 'Select Beaker',
     'validate-type-select': 'Select Validation Type',
     'stroke-validation': 'Stroke Validation',
     'temp-validation': 'Temperature Validation',
@@ -1905,6 +1928,13 @@ function updateDateTime() {
 
 function showLoginScreen() {
     _auditActivePage = null;
+    // Fresh session UI: clear previously loaded recipe from the top bar / dashboard.
+    try {
+        if (typeof dtResetSessionUi === 'function') dtResetSessionUi();
+    } catch (e) {}
+    try { pendingRecipeToLoad = null; } catch (e2) {}
+    try { window.pendingRecipeToLoad = null; } catch (e3) {}
+    try { recipeListMode = 'manage'; } catch (e4) {}
     var login = document.getElementById('page-login');
     var app = document.querySelector('.app-container');
     if (app) app.style.display = 'none';
@@ -1913,6 +1943,13 @@ function showLoginScreen() {
     stopAutoLogoutWatcher();
     resetLoginFormFields();
     if (typeof loadLoginFactorySettingsDisplay === 'function') loadLoginFactorySettingsDisplay();
+    // Next login lands on home with a blank product bar.
+    try {
+        var pages = document.querySelectorAll('.page');
+        pages.forEach(function (p) { p.classList.remove('active'); });
+        var home = document.getElementById('page-home');
+        if (home) home.classList.add('active');
+    } catch (e5) {}
 }
 
 /** Clear login ID and password fields (call on logout / session end). */
@@ -1961,6 +1998,9 @@ function updateSettingsVisibility() {
     }
     showIf('.settings-datetime', 'edit-datetime');
     showIf('.settings-recipes', 'recipe-list');
+    showIf('.settings-beakers', 'add-beakers');
+    showIf('.settings-baskets', 'add-baskets');
+    showIf('.settings-heater', 'heater-control');
     var disableCard = document.querySelector('.settings-disable');
     if (disableCard) {
         var show =
@@ -2020,10 +2060,18 @@ function goToPage(pageName) {
     if (!_suppressDtOpNavGuardOnce && typeof dtIsOperationRunning === 'function' && dtIsOperationRunning()) {
         var allowed = (typeof dtNavAllowedDuringOp === 'function') ? dtNavAllowedDuringOp(pageName) : false;
         if (!allowed) {
-            showConfirmModal(
-                'Test/Validation/Calibration is running. Do you want to abort and exit?',
-                'Operation in progress'
-            ).then(function (ok) {
+            // Validation finished — must Complete & Save / approve; cannot abort-exit
+            if (typeof dtIsValidationAwaitingSave === 'function' && dtIsValidationAwaitingSave()) {
+                showAppModal(
+                    'Hit Complete & Save and approve the report to exit this page.',
+                    'Validation'
+                );
+                return;
+            }
+            var leaveMsg = (typeof dtIsValidationInProgress === 'function' && dtIsValidationInProgress())
+                ? 'Validation is in progress. Do you want to abort and exit?'
+                : 'Test/Validation/Calibration is running. Do you want to abort and exit?';
+            showConfirmModal(leaveMsg, 'Operation in progress').then(function (ok) {
                 if (!ok) return;
                 Promise.resolve(
                     typeof dtAbortActiveOperations === 'function' ? dtAbortActiveOperations() : null
@@ -2297,13 +2345,18 @@ function goBack() {
         }
         return;
     } else if (pageId === 'page-stroke-validation' || pageId === 'page-temp-validation') {
-        goToPage('validate-type-select');
+        goToPage('validate-beaker');
         return;
     } else if (pageId === 'page-approval-verify') {
         if (typeof cancelApprovalVerifyModal === 'function') cancelApprovalVerifyModal();
         else if (typeof cancelAdminApprovalVerifyModal === 'function') cancelAdminApprovalVerifyModal();
         return;
     } else if (pageId === 'page-calibration-type-select') {
+        if (typeof dtClearCalibrationSession === 'function') dtClearCalibrationSession();
+        goToPage('calibrate-beaker');
+        return;
+    } else if (pageId === 'page-calibrate-beaker') {
+        if (typeof dtClearCalibrationSession === 'function') dtClearCalibrationSession();
         goToPage('validate');
         return;
     } else if (pageId === 'page-load-calibration' || pageId === 'page-distance-zero-calibration') {
@@ -2704,11 +2757,15 @@ function submitExpiredPasswordReset() {
 }
 
 function logout() {
+    var dtPreheat = (typeof dtIsPreheatOrReadyActive === 'function' && dtIsPreheatOrReadyActive());
+    var dtAwaitingValSave = (typeof dtIsValidationAwaitingSave === 'function' && dtIsValidationAwaitingSave());
+    var dtOp = (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning());
     var runActive =
         isTestRunActive() ||
         (validationRunState === 'running') ||
         (validationRunBackendPending === true) ||
-        (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning());
+        dtOp ||
+        dtPreheat;
     var pendingGate = hasActiveReportApprovalGate();
 
     var doLogout = function () {
@@ -2727,14 +2784,26 @@ function logout() {
         });
     };
 
+    if (dtAwaitingValSave) {
+        showAppModal(
+            'Hit Complete & Save and approve the report to exit this page.',
+            'Validation'
+        );
+        return;
+    }
+
     if (runActive) {
-        var logoutMsg = (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning())
-            ? 'Test/Validation/Calibration is running. Do you want to abort and logout?'
-            : (isTestRunActive()
-                ? 'Test is running. Do you want to abort and logout?'
-                : (validationRunState === 'running'
-                    ? 'Validation is running. Do you want to abort and logout?'
-                    : 'Operation in progress. Do you want to abort and logout?'));
+        var logoutMsg = (typeof dtIsValidationInProgress === 'function' && dtIsValidationInProgress())
+            ? 'Validation is in progress. Do you want to abort and logout?'
+            : (dtOp
+                ? 'Test/Validation/Calibration is running. Do you want to abort and logout?'
+                : (dtPreheat
+                    ? 'Preheating is in progress. Do you want to stop and logout?'
+                    : (isTestRunActive()
+                        ? 'Test is running. Do you want to abort and logout?'
+                        : (validationRunState === 'running'
+                            ? 'Validation is running. Do you want to abort and logout?'
+                            : 'Operation in progress. Do you want to abort and logout?'))));
         showConfirmModal(logoutMsg, 'Operation in progress').then(function (ok) {
             if (!ok) return;
             doLogout();
@@ -2807,12 +2876,37 @@ function markAutoLogoutActivity() {
     _autoLogoutLastActivityMs = Date.now();
 }
 
+function isOnReportApprovalPage() {
+    try {
+        var active = document.querySelector('.page.active');
+        var id = active && active.id ? String(active.id) : '';
+        if (id === 'page-approval-verify') return true;
+        if (id === 'page-report-preview') {
+            if (typeof hasActiveReportApprovalGate === 'function' && hasActiveReportApprovalGate()) return true;
+            if (typeof isReportPendingApproval === 'function' && isReportPendingApproval(window._lastReportPreview)) return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
 function isAutoLogoutRunBlocked() {
-    return isTestRunActive() ||
-        (validationRunState === 'running') ||
-        (validationRunBackendPending === true) ||
-        (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning()) ||
-        hasActiveReportApprovalGate();
+    // Preheat / test / validation / calibration in progress
+    try {
+        if (typeof dtIsOperationRunning === 'function' && dtIsOperationRunning()) return true;
+        if (typeof dtIsPreheatOrReadyActive === 'function' && dtIsPreheatOrReadyActive()) return true;
+    } catch (e) {}
+    // Legacy friability test-run flags (if present)
+    if (typeof isTestRunActive === 'function' && isTestRunActive()) return true;
+    if (validationRunState === 'running' || validationRunBackendPending === true) return true;
+    if (typeof isValidationRunActive === 'function' && isValidationRunActive()) return true;
+    // Pending report approval gate or approval UI
+    if (typeof hasActiveReportApprovalGate === 'function' && hasActiveReportApprovalGate()) return true;
+    if (isOnReportApprovalPage()) return true;
+    if (typeof isReportPreviewNavigationLocked === 'function' &&
+        isReportPreviewNavigationLocked(window._lastReportPreview)) {
+        return true;
+    }
+    return false;
 }
 
 function ensureAutoLogoutListeners() {
@@ -2847,6 +2941,7 @@ function autoLogoutTick() {
     }
     var app = document.querySelector('.app-container');
     if (!app || app.style.display === 'none') return;
+    // Never auto-logout while preheat / test / validation / calibration / report approval is active
     if (isAutoLogoutRunBlocked()) {
         markAutoLogoutActivity();
         return;
@@ -2854,14 +2949,27 @@ function autoLogoutTick() {
     if (factoryAutoLogoutMinutes < 1) return;
     var limitMs = factoryAutoLogoutMinutes * 60000;
     if (Date.now() - _autoLogoutLastActivityMs >= limitMs) {
+        // Re-check immediately before firing (race with Start / preheat / approval)
+        if (isAutoLogoutRunBlocked()) {
+            markAutoLogoutActivity();
+            return;
+        }
         stopAutoLogoutWatcher();
         performAutoLogoutDueToInactivity();
     }
 }
 
 function performAutoLogoutDueToInactivity() {
+    if (isAutoLogoutRunBlocked()) {
+        markAutoLogoutActivity();
+        ensureAutoLogoutWatcher();
+        return;
+    }
     var pendingGate = hasActiveReportApprovalGate();
     var finish = function () {
+        if (typeof dtAbortActiveOperations === 'function') {
+            try { dtAbortActiveOperations(); } catch (e) {}
+        }
         apiRequest(API_BASE + '/api/data/auth/logout', { method: 'POST', body: { reason: 'inactivity' } }).catch(function () {});
         window.currentUser = null;
         try { localStorage.removeItem('currentUser'); } catch (e) {}
@@ -2874,6 +2982,7 @@ function performAutoLogoutDueToInactivity() {
     };
     if (pendingGate) {
         markAutoLogoutActivity();
+        ensureAutoLogoutWatcher();
         return;
     }
     if (_trIsActiveTestOperation() && typeof _trAbortRunningTestNow === 'function') {
@@ -2936,7 +3045,9 @@ function loginBiometric() {
         showAppModal(msg, 'Biometric Login');
     }).catch(function (err) {
         if (err && err.name === 'AbortError') return;
-        showAppModal('Biometric login failed: ' + (err && err.message ? err.message : 'Network error'), 'Biometric Login');
+        var msg = (err && err.message) ? String(err.message) : 'Network error';
+        if (/cancelled/i.test(msg)) return;
+        showAppModal('Biometric login failed: ' + msg, 'Biometric Login');
     }).finally(function () {
         hideBiometricProgressOverlay();
         window._loginBiometricInFlight = false;
@@ -3109,28 +3220,41 @@ function runBiometricVerifyWithRetry(opts) {
     });
 }
 
+function _stopBiometricHardwareScan() {
+    // Fire-and-forget: abort GenImg loop on the sensor and turn LED off.
+    return apiRequest(API_BASE + '/api/biometric/cancel', {
+        method: 'POST',
+        body: {}
+    }).catch(function () {});
+}
+
 function _cancelBiometricEnrollSession() {
     var username = _biometricEnrollUsername;
-    if (!username) return Promise.resolve();
+    if (!username) return _stopBiometricHardwareScan();
     return apiRequest(API_BASE + '/api/biometric/enroll/cancel', {
         method: 'POST',
         body: { username: username }
-    }).catch(function () {});
+    }).catch(function () {}).then(function () {
+        return _stopBiometricHardwareScan();
+    });
 }
 
 function cancelBiometricProgress() {
     _biometricEnrollCancelled = true;
     if (typeof window._loginBiometricAbort === 'function') {
-        window._loginBiometricAbort();
+        var abortLogin = window._loginBiometricAbort;
+        window._loginBiometricAbort = null;
+        abortLogin();
         hideBiometricProgressOverlay();
         window._loginBiometricInFlight = false;
-        window._loginBiometricAbort = null;
+        _stopBiometricHardwareScan();
         return;
     }
     if (typeof window._biometricVerifyCancelResolve === 'function') {
         var cancelVerify = window._biometricVerifyCancelResolve;
         window._biometricVerifyCancelResolve = null;
         cancelVerify();
+        _stopBiometricHardwareScan();
         return;
     }
     _cancelBiometricEnrollSession().finally(function () {
@@ -3362,7 +3486,7 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
         'Entered screen', 'Exited screen',
         'Opened Quick Test', 'Opened Load Recipe', 'Opened Manage Recipe', 'Loaded recipe',
         'Opened disabled recipes',
-        'Test preheat started', 'Test ready', 'Test started', 'Quick test started',
+        'Test preheat started', 'Test preheat stopped', 'Test ready', 'Test started', 'Quick test started',
         'Test finished', 'Test aborted', 'Test auto-aborted',
         'Test performed', 'Quick test performed',
         'Entered USP 1 validation', 'Entered USP 2 validation',
@@ -3371,10 +3495,13 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
         'USP 1 adapter error', 'USP 2 adapter error', 'Adapter check error',
         'Validation performed', 'Report saved', 'Report generated', 'Report approved',
         'Report aborted', 'Report aborted (power loss)', 'Report PDF generated',
+        'Report preview viewed', 'Pending report discarded',
         'Recipe created', 'Recipe edited', 'Recipe approved', 'Power interruption',
-        'Approval verification', 'Disable Recipe', 'Recipe disabled',
-        'Factory settings changed', 'System date change',
-        'Added new user', 'Password changed', 'User create', 'User update'
+        'Approval verification', 'Disable Recipe', 'Recipe disabled', 'Enable Recipe',
+        'Factory settings changed', 'System date change', 'RTC date set',
+        'Added new user', 'Password changed', 'User create', 'User update',
+        'User disabled', 'User disable approved', 'User unlock', 'User enable',
+        'Print A4', 'Print thermal', 'Reports exported', 'Audit trail exported', 'Export approved'
     ];
     coreActions.forEach(function (a) {
         if (actions.indexOf(a) === -1) actions.push(a);
@@ -4387,14 +4514,8 @@ function getReportDrumPassFail(preview) {
 }
 
 function getReportDrumCount(preview) {
-    var p = preview || {};
-    var reportType = String(p.type || '').trim().toLowerCase();
-    // Validation (and calibration) always use a single Pass/Fail — never per-drum.
-    if (reportType === 'validation' || reportType === 'calibration') return 1;
-    var td = p.testData || {};
-    var recipe = p.recipe || td.recipe || td;
-    var n = parseInt(td.drumCount != null ? td.drumCount : recipe.drumCount, 10);
-    return n === 1 ? 1 : 2;
+    // DT-CFR / Hardness-Cfr: single Pass/Fail only (no friability dual-drum UI).
+    return 1;
 }
 
 function _refreshQuickStepSummary() {
@@ -4741,11 +4862,7 @@ function selectOperation(type) {
             showAppModal('You do not have permission to run calibration.', 'Permission');
             return;
         }
-        if (typeof dtOpenCalibrationBeakerSelect === 'function') {
-            dtOpenCalibrationBeakerSelect();
-            return;
-        }
-        goToPage('calibration-type-select');
+        goToPage('calibrate-beaker');
     }
 }
 
@@ -5646,7 +5763,23 @@ function resolveReportDataForPrint(callback) {
     }).catch(function () { callback(null); });
 }
 
+var _reportPrintBusy = false;
+
+function _setReportPrintButtonsBusy(busy) {
+    document.querySelectorAll(
+        '#report-preview-actions .btn-print, #recipe-print-preview-actions .btn-print, ' +
+        '.report-preview-actions .btn-print'
+    ).forEach(function (btn) {
+        btn.disabled = !!busy;
+        btn.classList.toggle('is-print-busy', !!busy);
+    });
+}
+
 function handlePrintReport() {
+    if (_reportPrintBusy) {
+        showAppModal('Print already in progress. Please wait.', 'Print');
+        return;
+    }
     if (!userCanPrintReports()) {
         showAppModal('You do not have permission to print reports.', 'Print');
         return;
@@ -5659,8 +5792,12 @@ function handlePrintReport() {
         showAppModal('No report selected to print.', 'Print');
         return;
     }
+    _reportPrintBusy = true;
+    _setReportPrintButtonsBusy(true);
     resolveReportDataForPrint(function (reportData) {
         if (!reportData) {
+            _reportPrintBusy = false;
+            _setReportPrintButtonsBusy(false);
             showAppModal('Could not load report data. Please try again.', 'Print');
             return;
         }
@@ -5676,11 +5813,18 @@ function handlePrintReport() {
             }
         }).catch(function (e) {
             showAppModal('Print failed: ' + (e && e.message ? e.message : 'Check printer connection.'), 'Print');
+        }).finally(function () {
+            _reportPrintBusy = false;
+            _setReportPrintButtonsBusy(false);
         });
     });
 }
 
 function handlePrintThermal() {
+    if (_reportPrintBusy) {
+        showAppModal('Print already in progress. Please wait.', 'Print');
+        return;
+    }
     if (!userCanPrintReports()) {
         showAppModal('You do not have permission to print reports.', 'Print');
         return;
@@ -5693,8 +5837,12 @@ function handlePrintThermal() {
         showAppModal('No report selected to print.', 'Print');
         return;
     }
+    _reportPrintBusy = true;
+    _setReportPrintButtonsBusy(true);
     resolveReportDataForPrint(function (reportData) {
         if (!reportData) {
+            _reportPrintBusy = false;
+            _setReportPrintButtonsBusy(false);
             showAppModal('Could not load report data. Please try again.', 'Print');
             return;
         }
@@ -5710,6 +5858,9 @@ function handlePrintThermal() {
             }
         }).catch(function (e) {
             showAppModal('Print failed: ' + (e && e.message ? e.message : 'Check printer connection.'), 'Print');
+        }).finally(function () {
+            _reportPrintBusy = false;
+            _setReportPrintButtonsBusy(false);
         });
     });
 }
@@ -5791,6 +5942,10 @@ function openRecipePrintPreview(recipeIdOrRecipe) {
 }
 
 function handlePrintRecipeA4() {
+    if (_reportPrintBusy) {
+        showAppModal('Print already in progress. Please wait.', 'Print');
+        return;
+    }
     if (!currentRecipeForPrint) {
         showAppModal('No recipe to print. Open a recipe from View Recipe first.', 'Print');
         return;
@@ -5806,6 +5961,8 @@ function handlePrintRecipeA4() {
         doPrintA4();
     }
     function doPrintA4() {
+        _reportPrintBusy = true;
+        _setReportPrintButtonsBusy(true);
         fetch((API_BASE || '') + '/api/print/a4', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5818,11 +5975,18 @@ function handlePrintRecipeA4() {
             }
         }).catch(function (e) {
             showAppModal('Print failed: ' + (e && e.message ? e.message : 'Check printer connection.'), 'Print');
+        }).finally(function () {
+            _reportPrintBusy = false;
+            _setReportPrintButtonsBusy(false);
         });
     }
 }
 
 function handlePrintRecipeThermal() {
+    if (_reportPrintBusy) {
+        showAppModal('Print already in progress. Please wait.', 'Print');
+        return;
+    }
     if (!currentRecipeForPrint) {
         showAppModal('No recipe to print. Open a recipe from View Recipe first.', 'Print');
         return;
@@ -5838,6 +6002,8 @@ function handlePrintRecipeThermal() {
         doPrintThermal();
     }
     function doPrintThermal() {
+        _reportPrintBusy = true;
+        _setReportPrintButtonsBusy(true);
         fetch((API_BASE || '') + '/api/print/thermal', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5850,6 +6016,9 @@ function handlePrintRecipeThermal() {
             }
         }).catch(function (e) {
             showAppModal('Print failed: ' + (e && e.message ? e.message : 'Check printer connection.'), 'Print');
+        }).finally(function () {
+            _reportPrintBusy = false;
+            _setReportPrintButtonsBusy(false);
         });
     }
 }
@@ -6051,26 +6220,99 @@ function _populateLegacyReportPreview(preview) {
     var remarksEl = document.getElementById('report-remarks-box');
     if (remarksEl) remarksEl.textContent = preview.remarks || td.remarks || 'N/A';
 
+    // STATISTICS: min / max / mean bath temperature for the test run
+    _populateReportStatisticsSection(preview, td);
+
     setReportEl('report-operated-by', preview.operatorName || td.operatorName || '--');
-    setReportEl('report-employee-id', preview.employeeId || td.employeeId || '--');
+    setReportEl(
+        'report-employee-id',
+        preview.employeeId || td.employeeId || preview.operatorId || td.operatorId ||
+            preview.operatorUsername || td.operatorUsername || preview.operatedByUsername ||
+            td.operatedByUsername || '--'
+    );
     setReportEl('report-approved-by', formatApprovedByLine(preview.approvedBy || '--'));
 
-    var drumPf = getReportDrumPassFail(preview);
-    var reportTypeNorm = String(preview.type || 'test').trim().toLowerCase();
-    var isValidationOrCal = reportTypeNorm === 'validation' || reportTypeNorm === 'calibration';
-    var drumCount = isValidationOrCal ? 1 : getReportDrumCount(preview);
-    setReportEl('report-drum1-pass-fail', drumPf.drum1 || preview.approvalPassFail || '--');
-    setReportEl('report-drum2-pass-fail', drumPf.drum2 || '--');
+    // Hardness-Cfr style: single Pass / Fail + approval remarks
+    var pf = preview.approvalPassFail || td.approvalPassFail || '--';
+    setReportEl('report-drum1-pass-fail', pf);
+    setReportEl('report-approval-pass-fail', pf);
     var drum2Row = document.getElementById('report-drum2-pass-fail-row');
-    if (drum2Row) drum2Row.style.display = drumCount === 2 ? '' : 'none';
+    if (drum2Row) drum2Row.style.display = 'none';
     var drum1Label = document.getElementById('report-drum1-pass-fail-label');
-    if (drum1Label) {
-        drum1Label.textContent = drumCount === 2 ? 'Drum 1 Pass / Fail' : 'Pass / Fail';
-    }
-
-    setReportEl('report-approval-pass-fail', preview.approvalPassFail || '--');
+    if (drum1Label) drum1Label.textContent = 'Pass / Fail';
     var apprRem = preview.approvalRemarks;
     setReportEl('report-approval-remarks', (apprRem != null && String(apprRem).trim() !== '') ? apprRem : 'N/A');
+}
+
+function _populateReportStatisticsSection(preview, td) {
+    var section = document.getElementById('report-statistics-section');
+    var bodyEl = document.getElementById('report-statistics-body');
+    if (!bodyEl) return;
+    var p = preview || {};
+    var t = td || {};
+    var reportType = String(p.type || t.type || 'test').trim().toLowerCase();
+    var mode = String(p.mode || t.mode || (p.reportDerived && p.reportDerived.mode) || '').trim().toLowerCase();
+    if (reportType !== 'test' || mode === 'timer') {
+        if (section) section.style.display = 'none';
+        bodyEl.innerHTML = '';
+        return;
+    }
+    if (section) section.style.display = '';
+    var stats = p.statistics || t.statistics || {};
+    function statVal(key) {
+        var row = stats[key];
+        if (row && typeof row === 'object' && row.value != null && String(row.value).trim() !== '') {
+            return String(row.value);
+        }
+        if (row != null && typeof row !== 'object') return String(row);
+        return 'N/A';
+    }
+    // Prefer server tap-time stats; fall back to local compute from hole/vessel times
+    var hasTapStats = !!(stats['First Tap'] || stats['Second Tap'] || stats['Completion']);
+    if (!hasTapStats) {
+        var cfg = parseInt(p.basketConfig != null ? p.basketConfig : (t.basketConfig != null ? t.basketConfig : 6), 10);
+        if (!(cfg > 1)) {
+            bodyEl.innerHTML =
+                '<tr><th>First Tap</th><td>N/A</td></tr>' +
+                '<tr><th>Second Tap</th><td>N/A</td></tr>' +
+                '<tr><th>Completion</th><td>N/A</td></tr>';
+            return;
+        }
+        var hct = t.holeCompletionTimes || p.holeCompletionTimes || {};
+        var secs = [];
+        Object.keys(hct).forEach(function (k) {
+            var n = parseInt(hct[k], 10);
+            if (!isNaN(n)) secs.push(n);
+        });
+        if (!secs.length) {
+            var vt = t.vesselTimes || p.vesselTimes || {};
+            Object.keys(vt).forEach(function (k) {
+                var parts = String(vt[k] || '').split(':');
+                var s = 0;
+                if (parts.length === 3) s = (+parts[0] || 0) * 3600 + (+parts[1] || 0) * 60 + (+parts[2] || 0);
+                else if (parts.length === 2) s = (+parts[0] || 0) * 60 + (+parts[1] || 0);
+                else return;
+                secs.push(s);
+            });
+        }
+        secs.sort(function (a, b) { return a - b; });
+        function fmtSec(sec) {
+            if (sec == null || isNaN(sec)) return 'N/A';
+            var hh = Math.floor(sec / 3600);
+            var mm = Math.floor((sec % 3600) / 60);
+            var ss = sec % 60;
+            return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+        }
+        bodyEl.innerHTML =
+            '<tr><th>First Tap</th><td>' + (secs.length >= 1 ? fmtSec(secs[0]) : 'N/A') + '</td></tr>' +
+            '<tr><th>Second Tap</th><td>' + (secs.length >= 2 ? fmtSec(secs[1]) : 'N/A') + '</td></tr>' +
+            '<tr><th>Completion</th><td>' + (secs.length ? fmtSec(secs[secs.length - 1]) : 'N/A') + '</td></tr>';
+        return;
+    }
+    bodyEl.innerHTML =
+        '<tr><th>First Tap</th><td>' + statVal('First Tap') + '</td></tr>' +
+        '<tr><th>Second Tap</th><td>' + statVal('Second Tap') + '</td></tr>' +
+        '<tr><th>Completion</th><td>' + statVal('Completion') + '</td></tr>';
 }
 
 function populateReportPreview(preview) {
@@ -6097,29 +6339,11 @@ function populateReportPreview(preview) {
 }
 
 function updateReportApproveDrumPassFailUi(preview) {
-    var p = preview || window._lastReportPreview || {};
-    var reportType = String(p.type || '').trim().toLowerCase();
-    var useDual = reportType !== 'validation' && reportType !== 'calibration' && getReportDrumCount(p) === 2;
     var singleGroup = document.getElementById('report-approve-passfail-single');
-    var dualGroup = document.getElementById('report-approve-passfail-dual');
-    if (singleGroup) singleGroup.style.display = useDual ? 'none' : '';
-    if (dualGroup) dualGroup.style.display = useDual ? '' : 'none';
+    if (singleGroup) singleGroup.style.display = '';
 }
 
 function collectReportApprovePassFail(preview) {
-    var p = preview || window._lastReportPreview || {};
-    var reportType = String(p.type || '').trim().toLowerCase();
-    var useDual = reportType !== 'validation' && reportType !== 'calibration' && getReportDrumCount(p) === 2;
-    if (useDual) {
-        var d1 = document.querySelector('input[name="report-approve-drum1-pass-fail"]:checked');
-        var d2 = document.querySelector('input[name="report-approve-drum2-pass-fail"]:checked');
-        var pf1 = d1 ? String(d1.value).toUpperCase() : '';
-        var pf2 = d2 ? String(d2.value).toUpperCase() : '';
-        if (pf1 !== 'PASS' && pf1 !== 'FAIL') return { error: 'Select Pass or Fail for Drum 1.' };
-        if (pf2 !== 'PASS' && pf2 !== 'FAIL') return { error: 'Select Pass or Fail for Drum 2.' };
-        var overall = (pf1 === 'FAIL' || pf2 === 'FAIL') ? 'FAIL' : 'PASS';
-        return { passFail: overall, drumPassFail: { drum1: pf1, drum2: pf2 } };
-    }
     var pfEl = document.querySelector('input[name="report-approve-pass-fail"]:checked');
     var pf = pfEl ? String(pfEl.value).toUpperCase() : '';
     if (pf !== 'PASS' && pf !== 'FAIL') return { error: 'Select Pass or Fail.' };
@@ -6265,6 +6489,7 @@ function submitReportApprove() {
             window._reportApproveFormReportId = null;
             clearReportApprovalGate();
             if (typeof _trClearTestRunCheckpoint === 'function') _trClearTestRunCheckpoint();
+            if (openNextDtPendingReportAfterApproval(id)) return;
             showAppModal('Report approved.', 'Report');
             openReportPreview(id, { setGate: true });
             setTimeout(function () {
@@ -6300,6 +6525,7 @@ function submitReportApproveBiometric() {
             window._reportApproveFormReportId = null;
             clearReportApprovalGate();
             if (typeof _trClearTestRunCheckpoint === 'function') _trClearTestRunCheckpoint();
+            if (openNextDtPendingReportAfterApproval(id)) return;
             showAppModal('Report approved.', 'Report');
             openReportPreview(id, { setGate: true });
             setTimeout(function () {
@@ -6321,16 +6547,9 @@ var _pendingTestRunReportId = null;
 function openTestRunCompletionApprovalModal(opts) {
     opts = opts || {};
     var overlay = document.getElementById('test-run-completion-overlay');
-    var drumCount = opts.drumCount === 1 ? 1 : 2;
-    var singleWrap = document.getElementById('test-run-completion-passfail-single');
-    var dualWrap = document.getElementById('test-run-completion-passfail-dual');
-    if (singleWrap) singleWrap.style.display = drumCount === 2 ? 'none' : '';
-    if (dualWrap) dualWrap.style.display = drumCount === 2 ? '' : 'none';
+    // DT-CFR / Hardness-Cfr: single Pass/Fail only
     var passEl = document.querySelector('input[name="test-run-completion-pass-fail"][value="PASS"]');
     if (passEl) passEl.checked = true;
-    document.querySelectorAll('input[name="test-run-completion-drum1-pass-fail"][value="PASS"], input[name="test-run-completion-drum2-pass-fail"][value="PASS"]').forEach(function (el) {
-        el.checked = true;
-    });
     var ta = document.getElementById('test-run-completion-remarks');
     if (ta) ta.value = '';
     var errEl = document.getElementById('test-run-completion-error');
@@ -6358,33 +6577,13 @@ function closeTestRunCompletionApprovalModal() {
 function confirmTestRunCompletionApproval() {
     var id = _pendingTestRunReportId;
     if (id == null) return;
-    var dualVisible = document.getElementById('test-run-completion-passfail-dual');
-    var useDual = dualVisible && dualVisible.style.display !== 'none';
-    var pf, drumPassFail;
-    if (useDual) {
-        var d1 = document.querySelector('input[name="test-run-completion-drum1-pass-fail"]:checked');
-        var d2 = document.querySelector('input[name="test-run-completion-drum2-pass-fail"]:checked');
-        var pf1 = d1 ? String(d1.value).toUpperCase() : '';
-        var pf2 = d2 ? String(d2.value).toUpperCase() : '';
-        if (pf1 !== 'PASS' && pf1 !== 'FAIL') {
-            showAppModal('Select Pass or Fail for Drum 1.', 'Test complete');
-            return;
-        }
-        if (pf2 !== 'PASS' && pf2 !== 'FAIL') {
-            showAppModal('Select Pass or Fail for Drum 2.', 'Test complete');
-            return;
-        }
-        pf = (pf1 === 'FAIL' || pf2 === 'FAIL') ? 'FAIL' : 'PASS';
-        drumPassFail = { drum1: pf1, drum2: pf2 };
-    } else {
-        var pfEl = document.querySelector('input[name="test-run-completion-pass-fail"]:checked');
-        pf = pfEl ? String(pfEl.value).toUpperCase() : '';
-        if (pf !== 'PASS' && pf !== 'FAIL') {
-            showAppModal('Select Pass or Fail.', 'Test complete');
-            return;
-        }
-        drumPassFail = { drum1: pf, drum2: pf };
+    var pfEl = document.querySelector('input[name="test-run-completion-pass-fail"]:checked');
+    var pf = pfEl ? String(pfEl.value).toUpperCase() : '';
+    if (pf !== 'PASS' && pf !== 'FAIL') {
+        showAppModal('Select Pass or Fail.', 'Test complete');
+        return;
     }
+    var drumPassFail = { drum1: pf, drum2: pf };
     var ta = document.getElementById('test-run-completion-remarks');
     var remarks = ta ? ta.value.trim() : '';
     approveReportWithVerifier(id, pf, remarks, 'credentials', drumPassFail).then(function (ok) {
@@ -8805,6 +9004,32 @@ function renderValidationDetailsInPreview(preview) {
     var sub = String(
         preview.validationSubtype || td.validationSubtype || preview.usp || td.usp || ''
     ).trim().toLowerCase();
+    var runs = validationRunsFromPreview(preview);
+    if ((sub === 'combined' || (runs && runs.length > 1)) && runs && runs.length) {
+        if (titleEl) titleEl.textContent = 'STROKE & TEMPERATURE VALIDATION DETAILS';
+        var multi = [];
+        runs.forEach(function (run, idx) {
+            if (!run || typeof run !== 'object') return;
+            var rsub = String(run.validationSubtype || run.usp || '').trim().toLowerCase();
+            var hdr = (rsub === 'temp' || rsub === 'temperature')
+                ? 'Temperature validation'
+                : (rsub === 'stroke' ? 'Stroke validation' : ('Run ' + (idx + 1)));
+            multi.push('<tr><th colspan="4" class="usp-hdr">' + hdr + '</th></tr>');
+            var rDate = formatReportDate(run.completedAt || run.testEndTime || preview.completedAt || preview.createdAt);
+            multi.push('<tr><th>Date / Time</th><td colspan="3">' + rDate + '</td></tr>');
+            multi.push('<tr><th>Status</th><td colspan="3">' + (run.status || '--') + '</td></tr>');
+            if (rsub === 'stroke' || run.strokesPerMin != null || run.pulsesSeen != null) {
+                var spm = run.strokesPerMin != null ? run.strokesPerMin : run.pulsesSeen;
+                multi.push('<tr><th>Required Range</th><td>' + (run.requiredRange || '29-32') + ' strokes/min</td><th>Actual Strokes</th><td>' + (spm != null ? spm : '--') + '</td></tr>');
+            }
+            if (rsub === 'temp' || rsub === 'temperature' || run.maxDeviation != null || run.setTemperature != null) {
+                multi.push('<tr><th>Set Temp (°C)</th><td>' + (run.setTemperature != null ? run.setTemperature : '--') + '</td><th>Max Deviation</th><td>' + (run.maxDeviation != null ? ('±' + run.maxDeviation) : '--') + '</td></tr>');
+                multi.push('<tr><th>Min Temp (°C)</th><td>' + (run.minTemp != null ? run.minTemp : '--') + '</td><th>Max Temp (°C)</th><td>' + (run.maxTemp != null ? run.maxTemp : '--') + '</td></tr>');
+            }
+        });
+        bodyEl.innerHTML = multi.join('') || '<tr><td colspan="4">No validation data</td></tr>';
+        return;
+    }
     var rows = [];
     var dateStr = formatReportDate(
         td.completedAt || preview.completedAt || td.testEndTime || preview.createdAt
@@ -9310,15 +9535,23 @@ function _setAddMemberPageMode(isEdit, isSelfEdit) {
     if (titleEl) titleEl.textContent = isEdit ? 'Edit Profile' : 'Add New Member';
     if (saveBtn) saveBtn.textContent = isEdit ? 'Update Profile' : 'Save Profile';
     if (headerTitle) headerTitle.textContent = isEdit ? 'Edit Profile' : (PAGE_TITLES['add-member'] || 'Add New Member');
-    // Full name + User ID are immutable after create (Hardness-Cfr).
+    // Full name + User ID are immutable after create — never editable on Edit Profile.
     [fullNameEl, userIdEl].forEach(function (el) {
         if (!el) return;
         el.readOnly = !!isEdit;
         el.disabled = !!isEdit;
-        if (isEdit) el.classList.add('input-readonly');
-        else el.classList.remove('input-readonly');
-        if (isEdit) el.removeAttribute('onfocus');
-        else el.setAttribute('onfocus', "if(typeof openOSKForInput === 'function') openOSKForInput(this)");
+        if (isEdit) {
+            el.classList.add('input-readonly');
+            el.tabIndex = -1;
+            el.setAttribute('aria-readonly', 'true');
+            el.removeAttribute('onfocus');
+            el.blur();
+        } else {
+            el.classList.remove('input-readonly');
+            el.removeAttribute('aria-readonly');
+            el.tabIndex = 0;
+            el.setAttribute('onfocus', "if(typeof openOSKForInput === 'function') openOSKForInput(this)");
+        }
     });
     // Password only via Change Password page — hide on edit.
     [pwdEl, confirmPwdEl].forEach(function (el) {
@@ -9799,6 +10032,7 @@ function setFactorySettingsForm(settings) {
         ['factory-max-users', 'maxUsers'],
         ['factory-max-admins', 'maxAdmins'],
         ['factory-max-supervisors', 'maxSupervisors'],
+        ['factory-max-qa', 'maxQa'],
         ['factory-password-reset-days', 'passwordResetPeriodDays'],
         ['factory-auto-logout-minutes', 'autoLogoutMinutes']
     ];
@@ -9814,6 +10048,7 @@ function setFactorySettingsForm(settings) {
         else if (pair[1] === 'maxUsers') el.value = String(val || 10);
         else if (pair[1] === 'maxAdmins') el.value = String(val || 2);
         else if (pair[1] === 'maxSupervisors') el.value = String(val || 3);
+        else if (pair[1] === 'maxQa') el.value = String(val != null ? val : 3);
         else if (pair[1] === 'passwordResetPeriodDays') el.value = String(val != null ? val : 30);
         else if (pair[1] === 'autoLogoutMinutes') el.value = String(val != null ? val : 0);
         else el.value = val || '';
@@ -9844,6 +10079,7 @@ function saveFactorySettings() {
     var maxUsersEl = document.getElementById('factory-max-users');
     var maxAdminsEl = document.getElementById('factory-max-admins');
     var maxSupervisorsEl = document.getElementById('factory-max-supervisors');
+    var maxQaEl = document.getElementById('factory-max-qa');
     var passwordResetDaysEl = document.getElementById('factory-password-reset-days');
     var autoLogoutEl = document.getElementById('factory-auto-logout-minutes');
     var biometricEnabledEl = document.getElementById('factory-biometric-enabled');
@@ -9858,6 +10094,7 @@ function saveFactorySettings() {
     var maxUsers = Math.max(1, Math.min(999, parseInt(maxUsersEl && maxUsersEl.value ? maxUsersEl.value : 10, 10)));
     var maxAdmins = Math.max(1, Math.min(99, parseInt(maxAdminsEl && maxAdminsEl.value ? maxAdminsEl.value : 2, 10)));
     var maxSupervisors = Math.max(1, Math.min(99, parseInt(maxSupervisorsEl && maxSupervisorsEl.value ? maxSupervisorsEl.value : 3, 10)));
+    var maxQa = Math.max(1, Math.min(99, parseInt(maxQaEl && maxQaEl.value ? maxQaEl.value : 3, 10)));
     var passwordResetPeriodDays = Math.max(1, Math.min(3650, parseInt(passwordResetDaysEl && passwordResetDaysEl.value ? passwordResetDaysEl.value : 30, 10)));
     var autoLogoutMinutes = Math.max(0, Math.min(10080, parseInt(autoLogoutEl && autoLogoutEl.value !== '' ? autoLogoutEl.value : '0', 10)));
     if (isNaN(autoLogoutMinutes)) autoLogoutMinutes = 0;
@@ -9875,6 +10112,7 @@ function saveFactorySettings() {
         maxUsers: maxUsers,
         maxAdmins: maxAdmins,
         maxSupervisors: maxSupervisors,
+        maxQa: maxQa,
         passwordResetPeriodDays: passwordResetPeriodDays,
         autoLogoutMinutes: autoLogoutMinutes,
         biometricEnabled: normalizeBiometricEnabled(biometricEnabledEl ? biometricEnabledEl.value : true)
@@ -9918,10 +10156,12 @@ function showFactoryResetConfirm() {
         apiRequest((API_BASE || '') + '/api/data/factory-reset', { method: 'POST', body: {} })
             .then(function (result) {
                 clearClientStateAfterFactoryReset();
-                showAppModal(
-                    'Factory reset completed. All reports, recipes, users, and audit trails have been erased.',
-                    'Factory Reset'
-                );
+                var bioOk = !(result && result.biometricTemplatesCleared === false);
+                var msg = 'Factory reset completed. All reports, recipes, users, audit trails, and fingerprint templates have been erased.';
+                if (!bioOk) {
+                    msg = 'Factory reset completed for app data, but fingerprint templates on the sensor could not be cleared. Check the biometric sensor and try again.';
+                }
+                showAppModal(msg, 'Factory Reset');
                 if (typeof showLoginScreen === 'function') showLoginScreen();
             })
             .catch(function (err) {

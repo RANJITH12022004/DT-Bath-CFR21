@@ -145,14 +145,19 @@ def _dt_audit_bridge(action, details="", **kwargs):
 
 def _dt_save_report(report: dict):
     """Persist pending report from dt_test_service (watchdog auto-stop)."""
-    rid = data_service.save_report(report)
-    saved = data_service.get_report(rid) or report
+    to_save = dict(report or {})
     try:
-        details = _format_report_audit_details(rid, saved if isinstance(saved, dict) else report)
-        basket = (report or {}).get("basket")
+        to_save = _stamp_report_operator(to_save)
+    except Exception:
+        pass
+    rid = data_service.save_report(to_save)
+    saved = data_service.get_report(rid) or to_save
+    try:
+        details = _format_report_audit_details(rid, saved if isinstance(saved, dict) else to_save)
+        basket = (to_save or {}).get("basket")
         if basket is not None:
             details = "{} | basket {}".format(details, basket)
-        status = (report or {}).get("status") or ""
+        status = (to_save or {}).get("status") or ""
         if status:
             details = "{} | {}".format(details, status)
         _audit_event(
@@ -162,7 +167,7 @@ def _dt_save_report(report: dict):
             entity_type="report",
             entity_id=str(rid or ""),
             entity_name=(saved or {}).get("name") if isinstance(saved, dict) else "",
-            extra={"basket": basket, "mock": (report or {}).get("mock"), "auto": True},
+            extra={"basket": basket, "mock": (to_save or {}).get("mock"), "auto": True},
         )
     except Exception:
         pass
@@ -818,7 +823,12 @@ def _stamp_report_operator(enriched):
     un = _norm_username(
         enriched.get("operatedByUsername")
         or td.get("operatedByUsername")
+        or enriched.get("operatorUsername")
+        or td.get("operatorUsername")
         or td.get("employeeId")
+        or enriched.get("employeeId")
+        or enriched.get("operatorId")
+        or td.get("operatorId")
         or cur.get("username")
         or cur.get("name")
     )
@@ -832,16 +842,24 @@ def _stamp_report_operator(enriched):
     emp = (
         enriched.get("employeeId")
         or td.get("employeeId")
+        or enriched.get("operatorId")
+        or td.get("operatorId")
+        or cur.get("employeeId")
         or cur.get("username")
         or un
     )
+    emp = str(emp or "").strip() or un or "--"
     enriched["operatedByUsername"] = un
     enriched["operatorName"] = name
     enriched["employeeId"] = emp
+    enriched["operatorId"] = enriched.get("operatorId") or emp
+    enriched["operatorUsername"] = enriched.get("operatorUsername") or un
     td = dict(td)
     td["operatedByUsername"] = un
     td["operatorName"] = name
     td["employeeId"] = emp
+    td["operatorId"] = td.get("operatorId") or emp
+    td["operatorUsername"] = td.get("operatorUsername") or un
     enriched["testData"] = td
     return enriched
 
@@ -1951,10 +1969,18 @@ def approve_report(report_id):
         except Exception:
             app.logger.exception("Approved-report PDF generation failed for id %s", report_id)
         if (report.get("type") or "").strip().lower() == "validation":
-            try:
-                report_service.sync_factory_validation_dates()
-            except Exception:
-                app.logger.exception("Failed to sync factory validation dates after validation approval")
+            is_aborted_val = bool(report.get("aborted")) or str(report.get("status") or "").upper() == "ABORTED"
+            if not is_aborted_val:
+                try:
+                    report_service.apply_pending_validation_due(report)
+                except Exception:
+                    app.logger.exception("Failed to apply pending validation due dates after approval")
+                try:
+                    # Keep legacy instrument-wide pair in sync when no pending due was present
+                    if not isinstance(report.get("pendingValidationDue"), dict):
+                        report_service.sync_factory_validation_dates()
+                except Exception:
+                    app.logger.exception("Failed to sync factory validation dates after validation approval")
         if pdf_ok:
             _audit_report_pdf_generated(report_id, report)
         ctx = _format_report_audit_details(report_id, report)
@@ -2430,10 +2456,29 @@ def factory_reset():
             audit_remaining = audit_service.entry_count()
 
         biometric_cleared = False
+        biometric_remaining = None
+        biometric_error = None
         try:
+            # Stop any in-progress scan, then wipe all templates from the R307.
+            try:
+                biometric_service.cancel_and_idle()
+            except Exception:
+                pass
+            with _enroll_sessions_lock:
+                _enroll_sessions.clear()
             bio_result = biometric_service.clear_templates()
             biometric_cleared = bool(bio_result and bio_result.get("ok"))
+            if bio_result:
+                biometric_remaining = bio_result.get("templatesRemaining")
+                if not biometric_cleared:
+                    biometric_error = bio_result.get("error")
+            if biometric_cleared and biometric_remaining not in (None, 0):
+                # Retry once if sensor still reports templates
+                bio_result = biometric_service.clear_templates()
+                biometric_cleared = bool(bio_result and bio_result.get("ok"))
+                biometric_remaining = (bio_result or {}).get("templatesRemaining")
         except Exception as bio_err:
+            biometric_error = str(bio_err)
             app.logger.warning("Factory reset: biometric clear skipped: %s", bio_err)
 
         if DATETIME_STORAGE.exists():
@@ -2448,6 +2493,8 @@ def factory_reset():
             "auditRowsRemoved": audit_removed,
             "auditRowsRemaining": audit_remaining,
             "biometricTemplatesCleared": biometric_cleared,
+            "biometricTemplatesRemaining": biometric_remaining,
+            "biometricClearError": biometric_error,
             "requiresLogin": True,
         }), 200
     except Exception as e:
@@ -2707,6 +2754,8 @@ def login_biometric():
         timeout_sec = float(payload.get("timeoutSec") or BIOMETRIC_LOGIN_TIMEOUT_SEC)
         identified = biometric_service.identify(timeout_sec=timeout_sec)
         if not identified.get("ok"):
+            if identified.get("cancelled"):
+                return jsonify({"error": "cancelled", "cancelled": True}), 499
             return jsonify({"error": identified.get("error") or "Fingerprint not recognized"}), 401
 
         template_id = identified.get("templateId")
@@ -2838,6 +2887,37 @@ def _audit_session_logout(user, reason, *, request_source=None):
         )
 
 
+def _halt_hardware_on_logout():
+    """Abort active DT runs/validation and send global STOP to the ESP."""
+    for basket in (1, 2):
+        try:
+            run = dt_test_service.get_run(basket) or {}
+            state = str(run.get("state") or "IDLE").upper()
+            if state not in ("IDLE", "COMPLETE", "ABORTED"):
+                dt_test_service.stop_test(basket, aborted=True, reason="logout")
+        except Exception:
+            app.logger.exception("logout: stop_test basket %s failed", basket)
+        try:
+            stroke = dt_validation_service.get_session("stroke", basket)
+            if stroke and str(stroke.get("state") or "").upper() not in ("IDLE", "COMPLETE", "ABORTED", ""):
+                dt_validation_service.abort_stroke_validation(basket)
+        except Exception:
+            app.logger.exception("logout: abort stroke validation basket %s failed", basket)
+        try:
+            temp = dt_validation_service.get_session("temp", basket)
+            if temp and str(temp.get("state") or "").upper() not in ("IDLE", "COMPLETE", "ABORTED", ""):
+                dt_validation_service.abort_temp_validation(basket)
+        except Exception:
+            app.logger.exception("logout: abort temp validation basket %s failed", basket)
+    try:
+        # Global STOP — heaters + motors for all baskets
+        result = hardware_service.cmd_stop(None)
+        if not result.get("ok"):
+            app.logger.warning("logout: global STOP returned not ok: %s", result)
+    except Exception:
+        app.logger.exception("logout: global STOP to ESP failed")
+
+
 @app.route("/api/data/auth/logout", methods=["POST"])
 def logout():
     try:
@@ -2846,6 +2926,7 @@ def logout():
         user = data_service.get_current_user()
         if user:
             _audit_session_logout(user, reason, request_source="POST /api/data/auth/logout")
+        _halt_hardware_on_logout()
         data_service.touch_app_clean_stop_flag()
         data_service.delete_session_power_audit_pending()
         data_service.clear_current_user()
@@ -2911,6 +2992,8 @@ def approval_verify():
             timeout_sec = float(payload.get("timeoutSec") or BIOMETRIC_LOGIN_TIMEOUT_SEC)
             identified = biometric_service.identify(timeout_sec=timeout_sec)
             if not identified.get("ok"):
+                if identified.get("cancelled"):
+                    return jsonify({"ok": False, "error": "cancelled", "cancelled": True}), 499
                 _audit_event(
                     action="Approval verification",
                     outcome="failed",
@@ -4945,11 +5028,18 @@ def dt_calibrate_raw():
 
 def _session_operator():
     cur = data_service.get_current_user() or {}
+    username = str(cur.get("username") or "").strip()
+    # On this kiosk the login ID is the Employee ID; prefer that over numeric member id.
+    emp = (
+        str(cur.get("employeeId") or "").strip()
+        or username
+        or str(cur.get("id") or "").strip()
+    )
     return {
-        "name": cur.get("name") or cur.get("username") or "",
-        "employeeId": cur.get("employeeId") or cur.get("id") or "",
-        "id": cur.get("employeeId") or cur.get("id") or "",
-        "username": cur.get("username") or "",
+        "name": cur.get("name") or username or "",
+        "employeeId": emp,
+        "id": emp,
+        "username": username,
     }
 
 
@@ -5033,6 +5123,29 @@ def dt_run_preheat(basket):
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
+@app.route("/api/data/dt/runs/<int:basket>/setup", methods=["POST"])
+def dt_run_setup(basket):
+    """Apply quick-test product/batch/mode onto a preheated run before Start."""
+    gate = _require_any_session_internal(
+        ["quick-test", "recipe-test"],
+        "Forbidden. You do not have permission to run tests.",
+    )
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    result = dt_test_service.apply_run_setup(
+        basket,
+        product_name=data.get("productName") or data.get("name") or "",
+        batch_number=data.get("batchNumber") or data.get("batch") or "",
+        mode=data.get("mode"),
+        duration_minutes=data.get("durationMinutes") or data.get("duration"),
+        media=data.get("media"),
+        mesh=data.get("mesh"),
+        recipe_name=data.get("recipeName") or data.get("productName") or "",
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
 @app.route("/api/data/dt/runs/<int:basket>/confirm", methods=["POST"])
 def dt_run_confirm(basket):
     gate = _require_any_session_internal(
@@ -5063,6 +5176,7 @@ def dt_run_tap(basket):
             report["reportApprovalStatus"] = "pending"
             for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
                 report.pop(k, None)
+            report = _stamp_report_operator(report)
             saved_id = data_service.save_report(report)
             saved = data_service.get_report(saved_id) or report
             result["savedReport"] = saved
@@ -5100,6 +5214,7 @@ def dt_run_stop(basket):
             report["reportApprovalStatus"] = "pending"
             for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
                 report.pop(k, None)
+            report = _stamp_report_operator(report)
             saved_id = data_service.save_report(report)
             saved = data_service.get_report(saved_id) or report
             result["savedReport"] = saved
@@ -5174,6 +5289,7 @@ def dt_stroke_save(basket):
         report["status"] = "ABORTED"
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
+    report = _stamp_report_operator(report)
     saved_id = data_service.save_report(report)
     saved = data_service.get_report(saved_id) or report
     _audit_event(
@@ -5236,6 +5352,7 @@ def dt_temp_save(basket):
         report["status"] = "ABORTED"
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
+    report = _stamp_report_operator(report)
     saved_id = data_service.save_report(report)
     saved = data_service.get_report(saved_id) or report
     _audit_event(
@@ -5245,6 +5362,108 @@ def dt_temp_save(basket):
         entity_type="report",
         entity_id=str(saved_id or ""),
         entity_name=(saved or {}).get("name") or "",
+    )
+    return jsonify({"ok": True, "report": saved})
+
+
+@app.route("/api/data/dt/validation/<int:basket>/combined/abort", methods=["POST"])
+def dt_combined_validation_abort(basket):
+    """Abort in-progress Stroke→Temp validation and save a pending aborted report for approval."""
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    stroke_payload = data.get("stroke") if isinstance(data.get("stroke"), dict) else None
+    temp_payload = data.get("temp") if isinstance(data.get("temp"), dict) else None
+    phase = data.get("phase")
+    # Stop hardware / mark sessions aborted (idempotent if already idle)
+    try:
+        dt_validation_service.abort_stroke_validation(basket)
+    except Exception:
+        app.logger.exception("combined abort: stroke abort failed for basket %s", basket)
+    try:
+        dt_validation_service.abort_temp_validation(basket)
+    except Exception:
+        app.logger.exception("combined abort: temp abort failed for basket %s", basket)
+    report = dt_validation_service.build_aborted_combined_validation_report(
+        basket,
+        stroke_payload=stroke_payload,
+        temp_payload=temp_payload,
+        phase=phase,
+        operator=_session_operator(),
+    )
+    report = dict(report)
+    report["reportApprovalStatus"] = "pending"
+    report["status"] = "ABORTED"
+    report["aborted"] = True
+    for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+        report.pop(k, None)
+    report = _stamp_report_operator(report)
+    saved_id = data_service.save_report(report)
+    saved = data_service.get_report(saved_id) or report
+    _audit_event(
+        action="Validation aborted",
+        outcome="aborted",
+        details=f"Pending aborted validation basket {basket}",
+        entity_type="report",
+        entity_id=str(saved_id or ""),
+        entity_name=(saved or {}).get("name") or "",
+    )
+    _audit_event(
+        action="Report saved",
+        outcome="success",
+        details=f"Pending aborted validation basket {basket}",
+        entity_type="report",
+        entity_id=str(saved_id or ""),
+        entity_name=(saved or {}).get("name") or "",
+    )
+    return jsonify({"ok": True, "report": saved})
+
+
+@app.route("/api/data/dt/validation/<int:basket>/combined/save", methods=["POST"])
+def dt_combined_validation_save(basket):
+    """Save one pending validation report with stroke + temp runs and pending due interval."""
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    stroke_payload = data.get("stroke") if isinstance(data.get("stroke"), dict) else None
+    temp_payload = data.get("temp") if isinstance(data.get("temp"), dict) else None
+    pending_due = data.get("pendingValidationDue") if isinstance(data.get("pendingValidationDue"), dict) else None
+    report = dt_validation_service.build_combined_validation_report(
+        basket,
+        stroke_payload=stroke_payload,
+        temp_payload=temp_payload,
+        pending_due=pending_due,
+        operator=_session_operator(),
+    )
+    if not (report.get("validationRuns") or []):
+        return jsonify({"ok": False, "error": "No stroke/temp validation results to save"}), 400
+    stroke_ok = any(
+        str((r or {}).get("validationSubtype") or "").lower() == "stroke"
+        for r in (report.get("validationRuns") or [])
+    )
+    temp_ok = any(
+        str((r or {}).get("validationSubtype") or "").lower() == "temp"
+        for r in (report.get("validationRuns") or [])
+    )
+    if not stroke_ok or not temp_ok:
+        return jsonify({"ok": False, "error": "Combined report requires both stroke and temperature results"}), 400
+    report = dict(report)
+    report["reportApprovalStatus"] = "pending"
+    for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+        report.pop(k, None)
+    report = _stamp_report_operator(report)
+    saved_id = data_service.save_report(report)
+    saved = data_service.get_report(saved_id) or report
+    _audit_event(
+        action="Report saved",
+        outcome="success",
+        details=f"Pending combined stroke+temp validation basket {basket}",
+        entity_type="report",
+        entity_id=str(saved_id or ""),
+        entity_name=(saved or {}).get("name") or "",
+        extra={"basket": basket, "subtype": "combined"},
     )
     return jsonify({"ok": True, "report": saved})
 
@@ -5510,9 +5729,25 @@ def biometric_enroll_cancel():
         username = str(payload.get("username") or "").strip()
         if username:
             _clear_enroll_session(username)
+        try:
+            biometric_service.cancel_and_idle()
+        except Exception as bio_err:
+            app.logger.warning("Biometric enroll cancel idle failed: %s", bio_err)
         return jsonify({"ok": True}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/biometric/cancel", methods=["POST"])
+def biometric_cancel():
+    """Stop an in-progress login/verify/enroll scan and turn the sensor LED off."""
+    try:
+        result = biometric_service.cancel_and_idle()
+        return jsonify(result if isinstance(result, dict) else {"ok": True}), 200
+    except Exception as e:
+        app.logger.exception("Error cancelling biometric scan")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.route("/api/biometric/delete", methods=["POST"])
 def biometric_delete():

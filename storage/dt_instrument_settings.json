@@ -1,0 +1,11 @@
+{
+  "basketConfig": 6,
+  "configuredBeakers": {
+    "1": true,
+    "2": true
+  },
+  "setTemp": {
+    "1": 37.0,
+    "2": 37.0
+  }
+}

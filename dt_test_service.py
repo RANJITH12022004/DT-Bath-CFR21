@@ -77,6 +77,7 @@ def _empty_run(basket: int) -> Dict[str, Any]:
         "remainingSeconds": None,
         "minTemp": None,
         "maxTemp": None,
+        "meanTemp": None,
         "recordedTemps": [],
         "vesselTimes": {},
         "holeCompletionTimes": {},
@@ -222,6 +223,7 @@ def start_preheat(
         remainingSeconds=int(dur * 60) if dur else None,
         minTemp=None,
         maxTemp=None,
+        meanTemp=None,
         recordedTemps=[],
         vesselTimes={},
         holeCompletionTimes={},
@@ -268,6 +270,58 @@ def on_temp_ready(basket: int) -> Dict[str, Any]:
     return {"ok": True, "run": run}
 
 
+def apply_run_setup(
+    basket: int,
+    *,
+    product_name: str = "",
+    batch_number: str = "",
+    mode: Optional[str] = None,
+    duration_minutes: Optional[float] = None,
+    media: Optional[str] = None,
+    mesh: Optional[str] = None,
+    recipe_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update product/batch/mode on an in-progress preheat/ready run (quick test)."""
+    basket = int(basket)
+    current = get_run(basket)
+    if current.get("state") not in ("PREHEAT", "READY", "AWAIT_CONFIRM"):
+        return {"ok": False, "error": f"basket {basket} not awaiting start (state={current.get('state')})"}
+
+    fields: Dict[str, Any] = {}
+    name = str(product_name or "").strip()
+    if name:
+        fields["productName"] = name
+        fields["recipeName"] = str(recipe_name or name)
+    batch = str(batch_number or "").strip()
+    if batch:
+        fields["batchNumber"] = batch
+    if mode is not None:
+        mode_l = str(mode or "manual").strip().lower()
+        if mode_l not in ("manual", "timer"):
+            return {"ok": False, "error": "mode must be manual or timer"}
+        fields["mode"] = mode_l
+        if mode_l == "timer":
+            try:
+                dur = float(duration_minutes)
+                if dur <= 0:
+                    return {"ok": False, "error": "duration_minutes required for timer mode"}
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "duration_minutes required for timer mode"}
+            fields["setDurationMinutes"] = dur
+            fields["remainingSeconds"] = int(dur * 60)
+        else:
+            fields["setDurationMinutes"] = None
+            fields["remainingSeconds"] = None
+    if media is not None:
+        fields["media"] = str(media).strip() or None
+    if mesh is not None:
+        fields["mesh"] = str(mesh).strip() or None
+    if not fields:
+        return {"ok": False, "error": "no setup fields provided"}
+    run = _set_state(basket, current.get("state") or "AWAIT_CONFIRM", **fields)
+    return {"ok": True, "run": run}
+
+
 def confirm_start(basket: int) -> Dict[str, Any]:
     basket = int(basket)
     current = get_run(basket)
@@ -294,6 +348,7 @@ def confirm_start(basket: int) -> Dict[str, Any]:
         remainingSeconds=remaining,
         minTemp=None,
         maxTemp=None,
+        meanTemp=None,
         recordedTemps=[],
         vesselTimes={},
         holeCompletionTimes={},
@@ -342,6 +397,14 @@ def record_temp_sample(basket: int, temp_c: float) -> None:
             run["minTemp"] = t
         if run["maxTemp"] is None or t > float(run["maxTemp"]):
             run["maxTemp"] = t
+        temps = []
+        for sample in run.get("recordedTemps") or []:
+            try:
+                temps.append(float(sample.get("temp")))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if temps:
+            run["meanTemp"] = round(sum(temps) / len(temps), 2)
         run["updatedAt"] = _now_iso()
 
 
@@ -406,14 +469,28 @@ def tap_vessel(basket: int, vessel: int) -> Dict[str, Any]:
 def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[str, Any]:
     basket = int(basket)
     current = get_run(basket)
-    if current.get("state") not in ("RUNNING", "PREHEAT", "READY", "AWAIT_CONFIRM"):
+    prior_state = str(current.get("state") or "")
+    if prior_state not in ("RUNNING", "PREHEAT", "READY", "AWAIT_CONFIRM"):
         return {"ok": False, "error": f"basket {basket} not active", "run": current}
 
     hw.cmd_stop(basket)
 
+    # Pure preheat / await-confirm stop (motor never started) — Hardness-style lifecycle audit
+    preheat_phase = prior_state in ("PREHEAT", "READY", "AWAIT_CONFIRM")
+    reason_l = str(reason or "").strip().lower()
+    is_preheat_stop = preheat_phase and (
+        aborted
+        or reason_l in (
+            "preheat_abort",
+            "start_cancelled",
+            "nav_abort",
+            "operator_abort",
+        )
+    )
+
     started = current.get("startedAt")
     elapsed = int(current.get("elapsedSeconds") or 0)
-    if started and current.get("state") == "RUNNING":
+    if started and prior_state == "RUNNING":
         try:
             start_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
             elapsed = max(0, int((datetime.now(timezone.utc) - start_dt.astimezone(timezone.utc)).total_seconds()))
@@ -438,7 +515,17 @@ def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[s
     cfg = int(run.get("basketConfig") or 6)
     mm, ss = (elapsed // 60), (elapsed % 60)
     elapsed_str = f"{mm:02d}:{ss:02d}"
-    if aborted:
+    set_t = run.get("setTemperature")
+
+    if is_preheat_stop:
+        detail = (
+            f"Beaker {basket} | product {product} | batch {batch} | preheat stopped"
+            + (f" | setpoint {set_t}°C" if set_t is not None else "")
+            + (f" | reason {reason}" if reason else "")
+        )
+        action = "Test preheat stopped"
+        outcome = "aborted" if aborted else "success"
+    elif aborted:
         reason_txt = reason or "operator_abort"
         detail = (
             f"Beaker {basket} | product {product} | batch {batch} | aborted ({reason_txt}) "
@@ -459,9 +546,20 @@ def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[s
         entity_type="test_run",
         entity_id=str(basket),
         outcome=outcome,
-        extra={"basket": basket, "status": status, "reason": reason, "mock": hw.is_mock_mode()},
+        extra={
+            "basket": basket,
+            "status": status,
+            "reason": reason,
+            "priorState": prior_state,
+            "mock": hw.is_mock_mode(),
+        },
     )
     saved = None
+    # Do not auto-save a pending report for preheat-only stop (operator never started the test)
+    if is_preheat_stop:
+        clear_run(basket)
+        return {"ok": True, "run": run, "report": None, "savedReport": None, "preheatStopped": True}
+
     if _save_report_fn and report:
         try:
             to_save = dict(report)
@@ -488,6 +586,20 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
     hh, mm, ss = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
     duration_str = f"{hh:02d}:{mm:02d}:{ss:02d}"
     name = run.get("recipeName") or run.get("productName") or f"Basket {basket} Test"
+    mean_temp = run.get("meanTemp")
+    if mean_temp is None:
+        temps = []
+        for sample in run.get("recordedTemps") or []:
+            try:
+                temps.append(float(sample.get("temp")))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if temps:
+            mean_temp = round(sum(temps) / len(temps), 2)
+    op_name = run.get("operatorName") or ""
+    op_user = str(run.get("operatorUsername") or "").strip()
+    op_id = str(run.get("operatorId") or "").strip() or op_user
+    emp_id = op_id or op_user
     report = {
         "type": "test",
         "validationSubtype": None,
@@ -515,9 +627,12 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
         "testEndTime": run.get("endedAt"),
         "minTemp": run.get("minTemp"),
         "maxTemp": run.get("maxTemp"),
-        "operatorName": run.get("operatorName"),
-        "operatorId": run.get("operatorId"),
-        "operatorUsername": run.get("operatorUsername"),
+        "meanTemp": mean_temp,
+        "operatorName": op_name,
+        "operatorId": op_id,
+        "operatorUsername": op_user,
+        "operatedByUsername": op_user or op_id,
+        "employeeId": emp_id,
         "mock": bool(run.get("mock")),
         "createdAt": _now_iso(),
         "completedAt": run.get("endedAt") or _now_iso(),
