@@ -1469,18 +1469,29 @@
     var viewingPending = isViewingPendingApproval();
 
     var rid = reportIdFromResponse(res);
-    // Always queue so the second beaker is not lost when the first approval is already open.
-    if (rid != null) {
-      enqueuePendingReport(rid);
-    }
 
     if (opts.aborted) {
-      // Do not auto-open aborted while a sibling is running or another pending is open
+      // Aborted reports are finalized server-side (listed, no Pass/Fail). Do not queue as pending.
+      toast('Basket ' + basket + ' aborted — report saved', 'info');
+      if (!siblingActive && !viewingPending && rid != null && typeof openReportPreview === 'function') {
+        try {
+          openReportPreview(rid, { setGate: false });
+          return;
+        } catch (eOpen) {}
+      }
       if (!siblingActive && !viewingPending && DT.pendingReportQueue && DT.pendingReportQueue.length) {
         if (window.dtOpenNextPendingReport()) return;
       }
       if (!viewingPending) go('home');
+      if (typeof loadReports === 'function') {
+        try { loadReports(); } catch (eLoad) {}
+      }
       return;
+    }
+
+    // Always queue so the second beaker is not lost when the first approval is already open.
+    if (rid != null) {
+      enqueuePendingReport(rid);
     }
 
     if (rid == null) {
@@ -1796,6 +1807,8 @@
     if (startBtn) {
       startBtn.disabled = true;
       startBtn.style.display = '';
+      startBtn.setAttribute('aria-disabled', 'true');
+      startBtn.title = 'Start enabled after TR is received';
     }
     var startLbl = document.getElementById('validation-stop-btn-text');
     if (startLbl) startLbl.textContent = 'Start';
@@ -1964,6 +1977,11 @@
   };
 
   window.dtStartTempValidation = function () {
+    var startBtn = document.getElementById('validation-stop-btn');
+    if (startBtn && startBtn.disabled) {
+      toast('Wait for TR before starting hold', 'info');
+      return;
+    }
     var basket = currentValBasket();
     clearValPoll();
     clearValAwaitingSave();
@@ -1974,8 +1992,11 @@
       if (!res.ok) throw new Error(res.error || 'Start failed');
       _tempValRunning = true;
       syncDtNavLock();
-      var startBtn = document.getElementById('validation-stop-btn');
-      if (startBtn) startBtn.disabled = true;
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.setAttribute('aria-disabled', 'true');
+        startBtn.title = '';
+      }
       var startLbl = document.getElementById('validation-stop-btn-text');
       if (startLbl) startLbl.textContent = 'Holding…';
       var msg = document.getElementById('validation-message');
@@ -2004,11 +2025,15 @@
     var setDisp = document.getElementById('set-temp-display');
     if (setDisp) setDisp.textContent = temp.toFixed(1);
     var startBtn = document.getElementById('validation-stop-btn');
-    if (startBtn) startBtn.disabled = true;
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.setAttribute('aria-disabled', 'true');
+      startBtn.title = 'Start enabled after TR is received';
+    }
     var startLbl = document.getElementById('validation-stop-btn-text');
     if (startLbl) startLbl.textContent = 'Start';
     var msg = document.getElementById('validation-message');
-    if (msg) msg.textContent = 'Heating — waiting for ready';
+    if (msg) msg.textContent = 'Heating — waiting for TR';
     clearValPoll();
     api('/api/data/dt/validation/temp/' + basket + '/arm', {
       method: 'POST',
@@ -2151,11 +2176,12 @@
       .then(function (res) {
         _valAbortSaveLock = false;
         if (!res.ok) throw new Error(res.error || 'Abort save failed');
-        toast('Validation aborted — report pending approval', 'info');
+        toast('Validation aborted — report saved', 'info');
         var report = res.report || {};
         var rid = report.id;
         if (openPreview && rid && typeof openReportPreview === 'function') {
-          openReportPreview(rid, { setGate: true });
+          // Finalized as aborted — open read-only (no Pass/Fail gate).
+          openReportPreview(rid, { setGate: false });
           return res;
         }
         if (!opts.stay) {
@@ -2535,19 +2561,31 @@
           var startLbl = document.getElementById('validation-stop-btn-text');
           var ring = document.getElementById('temp-validation-hold-ring');
           if (s.state === 'PREHEAT' || s.state === 'ARMED') {
-            if (msg) msg.textContent = 'Heating — waiting for ready';
-            if (startBtn) startBtn.disabled = true;
+            if (msg) msg.textContent = 'Heating — waiting for TR';
+            if (startBtn) {
+              startBtn.disabled = true;
+              startBtn.setAttribute('aria-disabled', 'true');
+              startBtn.title = 'Start enabled after TR is received';
+            }
             if (startLbl) startLbl.textContent = 'Start';
             if (ring) ring.classList.remove('is-holding');
           } else if (s.state === 'READY') {
-            if (msg) msg.textContent = 'Ready — press Start';
-            if (startBtn && !_tempValRunning) startBtn.disabled = false;
+            if (msg) msg.textContent = 'TR received — press Start';
+            if (startBtn && !_tempValRunning) {
+              startBtn.disabled = false;
+              startBtn.setAttribute('aria-disabled', 'false');
+              startBtn.title = '';
+            }
             if (startLbl) startLbl.textContent = 'Start';
             if (ring) ring.classList.remove('is-holding');
           } else if (s.state === 'HOLDING') {
             if (msg) msg.textContent = 'Holding';
             _tempValRunning = true;
-            if (startBtn) startBtn.disabled = true;
+            if (startBtn) {
+              startBtn.disabled = true;
+              startBtn.setAttribute('aria-disabled', 'true');
+              startBtn.title = '';
+            }
             if (startLbl) startLbl.textContent = 'Holding…';
             if (ring) ring.classList.add('is-holding');
           } else if (msg) {

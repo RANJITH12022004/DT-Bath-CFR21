@@ -17,10 +17,17 @@ from typing import Any, Callable, Dict, Optional
 
 import dt_hardware_service as hw
 
+try:
+    import data_service
+except ImportError:
+    data_service = None
+
 _lock = threading.Lock()
 _logger = None
 _audit_fn: Optional[Callable] = None
 _sessions: Dict[str, Dict[str, Any]] = {}
+# Last known combined-validation checkpoint context (survives stroke→temp handoff)
+_val_checkpoint_meta: Dict[int, Dict[str, Any]] = {}
 
 STROKE_DURATION_SEC = 60
 # After START,STROKE the basket travels to the stroke start position before counting.
@@ -29,7 +36,6 @@ STROKE_MIN = 29
 STROKE_MAX = 32
 TEMP_HOLD_SEC = 120
 TEMP_DEVIATION_LIMIT = 2.0
-TEMP_READY_NEAR_C = 3.0
 
 
 def init(logger=None, audit_fn: Optional[Callable] = None) -> None:
@@ -49,6 +55,86 @@ def _audit(action: str, details: str = "", **extra) -> None:
         _audit_fn(action, details, **extra)
     except Exception:
         pass
+
+
+def _session_snapshot(kind: str, basket: int) -> Optional[Dict[str, Any]]:
+    key = f"{kind}:{basket}"
+    with _lock:
+        s = _sessions.get(key)
+        return dict(s) if s else None
+
+
+def _persist_validation_checkpoint(
+    basket: int,
+    *,
+    phase: str,
+    stroke: Optional[Dict[str, Any]] = None,
+    temp: Optional[Dict[str, Any]] = None,
+    operator: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Write durable Stroke→Temp checkpoint for unclean-shutdown recovery."""
+    if not data_service or not hasattr(data_service, "save_validation_run_data"):
+        return
+    basket = int(basket)
+    meta = dict(_val_checkpoint_meta.get(basket) or {})
+    if operator:
+        meta["operatorName"] = operator.get("name") or meta.get("operatorName")
+        meta["operatorId"] = (
+            operator.get("employeeId") or operator.get("id") or meta.get("operatorId")
+        )
+        meta["operatorUsername"] = operator.get("username") or meta.get("operatorUsername")
+    if stroke is None:
+        stroke = meta.get("stroke")
+    if temp is None:
+        temp = meta.get("temp")
+    if stroke is not None:
+        meta["stroke"] = dict(stroke)
+    if temp is not None:
+        meta["temp"] = dict(temp)
+    meta["phase"] = phase
+    _val_checkpoint_meta[basket] = meta
+    payload = {
+        "type": "validation",
+        "validationSubtype": "combined",
+        "status": "running",
+        "beaker": basket,
+        "basket": basket,
+        "_checkpointPhase": phase,
+        "phase": phase,
+        "stroke": dict(meta.get("stroke") or {}),
+        "temp": dict(meta.get("temp") or {}),
+        "operatorName": meta.get("operatorName"),
+        "operatorId": meta.get("operatorId"),
+        "operatorUsername": meta.get("operatorUsername"),
+        "updatedAt": _now_iso(),
+    }
+    try:
+        data_service.save_validation_run_data(payload)
+    except Exception:
+        if _logger:
+            _logger.exception("validation checkpoint persist failed")
+
+
+def clear_validation_checkpoint(basket: Optional[int] = None) -> None:
+    """Clear durable validation checkpoint (after save/abort/recovery)."""
+    global _val_checkpoint_meta
+    if basket is None:
+        _val_checkpoint_meta = {}
+    else:
+        _val_checkpoint_meta.pop(int(basket), None)
+    if data_service and hasattr(data_service, "clear_validation_run_data"):
+        try:
+            data_service.clear_validation_run_data()
+        except Exception:
+            if _logger:
+                _logger.exception("validation checkpoint clear failed")
+
+
+def clear_all_sessions() -> None:
+    """Drop in-memory validation sessions after power-loss recovery."""
+    with _lock:
+        _sessions.clear()
+    clear_validation_checkpoint()
 
 
 def get_session(kind: str, basket: int) -> Optional[Dict[str, Any]]:
@@ -132,6 +218,21 @@ def start_stroke_validation(basket: int, operator: Optional[Dict[str, Any]] = No
     }
     with _lock:
         _sessions[key] = session
+    _persist_validation_checkpoint(
+        basket,
+        phase="stroke",
+        stroke={
+            "status": "RUNNING",
+            "beaker": basket,
+            "basket": basket,
+            "durationSec": STROKE_DURATION_SEC,
+            "operatorName": session.get("operatorName"),
+            "operatorId": session.get("operatorId"),
+            "operatorUsername": session.get("operatorUsername"),
+        },
+        temp={},
+        operator=operator,
+    )
     _audit(
         "Validation started",
         f"Stroke validation | Beaker {basket} | travel {STROKE_TRAVEL_DELAY_SEC}s then 60 s count",
@@ -305,6 +406,17 @@ def _stroke_worker(basket: int) -> None:
             if key in _sessions and _sessions[key].get("state") == "COMPLETE":
                 _sessions[key]["report"] = report
 
+        _persist_validation_checkpoint(
+            basket,
+            phase="between" if status == "COMPLETE" else "stroke",
+            stroke=report,
+            operator={
+                "name": session.get("operatorName"),
+                "id": session.get("operatorId"),
+                "username": session.get("operatorUsername"),
+            },
+        )
+
         _audit(
             "Validation finished",
             f"Stroke validation | Beaker {basket} | result {status} | {strokes_per_min} strokes/min | withinSpec={within_spec}",
@@ -367,17 +479,10 @@ def abort_stroke_validation(basket: int) -> Dict[str, Any]:
 
 # -------------------- Temperature validation --------------------
 
-def _temp_is_ready(basket: int, set_t: Optional[float]) -> bool:
+def _temp_is_ready(basket: int, set_t: Optional[float] = None) -> bool:
+    """Temp validation Start arms only on ESP TR (same as dashboard / Dr Reddy)."""
     live = hw.get_live_state()
-    temps = hw.get_latest_temps()
-    ir_key = "IR1" if basket == 1 else "IR2"
-    ir = temps.get(ir_key)
-    near = (
-        set_t is not None
-        and ir is not None
-        and abs(float(ir) - float(set_t)) <= TEMP_READY_NEAR_C
-    )
-    return bool(live.get(f"TR{basket}") or near)
+    return bool(live.get(f"TR{basket}"))
 
 
 def arm_temp_validation(
@@ -438,6 +543,20 @@ def arm_temp_validation(
     }
     with _lock:
         _sessions[key] = session
+    _persist_validation_checkpoint(
+        basket,
+        phase="temp",
+        temp={
+            "status": "PREHEAT",
+            "setTemperature": temp,
+            "beaker": basket,
+            "basket": basket,
+            "operatorName": session.get("operatorName"),
+            "operatorId": session.get("operatorId"),
+            "operatorUsername": session.get("operatorUsername"),
+        },
+        operator=operator,
+    )
     _audit(
         "Validation armed",
         f"Temperature validation | Beaker {basket} | setpoint {temp}°C | waiting for ready",
@@ -529,7 +648,7 @@ def start_temp_validation(
         ready = state == "READY" or bool(existing.get("ready"))
 
     if not ready and not _temp_is_ready(basket, set_t):
-        return {"ok": False, "error": "Temperature not ready — wait for TR / near setpoint"}
+        return {"ok": False, "error": "Temperature not ready — wait for TR"}
 
     with _lock:
         if key not in _sessions or _sessions[key].get("state") == "ABORTED":
@@ -542,6 +661,20 @@ def start_temp_validation(
         _sessions[key]["holdStartedAtEpoch"] = time.time()
         session = dict(_sessions[key])
 
+    _persist_validation_checkpoint(
+        basket,
+        phase="temp",
+        temp={
+            "status": "HOLDING",
+            "setTemperature": session.get("setTemperature"),
+            "beaker": basket,
+            "basket": basket,
+            "holdStartedAt": session.get("holdStartedAt"),
+            "operatorName": session.get("operatorName"),
+            "operatorId": session.get("operatorId"),
+            "operatorUsername": session.get("operatorUsername"),
+        },
+    )
     _audit(
         "Validation started",
         f"Temperature validation | Beaker {basket} | setpoint {session.get('setTemperature')}°C | hold 120 s",
@@ -657,6 +790,17 @@ def _temp_hold_worker(basket: int) -> None:
         }
         with _lock:
             _sessions[key]["report"] = report
+
+        _persist_validation_checkpoint(
+            basket,
+            phase="awaiting_pf",
+            temp=report,
+            operator={
+                "name": session.get("operatorName"),
+                "id": session.get("operatorId"),
+                "username": session.get("operatorUsername"),
+            },
+        )
 
         _audit(
             "Validation finished",

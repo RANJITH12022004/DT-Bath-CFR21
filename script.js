@@ -1145,7 +1145,14 @@ function unlockReportPreviewAfterServerStatus(preview, reportId, options) {
         applyReportPreviewLockUi(preview);
         if (reportId != null) _saveReportPdfSilent(reportId);
         if (options.showModal !== false) {
-            showAppModal('Report has been approved. You may now print or leave this screen.', 'Report');
+            if (typeof isPowerInterruptionAbortPreview === 'function' && isPowerInterruptionAbortPreview(preview)) {
+                showAppModal(
+                    'This report was auto-approved by System (power interruption). You may print or leave this screen.',
+                    'Report'
+                );
+            } else {
+                showAppModal('Report has been approved. You may now print or leave this screen.', 'Report');
+            }
         }
     } else {
         try {

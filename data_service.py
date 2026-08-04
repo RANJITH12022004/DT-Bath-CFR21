@@ -454,9 +454,11 @@ def _load_reports_raw():
 
 
 def report_visible_in_list(report: Dict[str, Any]) -> bool:
-    """Approved reports and power-loss aborted reports appear in the reports list.
+    """Approved and aborted reports appear in the reports list.
 
-    Pending drafts stay hidden until a reviewer/Admin approves them.
+    Pending drafts stay hidden until a reviewer/Admin approves them — except
+    content-aborted reports (operator abort / power loss) which must remain
+    visible even if an older save left them stuck as pending.
     """
     if not isinstance(report, dict):
         return False
@@ -464,7 +466,29 @@ def report_visible_in_list(report: Dict[str, Any]) -> bool:
     if st is None:
         return True
     norm = str(st).strip().lower()
-    return norm in ("approved", "aborted")
+    if norm in ("approved", "aborted"):
+        return True
+    if norm == "pending" and _report_content_is_aborted(report):
+        return True
+    return False
+
+
+def _report_content_is_aborted(report: Dict[str, Any]) -> bool:
+    """True when the report body is an abort (independent of approval status)."""
+    if not isinstance(report, dict):
+        return False
+    if report.get("aborted") is True:
+        return True
+    st = str(report.get("status") or "").strip().lower()
+    if st in ("aborted", "test aborted"):
+        return True
+    td = report.get("testData") if isinstance(report.get("testData"), dict) else {}
+    if str((td or {}).get("status") or "").strip().lower() == "aborted":
+        return True
+    cause = str(report.get("abortCause") or (td or {}).get("abortCause") or "").strip().lower()
+    if cause in ("operator", "user", "power_interruption", "power_loss", "power"):
+        return True
+    return False
 
 
 def list_reports(filter_type="all", include_pending=False):
@@ -1230,6 +1254,7 @@ def factory_reset() -> Dict[str, Any]:
     n_storage_files = 0
     for extra_name in (
         "test_run.json",
+        "validation_run.json",
         "datetime.json",
         "audit_entries.json",
         "audit_log.json",
@@ -1425,6 +1450,33 @@ def clear_test_run_data() -> None:
     if test_path.exists():
         try:
             test_path.unlink()
+        except Exception:
+            pass
+
+
+# =================== DT VALIDATION RUN CHECKPOINT ==========================
+
+_VALIDATION_RUN_FILE = "validation_run.json"
+
+
+def save_validation_run_data(payload: Dict[str, Any]) -> None:
+    """Persist in-progress Stroke→Temp validation checkpoint for power-loss recovery."""
+    path = _get_storage_path(_VALIDATION_RUN_FILE)
+    _save_json_file(path, payload if isinstance(payload, dict) else {})
+
+
+def get_validation_run_data() -> Dict[str, Any]:
+    """Load validation checkpoint, if any."""
+    path = _get_storage_path(_VALIDATION_RUN_FILE)
+    return _load_json_file(path, default={})
+
+
+def clear_validation_run_data() -> None:
+    """Remove validation checkpoint after save/abort/recovery."""
+    path = _get_storage_path(_VALIDATION_RUN_FILE)
+    if path.exists():
+        try:
+            path.unlink()
         except Exception:
             pass
 

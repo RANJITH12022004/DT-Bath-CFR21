@@ -144,12 +144,31 @@ def _dt_audit_bridge(action, details="", **kwargs):
 
 
 def _dt_save_report(report: dict):
-    """Persist pending report from dt_test_service (watchdog auto-stop)."""
+    """Persist report from dt_test_service (watchdog auto-stop / stop_test).
+
+    Completed runs stay pending approval. Aborted runs are finalized immediately
+    (reportApprovalStatus=aborted) so they appear on the Reports page.
+    """
     to_save = dict(report or {})
     try:
         to_save = _stamp_report_operator(to_save)
     except Exception:
         pass
+    # Content abort → finalize like power-loss abort (listed, no Pass/Fail gate)
+    if _report_is_aborted_payload(to_save):
+        try:
+            saved = _persist_unclean_shutdown_aborted_report(to_save)
+            _audit_unclean_shutdown_aborted_report(saved)
+            return saved
+        except Exception:
+            app.logger.exception("finalize aborted DT report failed; falling back to pending save")
+    if to_save.get("reportApprovalStatus") is None:
+        to_save["reportApprovalStatus"] = "pending"
+    for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+        # Keep existing abort finalize fields if present
+        if str(to_save.get("reportApprovalStatus") or "").strip().lower() == "aborted":
+            break
+        to_save.pop(k, None)
     rid = data_service.save_report(to_save)
     saved = data_service.get_report(rid) or to_save
     try:
@@ -172,6 +191,21 @@ def _dt_save_report(report: dict):
     except Exception:
         pass
     return saved
+
+
+def _report_is_aborted_payload(report: dict) -> bool:
+    """Detect aborted test/validation payloads before save."""
+    if not isinstance(report, dict):
+        return False
+    if report.get("aborted") is True:
+        return True
+    st = str(report.get("status") or "").strip().lower()
+    if st in ("aborted", "test aborted"):
+        return True
+    td = report.get("testData") if isinstance(report.get("testData"), dict) else {}
+    if str((td or {}).get("status") or "").strip().lower() == "aborted":
+        return True
+    return False
 
 
 dt_test_service.init(logger=app.logger, audit_fn=_dt_audit_bridge, save_report_fn=_dt_save_report)
@@ -451,8 +485,13 @@ def _apply_unclean_shutdown_abort_fields(
     remarks: str,
     approved_by: str,
     abort_cause: str,
+    report_approval_status: str = "aborted",
 ) -> dict:
-    """Shared finalize fields for unclean-shutdown abort (operator or power loss)."""
+    """Shared finalize fields for unclean-shutdown abort (operator or power loss).
+
+    Power interruption → system auto-approved (listed) with remarks \"power interruption\".
+    Operator abort → reportApprovalStatus aborted (listed) without Pass/Fail.
+    """
     report = dict(report or {})
     td = report.get("testData")
     if not isinstance(td, dict):
@@ -491,8 +530,11 @@ def _apply_unclean_shutdown_abort_fields(
     report["status"] = "Aborted"
     report["approvalRemarks"] = remarks
     report["abortCause"] = abort_cause
-    # Persist as aborted (visible in report history) without Pass/Fail approval.
-    report["reportApprovalStatus"] = "aborted"
+    # Power loss: auto-approved by System (tapdensity-style remarks). Operator abort: aborted.
+    approval_st = str(report_approval_status or "aborted").strip().lower()
+    if approval_st not in ("approved", "aborted"):
+        approval_st = "aborted"
+    report["reportApprovalStatus"] = approval_st
     report["approvedBy"] = approved_by
     report["approvedByUsername"] = "system"
     report["approvedAt"] = _utc_now_iso()
@@ -513,16 +555,18 @@ def _apply_unclean_shutdown_abort_fields(
 
 
 def _apply_power_loss_abort_to_report(report: dict) -> dict:
-    """Mark a report aborted after power loss with mandatory power-interruption remarks.
+    """Mark a report aborted after power loss; System auto-approves with power-interruption remarks.
 
     Used when power cuts mid-test or while a completed report awaits approval.
     No Pass/Fail is assigned — approval UI is not used for power-loss recovery.
+    Matches tapdensity_rle auto remarks (\"power interruption\") with System as approver.
     """
     return _apply_unclean_shutdown_abort_fields(
         report,
         remarks=POWER_INTERRUPTION_REMARKS,
         approved_by="System (power interruption)",
         abort_cause=ABORT_CAUSE_POWER,
+        report_approval_status="approved",
     )
 
 
@@ -546,6 +590,7 @@ def _apply_operator_abort_finalize_to_report(report: dict) -> dict:
         remarks=remarks,
         approved_by="System",
         abort_cause=ABORT_CAUSE_OPERATOR,
+        report_approval_status="aborted",
     )
 
 
@@ -596,7 +641,7 @@ def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
         )
         _audit(None, None, "Report aborted", detail)
         return
-    pl_detail = "{} | unclean shutdown | status: aborted | remarks: {}".format(
+    pl_detail = "{} | unclean shutdown | system auto-approved | remarks: {}".format(
         ctx,
         remarks or POWER_INTERRUPTION_REMARKS,
     )
@@ -627,61 +672,282 @@ def _abort_pending_reports_after_power_loss(session_username=None):
     return aborted
 
 
+def _normalize_pending_aborted_reports():
+    """Repair stuck pending+content-aborted rows so they list on the Reports page.
+
+    Older operator/validation aborts were saved as reportApprovalStatus=pending and
+    stayed hidden. Finalize those only — leave completed pending reports alone.
+    """
+    fixed = 0
+    for report in data_service.list_reports("all", include_pending=True) or []:
+        rtype = (report.get("type") or "").strip().lower()
+        if rtype not in ("test", "validation"):
+            continue
+        if (report.get("reportApprovalStatus") or "").strip().lower() != "pending":
+            continue
+        if not _report_is_aborted_payload(report):
+            continue
+        report = _persist_unclean_shutdown_aborted_report(report)
+        _audit_unclean_shutdown_aborted_report(report)
+        fixed += 1
+    if fixed:
+        app.logger.info("Normalized %s pending aborted report(s) for Reports list", fixed)
+    return fixed
+
+
+def _normalize_power_interruption_auto_approvals():
+    """Migrate older power-interruption finals from approval=aborted → System auto-approved.
+
+    Tapdensity-style remarks stay \"power interruption\"; System is the approver.
+    """
+    fixed = 0
+    for report in data_service.list_reports("all", include_pending=True) or []:
+        rtype = (report.get("type") or "").strip().lower()
+        if rtype not in ("test", "validation"):
+            continue
+        st = str(report.get("reportApprovalStatus") or "").strip().lower()
+        if st != "aborted":
+            continue
+        if _report_abort_cause(report) != ABORT_CAUSE_POWER:
+            continue
+        report = _apply_power_loss_abort_to_report(report)
+        data_service.save_report(report)
+        try:
+            print_service.save_report_text_files(report, int(report.get("id")), REPORTS_DIR)
+        except Exception:
+            app.logger.exception(
+                "Failed to refresh print files after power-interruption auto-approve migrate id %s",
+                report.get("id"),
+            )
+        fixed += 1
+    if fixed:
+        app.logger.info(
+            "Migrated %s power-interruption report(s) to System auto-approved",
+            fixed,
+        )
+    return fixed
+
+
+
+def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) -> int:
+    """Materialize one aborted test report per active DT basket from a dt_checkpoint."""
+    created = 0
+    reports = cp.get("reports") if isinstance(cp.get("reports"), list) else []
+    baskets = cp.get("baskets") if isinstance(cp.get("baskets"), dict) else {}
+
+    entries = []
+    if reports:
+        for rep in reports:
+            if isinstance(rep, dict):
+                entries.append(dict(rep))
+    else:
+        for bkey, run in baskets.items():
+            if not isinstance(run, dict):
+                continue
+            st = str(run.get("state") or "").strip().upper()
+            if st not in ("PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING"):
+                continue
+            try:
+                import dt_test_service
+
+                entries.append(dt_test_service._checkpoint_report_from_run(run))
+            except Exception:
+                # Minimal fallback if service import fails during early boot
+                basket = int(run.get("basket") or bkey or 1)
+                entries.append({
+                    "type": "test",
+                    "status": "running",
+                    "beaker": basket,
+                    "basket": basket,
+                    "name": run.get("recipeName") or run.get("productName") or f"Basket {basket} Test",
+                    "productName": run.get("productName") or "",
+                    "batchNumber": run.get("batchNumber") or "",
+                    "operatorUsername": run.get("operatorUsername"),
+                    "operatorName": run.get("operatorName"),
+                    "operatorId": run.get("operatorId"),
+                    "_dtBasket": basket,
+                    "_checkpointPhase": "running",
+                })
+
+    for entry in entries:
+        # Skip if this basket already has a pending report (pending scan handles it)
+        pending_id = entry.get("_pendingReportId") or entry.get("id")
+        if pending_id is not None:
+            try:
+                existing = data_service.get_report(int(pending_id))
+            except Exception:
+                existing = None
+            if existing and str(existing.get("reportApprovalStatus") or "").strip().lower() in (
+                "pending",
+                "aborted",
+            ):
+                continue
+
+        report_data = dict(entry)
+        for k in ("_checkpointAt", "_checkpointPhase", "_pendingReportId", "_dtBasket"):
+            report_data.pop(k, None)
+        report_data["type"] = "test"
+        recipe = report_data.get("recipe")
+        enriched = report_service.generate_report(
+            report_data,
+            recipe=recipe if isinstance(recipe, dict) else None,
+            factory_settings=report_data.get("factorySettings"),
+        )
+        enriched = _stamp_report_operator(enriched)
+        if session_username and not enriched.get("operatedByUsername") and not enriched.get("operatorUsername"):
+            enriched["operatedByUsername"] = session_username
+            enriched["operatorUsername"] = session_username
+        force_power = _report_abort_cause(enriched) != ABORT_CAUSE_OPERATOR
+        enriched = _persist_unclean_shutdown_aborted_report(
+            enriched,
+            force_power_interruption=force_power,
+        )
+        _audit_unclean_shutdown_aborted_report(enriched)
+        created += 1
+    return created
+
+
 def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
     """If a test/validation was in progress (checkpoint) but no pending report existed, save an aborted report.
 
     Mid-test power cut → power interruption.
     Checkpoint already marked operator-aborted → Aborted (not power interruption).
+    DT mid-run checkpoints (type=dt_checkpoint / baskets) yield one report per active basket.
     """
+    created = 0
     cp = data_service.get_test_run_data()
+    if isinstance(cp, dict) and cp:
+        # If checkpoint points at a still-pending report, abort it here (do not assume the
+        # list-scan path already did — races can leave it pending).
+        pending_id = cp.get("_pendingReportId") or cp.get("id")
+        rtype = (cp.get("type") or "").strip().lower()
+        is_dt = rtype == "dt_checkpoint" or isinstance(cp.get("baskets"), dict)
+
+        if pending_id is not None and not is_dt:
+            try:
+                existing = data_service.get_report(int(pending_id))
+            except Exception:
+                existing = None
+            handled_pending_ref = False
+            if existing and str(existing.get("reportApprovalStatus") or "").strip().lower() == "pending":
+                report = _persist_unclean_shutdown_aborted_report(existing)
+                _audit_unclean_shutdown_aborted_report(report)
+                created += 1
+                handled_pending_ref = True
+            elif existing and str(existing.get("reportApprovalStatus") or "").strip().lower() == "aborted":
+                handled_pending_ref = True
+            if handled_pending_ref:
+                data_service.clear_test_run_data()
+                created += _create_aborted_report_from_validation_checkpoint(session_username)
+                return created
+
+        if is_dt:
+            created += _create_aborted_reports_from_dt_checkpoint(cp, session_username)
+            data_service.clear_test_run_data()
+            try:
+                import dt_test_service
+
+                dt_test_service.reset_all_runs_after_power_loss()
+            except Exception:
+                app.logger.exception("Failed to reset DT runs after power-loss recovery")
+        elif rtype in ("test", "validation"):
+            td = cp.get("testData") if isinstance(cp.get("testData"), dict) else {}
+            report_data = dict(cp)
+            for k in ("_checkpointAt", "_checkpointPhase", "_pendingReportId"):
+                report_data.pop(k, None)
+            recipe = report_data.get("recipe") or (td.get("recipe") if isinstance(td, dict) else None)
+            enriched = report_service.generate_report(
+                report_data,
+                recipe=recipe,
+                factory_settings=report_data.get("factorySettings"),
+            )
+            enriched = _stamp_report_operator(enriched)
+            force_power = _report_abort_cause(enriched) != ABORT_CAUSE_OPERATOR
+            enriched = _persist_unclean_shutdown_aborted_report(
+                enriched,
+                force_power_interruption=force_power,
+            )
+            _audit_unclean_shutdown_aborted_report(enriched)
+            data_service.clear_test_run_data()
+            created += 1
+        else:
+            # Unknown shape — clear to avoid sticky false recovery
+            data_service.clear_test_run_data()
+
+    created += _create_aborted_report_from_validation_checkpoint(session_username)
+    return created
+
+
+def _create_aborted_report_from_validation_checkpoint(session_username=None) -> int:
+    """Synthesize an aborted combined validation report from validation_run.json."""
+    if not hasattr(data_service, "get_validation_run_data"):
+        return 0
+    cp = data_service.get_validation_run_data()
     if not isinstance(cp, dict) or not cp:
         return 0
-    # If checkpoint points at a still-pending report, abort it here (do not assume the
-    # list-scan path already did — races can leave it pending).
-    pending_id = cp.get("_pendingReportId") or cp.get("id")
-    if pending_id is not None:
-        try:
-            existing = data_service.get_report(int(pending_id))
-        except Exception:
-            existing = None
-        if existing and str(existing.get("reportApprovalStatus") or "").strip().lower() == "pending":
-            report = _persist_unclean_shutdown_aborted_report(existing)
-            _audit_unclean_shutdown_aborted_report(report)
-            data_service.clear_test_run_data()
-            return 1
-        if existing and str(existing.get("reportApprovalStatus") or "").strip().lower() == "aborted":
-            data_service.clear_test_run_data()
-            return 0
-    rtype = (cp.get("type") or "").strip().lower()
-    if rtype not in ("test", "validation"):
-        data_service.clear_test_run_data()
+    try:
+        basket = int(cp.get("beaker") or cp.get("basket") or 1)
+    except (TypeError, ValueError):
+        basket = 1
+    if basket not in (1, 2):
+        basket = 1
+
+    stroke = cp.get("stroke") if isinstance(cp.get("stroke"), dict) else {}
+    temp = cp.get("temp") if isinstance(cp.get("temp"), dict) else {}
+    phase = cp.get("_checkpointPhase") or cp.get("phase") or "stroke"
+
+    try:
+        import dt_validation_service
+
+        report = dt_validation_service.build_aborted_combined_validation_report(
+            basket,
+            stroke_payload=stroke or None,
+            temp_payload=temp or None,
+            phase=phase,
+            operator={
+                "name": cp.get("operatorName"),
+                "username": cp.get("operatorUsername") or session_username,
+                "employeeId": cp.get("operatorId"),
+                "id": cp.get("operatorId"),
+            },
+        )
+    except Exception:
+        app.logger.exception("Failed to build aborted validation report from checkpoint")
+        data_service.clear_validation_run_data()
         return 0
-    td = cp.get("testData") if isinstance(cp.get("testData"), dict) else {}
-    report_data = dict(cp)
-    for k in ("_checkpointAt", "_checkpointPhase", "_pendingReportId"):
-        report_data.pop(k, None)
-    recipe = report_data.get("recipe") or (td.get("recipe") if isinstance(td, dict) else None)
-    enriched = report_service.generate_report(
-        report_data,
-        recipe=recipe,
-        factory_settings=report_data.get("factorySettings"),
-    )
-    enriched = _stamp_report_operator(enriched)
-    # Mid-test cut (still running / completed checkpoint) → power interruption.
-    # Operator-abort checkpoint (status already aborted) → keep Aborted.
-    force_power = _report_abort_cause(enriched) != ABORT_CAUSE_OPERATOR
-    enriched = _persist_unclean_shutdown_aborted_report(
-        enriched,
-        force_power_interruption=force_power,
-    )
-    _audit_unclean_shutdown_aborted_report(enriched)
-    data_service.clear_test_run_data()
+
+    report = dict(report)
+    report["reportApprovalStatus"] = "pending"
+    report = _stamp_report_operator(report)
+    if session_username and not report.get("operatedByUsername"):
+        report["operatedByUsername"] = session_username
+        report["operatorUsername"] = session_username
+    # Mid-validation cut is always power interruption (not operator abort finalize)
+    report = _persist_unclean_shutdown_aborted_report(report, force_power_interruption=True)
+    _audit_unclean_shutdown_aborted_report(report)
+    data_service.clear_validation_run_data()
+    try:
+        import dt_validation_service
+
+        if hasattr(dt_validation_service, "clear_all_sessions"):
+            dt_validation_service.clear_all_sessions()
+    except Exception:
+        pass
     return 1
 
 
 def _startup_session_power_audit():
     """If the last run ended without a clean stop while a session was active, log one power-interruption row."""
     try:
+        # Always repair stuck pending+aborted drafts (even after a clean service restart).
+        try:
+            _normalize_pending_aborted_reports()
+        except Exception:
+            app.logger.exception("Normalize pending aborted reports failed")
+        try:
+            _normalize_power_interruption_auto_approvals()
+        except Exception:
+            app.logger.exception("Normalize power-interruption auto-approvals failed")
         had_clean_shutdown = data_service.consume_app_clean_stop_flag()
         pending = data_service.read_session_power_audit_pending()
         if pending and not had_clean_shutdown:
@@ -1991,10 +2257,16 @@ def create_report():
         )
         if (enriched.get("type") or "").strip().lower() in ("test", "validation"):
             enriched = _stamp_report_operator(enriched)
-            # Aborted test/validation reports also require approval.
-            enriched["reportApprovalStatus"] = "pending"
             for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
                 enriched.pop(k, None)
+            # Content-aborted → finalize immediately (listed on Reports; no Pass/Fail gate).
+            if _report_is_aborted_payload(enriched):
+                enriched = _persist_unclean_shutdown_aborted_report(enriched)
+                _audit_unclean_shutdown_aborted_report(enriched)
+                report_id = enriched.get("id")
+                _audit_report_created(report_id, enriched)
+                return jsonify({"id": report_id, "report": enriched}), 201
+            enriched["reportApprovalStatus"] = "pending"
         report_id = data_service.save_report(enriched)
         enriched = report_service.enrich_report_context({**enriched, "id": report_id})
         data_service.save_report(enriched)
@@ -5540,22 +5812,26 @@ def dt_run_stop(basket):
     if result.get("ok") and result.get("report") and not result.get("savedReport"):
         try:
             report = dict(result["report"])
-            report["reportApprovalStatus"] = "pending"
-            for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
-                report.pop(k, None)
             report = _stamp_report_operator(report)
-            saved_id = data_service.save_report(report)
-            saved = data_service.get_report(saved_id) or report
+            if aborted or _report_is_aborted_payload(report):
+                saved = _persist_unclean_shutdown_aborted_report(report)
+                _audit_unclean_shutdown_aborted_report(saved)
+            else:
+                report["reportApprovalStatus"] = "pending"
+                for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
+                    report.pop(k, None)
+                saved_id = data_service.save_report(report)
+                saved = data_service.get_report(saved_id) or report
+                _audit_event(
+                    action="Report saved",
+                    outcome="success",
+                    details=f"Completed test report basket {basket}",
+                    entity_type="report",
+                    entity_id=str(saved_id or ""),
+                    entity_name=(saved or {}).get("name") or "",
+                    extra={"basket": basket, "aborted": False, "mock": report.get("mock")},
+                )
             result["savedReport"] = saved
-            _audit_event(
-                action="Report saved",
-                outcome="success",
-                details=f"{'Aborted' if aborted else 'Completed'} test report basket {basket}",
-                entity_type="report",
-                entity_id=str(saved_id or ""),
-                entity_name=(saved or {}).get("name") or "",
-                extra={"basket": basket, "aborted": aborted, "mock": report.get("mock")},
-            )
             dt_test_service.clear_run(basket)
         except Exception as e:
             app.logger.exception("save report on stop failed")
@@ -5613,12 +5889,25 @@ def dt_stroke_save(basket):
         else:
             return jsonify({"ok": False, "error": "No stroke validation report to save"}), 400
     report = dict(report)
-    report["reportApprovalStatus"] = "pending"
     if report.get("aborted") or report.get("status") == "ABORTED":
         report["status"] = "ABORTED"
+        report["aborted"] = True
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
     report = _stamp_report_operator(report)
+    if _report_is_aborted_payload(report):
+        saved = _persist_unclean_shutdown_aborted_report(report)
+        _audit_unclean_shutdown_aborted_report(saved)
+        _audit_event(
+            action="Report saved",
+            outcome="success",
+            details=f"Aborted stroke validation basket {basket}",
+            entity_type="report",
+            entity_id=str(saved.get("id") or ""),
+            entity_name=(saved or {}).get("name") or "",
+        )
+        return jsonify({"ok": True, "report": saved})
+    report["reportApprovalStatus"] = "pending"
     saved_id = data_service.save_report(report)
     saved = data_service.get_report(saved_id) or report
     _audit_event(
@@ -5691,12 +5980,25 @@ def dt_temp_save(basket):
         else:
             return jsonify({"ok": False, "error": "No temp validation report to save"}), 400
     report = dict(report)
-    report["reportApprovalStatus"] = "pending"
     if report.get("aborted") or report.get("status") == "ABORTED":
         report["status"] = "ABORTED"
+        report["aborted"] = True
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
     report = _stamp_report_operator(report)
+    if _report_is_aborted_payload(report):
+        saved = _persist_unclean_shutdown_aborted_report(report)
+        _audit_unclean_shutdown_aborted_report(saved)
+        _audit_event(
+            action="Report saved",
+            outcome="success",
+            details=f"Aborted temp validation basket {basket}",
+            entity_type="report",
+            entity_id=str(saved.get("id") or ""),
+            entity_name=(saved or {}).get("name") or "",
+        )
+        return jsonify({"ok": True, "report": saved})
+    report["reportApprovalStatus"] = "pending"
     saved_id = data_service.save_report(report)
     saved = data_service.get_report(saved_id) or report
     _audit_event(
@@ -5712,7 +6014,7 @@ def dt_temp_save(basket):
 
 @app.route("/api/data/dt/validation/<int:basket>/combined/abort", methods=["POST"])
 def dt_combined_validation_abort(basket):
-    """Abort in-progress Stroke→Temp validation and save a pending aborted report for approval."""
+    """Abort in-progress Stroke→Temp validation and finalize as aborted (listed, no Pass/Fail)."""
     gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
     if gate:
         return gate
@@ -5737,18 +6039,23 @@ def dt_combined_validation_abort(basket):
         operator=_session_operator(),
     )
     report = dict(report)
-    report["reportApprovalStatus"] = "pending"
     report["status"] = "ABORTED"
     report["aborted"] = True
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
     report = _stamp_report_operator(report)
-    saved_id = data_service.save_report(report)
-    saved = data_service.get_report(saved_id) or report
+    # Finalize as aborted immediately so it appears on the Reports page (no Pass/Fail gate).
+    saved = _persist_unclean_shutdown_aborted_report(report)
+    saved_id = saved.get("id")
+    try:
+        dt_validation_service.clear_validation_checkpoint(basket)
+    except Exception:
+        app.logger.exception("clear validation checkpoint after abort failed")
+    _audit_unclean_shutdown_aborted_report(saved)
     _audit_event(
         action="Validation aborted",
         outcome="aborted",
-        details=f"Pending aborted validation basket {basket}",
+        details=f"Aborted validation basket {basket}",
         entity_type="report",
         entity_id=str(saved_id or ""),
         entity_name=(saved or {}).get("name") or "",
@@ -5756,7 +6063,7 @@ def dt_combined_validation_abort(basket):
     _audit_event(
         action="Report saved",
         outcome="success",
-        details=f"Pending aborted validation basket {basket}",
+        details=f"Aborted validation basket {basket}",
         entity_type="report",
         entity_id=str(saved_id or ""),
         entity_name=(saved or {}).get("name") or "",
@@ -5804,6 +6111,10 @@ def dt_combined_validation_save(basket):
     report = _stamp_report_operator(report)
     saved_id = data_service.save_report(report)
     saved = data_service.get_report(saved_id) or report
+    try:
+        dt_validation_service.clear_validation_checkpoint(basket)
+    except Exception:
+        app.logger.exception("clear validation checkpoint after save failed")
     _audit_event(
         action="Report saved",
         outcome="success",

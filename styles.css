@@ -9888,13 +9888,54 @@ body.keyboard-open {
 /* ---- DT validation / create-recipe (Dr Reddy import) ---- */
 #page-validate-beaker.active,
 #page-stroke-validation.active,
-#page-temp-validation.active,
 #page-approval-verify.active {
     display: flex;
     flex-direction: column;
     height: auto;
     min-height: 100%;
     overflow: visible;
+}
+
+#page-temp-validation.active {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Temp validation: single non-scrolling viewport (7″ / 1024×600 kiosk) */
+.page-content:has(#page-temp-validation.active),
+.page-content:has(#page-stroke-validation.active) {
+    overflow: hidden;
+    padding: 12px 16px;
+}
+
+#page-temp-validation.active {
+    height: 100%;
+    min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
+}
+
+#page-temp-validation .dt-temp-validation-page {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    gap: 10px;
+}
+
+#page-temp-validation .dt-temp-validation-page .dt-val-test-header {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+}
+
+#page-temp-validation .dt-temp-validation-page .section-title {
+    font-size: 22px;
+    line-height: 1.2;
 }
 
 #page-validate-beaker .dt-validate-beaker-grid {
@@ -9996,11 +10037,14 @@ body.keyboard-open {
 .dt-temp-validation-content {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    max-width: 640px;
-    margin: 0 auto;
+    gap: 10px;
+    max-width: none;
+    margin: 0;
     width: 100%;
     align-items: stretch;
+    flex: 1 1 auto;
+    min-height: 0;
+    justify-content: stretch;
 }
 
 .dt-temp-validation-page .dt-val-test-header {
@@ -10008,7 +10052,7 @@ body.keyboard-open {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
 }
 
 .dt-val-abort-btn,
@@ -10016,69 +10060,159 @@ body.keyboard-open {
     background: #dc2626 !important;
     border-color: #b91c1c !important;
     color: #fff !important;
+    flex: 0 0 auto;
+    padding: 10px 20px;
+    min-height: 44px;
+    font-size: 15px;
+    font-weight: 700;
 }
 
 .dt-temp-set-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: nowrap;
+    flex: 0 0 auto;
+    padding: 10px 14px;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 14px;
 }
 
 .dt-temp-set-row label {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 700;
     color: var(--text-secondary, #cbd5e1);
+    white-space: nowrap;
 }
 
 .dt-temp-set-row .validation-temp-input {
     width: 96px;
     text-align: center;
-    font-size: 18px;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 8px 10px;
+    min-height: 48px;
+}
+
+.dt-temp-set-row .btn {
+    min-height: 48px;
+    padding: 10px 20px;
+    font-size: 16px;
     font-weight: 700;
 }
 
-.dt-temp-hero {
-    text-align: center;
-    padding: 8px 0 4px;
+.dt-temp-start-btn {
+    min-width: 120px;
+}
+
+.dt-temp-start-btn:disabled,
+.dt-temp-start-btn[aria-disabled="true"] {
+    opacity: 0.45;
+    cursor: not-allowed;
+    filter: grayscale(0.55);
+    box-shadow: none !important;
+    transform: none !important;
+    background: #475569 !important;
+    border-color: #334155 !important;
+    color: #cbd5e1 !important;
+}
+
+.dt-temp-start-btn:disabled:hover,
+.dt-temp-start-btn[aria-disabled="true"]:hover {
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* Main stage: fills remaining viewport with two equal panels */
+.dt-temp-stage {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    flex: 1 1 auto;
+    min-height: 0;
+    align-items: stretch;
+}
+
+.dt-temp-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    min-width: 0;
+    padding: 12px 16px;
+    border-radius: 18px;
+    border: 2px solid rgba(148, 163, 184, 0.28);
+    background: linear-gradient(160deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.98));
+    box-sizing: border-box;
+}
+
+.dt-temp-panel--measured {
+    border-color: rgba(251, 146, 60, 0.45);
+    background: linear-gradient(160deg, rgba(124, 45, 18, 0.35), rgba(15, 23, 42, 0.96));
+}
+
+.dt-temp-panel--hold {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: linear-gradient(160deg, rgba(12, 74, 110, 0.4), rgba(15, 23, 42, 0.96));
+}
+
+.dt-temp-panel-label {
+    margin: 0 0 4px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.65);
 }
 
 .dt-temp-hero-measured {
-    font-size: 64px;
+    font-size: clamp(64px, 14vh, 96px);
     font-weight: 800;
-    line-height: 1;
+    line-height: 0.95;
     margin: 0;
     color: #fb923c;
     font-variant-numeric: tabular-nums;
 }
 
 .dt-temp-hero-unit {
-    margin: 6px 0 0;
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.7);
+    margin: 2px 0 0;
+    font-size: 22px;
+    font-weight: 700;
+    color: rgba(251, 146, 60, 0.85);
 }
 
 .dt-temp-hero-meta {
     margin: 10px 0 0;
     font-size: 15px;
+    font-weight: 600;
     color: #cbd5e1;
+    line-height: 1.35;
+    text-align: center;
 }
 
 .dt-temp-hold-ring {
-    width: min(220px, 56vw);
-    height: min(220px, 56vw);
-    margin: 4px auto;
+    width: min(100%, 260px);
+    max-width: 90%;
+    max-height: calc(100% - 8px);
+    aspect-ratio: 1;
+    height: auto;
+    flex: 0 1 auto;
+    margin: 0;
     border-radius: 50%;
-    border: 6px solid rgba(56, 189, 248, 0.35);
-    background: radial-gradient(circle at 40% 35%, rgba(56, 189, 248, 0.18), rgba(15, 23, 42, 0.9));
+    border: 8px solid rgba(56, 189, 248, 0.35);
+    background: radial-gradient(circle at 40% 35%, rgba(56, 189, 248, 0.22), rgba(15, 23, 42, 0.92));
     display: flex;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box;
 }
 
 .dt-temp-hold-ring.is-holding {
     border-color: #38bdf8;
-    box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.15);
+    box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.18), 0 0 28px rgba(56, 189, 248, 0.25);
 }
 
 .dt-temp-hold-ring-inner {
@@ -10087,20 +10221,30 @@ body.keyboard-open {
 
 .dt-temp-hold-label {
     margin: 0;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.65);
+    color: rgba(255, 255, 255, 0.7);
 }
 
 .dt-temp-hold-time {
     margin: 4px 0 0;
-    font-size: 42px;
+    font-size: clamp(36px, 8vh, 52px);
     font-weight: 800;
     color: #f8fafc;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
+    line-height: 1;
+}
+
+.dt-temp-footer {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
 }
 
 .dt-temp-status-line {
@@ -10109,33 +10253,32 @@ body.keyboard-open {
     font-size: 16px;
     font-weight: 600;
     color: #e2e8f0;
+    min-height: 1.25em;
 }
 
 .dt-temp-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    justify-content: center;
-}
-
-.dt-temp-actions .btn {
-    min-width: 160px;
+    display: none;
 }
 
 .dt-temp-result-actions {
     text-align: center;
-    margin-top: 4px;
+    margin-top: 0;
+    width: 100%;
 }
 
 .dt-temp-pf-row {
     display: flex;
-    gap: 12px;
+    gap: 16px;
     justify-content: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
 }
 
 .dt-temp-pf-row .btn {
-    min-width: 120px;
+    min-width: 160px;
+    min-height: 48px;
+    padding: 10px 24px;
+    font-size: 17px;
+    font-weight: 700;
 }
 
 .stroke-complete-stats {

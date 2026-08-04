@@ -30,6 +30,7 @@ _last_saved_reports: Dict[int, Dict[str, Any]] = {}  # basket_id -> last auto-sa
 _watchdog_started = False
 
 STATES = ("IDLE", "PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING", "COMPLETE", "ABORTED")
+ACTIVE_CHECKPOINT_STATES = ("PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING")
 
 
 def init(logger=None, audit_fn: Optional[Callable] = None, save_report_fn: Optional[Callable] = None) -> None:
@@ -96,16 +97,57 @@ def _empty_run(basket: int) -> Dict[str, Any]:
     }
 
 
+def _checkpoint_report_from_run(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a report-shaped mid-run checkpoint entry for power-loss recovery."""
+    rep = build_report_payload(run)
+    basket = int(run.get("basket") or 1)
+    if run.get("aborted"):
+        rep["status"] = "aborted"
+        rep["abortCause"] = "operator"
+        rep["remarks"] = "Aborted"
+        rep["aborted"] = True
+    else:
+        rep["status"] = "running"
+    rep["_checkpointPhase"] = "running"
+    rep["_dtBasket"] = basket
+    return rep
+
+
 def _persist() -> None:
+    """Persist DT mid-run checkpoint as type=dt_checkpoint with reports[] for power-loss recovery.
+
+    When no basket is active, clear a prior DT checkpoint. Leave classic (non-DT)
+    report-shaped checkpoints untouched when DT never owned the file.
+    """
     if not data_service:
         return
     try:
         with _lock:
-            payload = {
-                "updatedAt": _now_iso(),
-                "mock": hw.is_mock_mode(),
-                "baskets": {str(k): dict(v) for k, v in _runs.items()},
-            }
+            baskets = {str(k): dict(v) for k, v in _runs.items()}
+        reports: List[Dict[str, Any]] = []
+        for bkey, run in baskets.items():
+            st = str(run.get("state") or "")
+            if st not in ACTIVE_CHECKPOINT_STATES:
+                continue
+            reports.append(_checkpoint_report_from_run(run))
+        if not reports:
+            existing = {}
+            if hasattr(data_service, "get_test_run_data"):
+                existing = data_service.get_test_run_data() or {}
+            if isinstance(existing, dict) and (
+                str(existing.get("type") or "").strip().lower() == "dt_checkpoint"
+                or isinstance(existing.get("baskets"), dict)
+            ):
+                if hasattr(data_service, "clear_test_run_data"):
+                    data_service.clear_test_run_data()
+            return
+        payload = {
+            "type": "dt_checkpoint",
+            "updatedAt": _now_iso(),
+            "mock": hw.is_mock_mode(),
+            "baskets": baskets,
+            "reports": reports,
+        }
         if hasattr(data_service, "save_test_run_data"):
             data_service.save_test_run_data(payload)
         elif hasattr(data_service, "save_test_run"):
@@ -113,6 +155,21 @@ def _persist() -> None:
     except Exception as e:
         if _logger:
             _logger.debug("test_run persist: %s", e)
+
+
+def reset_all_runs_after_power_loss() -> None:
+    """Clear in-memory basket state after unclean-shutdown recovery consumed the checkpoint."""
+    with _lock:
+        _runs.clear()
+        _last_saved_reports.clear()
+        for b in (1, 2):
+            _runs[b] = _empty_run(b)
+    if data_service and hasattr(data_service, "clear_test_run_data"):
+        try:
+            data_service.clear_test_run_data()
+        except Exception:
+            pass
+
 
 
 def get_run(basket: int, *, consume_saved: bool = False) -> Dict[str, Any]:
