@@ -992,11 +992,11 @@ body {
 /* Manage Recipes table - Hardness-style */
 .manage-recipes-table {
     width: 100%;
-    min-width: 500px;
+    min-width: 720px;
     margin: 20px 0 0 0;
     border-collapse: separate;
-    border-spacing: 0 8px;
-    font-size: 0.9rem;
+    border-spacing: 0 10px;
+    font-size: 0.95rem;
     border-color: #2D3748;
     table-layout: fixed;
 }
@@ -1010,7 +1010,7 @@ body {
     background: #2D3748;
     color: #A0AEC0;
     text-align: left;
-    padding: 12px;
+    padding: 14px 16px;
     font-weight: 600;
     font-size: 1rem;
     border-bottom: 2px solid #4A5568;
@@ -1037,10 +1037,10 @@ body {
 }
 
 .manage-recipes-table td {
-    padding: 8px 10px;
+    padding: 14px 16px;
     background: rgba(45, 55, 72, 0.3);
     border-bottom: 1px solid #4A5568;
-    font-size: 0.9rem;
+    font-size: 0.95rem;
     vertical-align: middle;
     color: #E2E8F0;
     white-space: nowrap;
@@ -1053,18 +1053,22 @@ body {
     font-weight: 600;
 }
 
-.manage-recipes-table td:last-child {
+.manage-recipes-table td:last-child,
+.manage-recipes-table td.actions-cell,
+.manage-recipes-table th.actions-col {
     text-align: right;
 }
 
+/* Do not use display:flex on <td> — it shrink-wraps and parks buttons on the left */
 .manage-recipes-table .actions-cell {
     overflow: visible;
-    display: flex;
-    flex-direction: row;
-    gap: 6px;
-    align-items: center;
-    justify-content: flex-end;
-    padding-right: 10px;
+    padding-right: 16px;
+    text-align: right;
+}
+
+.manage-recipes-table .actions-cell .btn-action {
+    display: inline-flex;
+    vertical-align: middle;
 }
 
 .manage-recipe-action-btn {
@@ -1176,14 +1180,8 @@ body {
 }
 
 .disable-recipes-table {
-    min-width: 640px;
+    min-width: 760px;
 }
-
-.disable-recipes-table th:nth-child(1) { width: 28%; }
-.disable-recipes-table th:nth-child(2) { width: 18%; }
-.disable-recipes-table th:nth-child(3) { width: 12%; }
-.disable-recipes-table th:nth-child(4) { width: 22%; }
-.disable-recipes-table th:nth-child(5) { width: 20%; }
 
 .disable-recipes-page .section-title {
     margin-bottom: 6px;
@@ -3093,33 +3091,76 @@ body {
     box-shadow: 0 18px 44px rgba(2, 6, 23, 0.18);
 }
 
+/* Multi-column manage/disabled tables — keep Mode/Temp/Duration/Approval readable */
 .manage-recipes-table {
     width: 100%;
+    min-width: 720px;
     table-layout: fixed;
+    border-spacing: 0 10px;
 }
 
 .manage-recipes-table th,
 .manage-recipes-table td {
     vertical-align: middle;
-    word-break: break-word;
-    white-space: normal;
+    word-break: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 14px 16px;
 }
 
-.manage-recipes-table th:first-child,
-.manage-recipes-table td:first-child {
-    width: 58%;
+/* Manage Recipes: Product | Mode | Temp | Duration | Approval | Actions */
+#page-manage-recipes .manage-recipes-table th:nth-child(1),
+#page-manage-recipes .manage-recipes-table td:nth-child(1) { width: 26%; }
+#page-manage-recipes .manage-recipes-table th:nth-child(2),
+#page-manage-recipes .manage-recipes-table td:nth-child(2) { width: 12%; text-align: center; }
+#page-manage-recipes .manage-recipes-table th:nth-child(3),
+#page-manage-recipes .manage-recipes-table td:nth-child(3) { width: 12%; text-align: center; }
+#page-manage-recipes .manage-recipes-table th:nth-child(4),
+#page-manage-recipes .manage-recipes-table td:nth-child(4) { width: 14%; text-align: center; }
+#page-manage-recipes .manage-recipes-table th:nth-child(5),
+#page-manage-recipes .manage-recipes-table td:nth-child(5) { width: 14%; text-align: center; }
+#page-manage-recipes .manage-recipes-table th:nth-child(6),
+#page-manage-recipes .manage-recipes-table td:nth-child(6) {
+    width: 22%;
+    text-align: right;
 }
 
-.disable-recipes-table th:first-child,
-.disable-recipes-table td:first-child {
-    width: 44%;
+/* Load-recipe mode: Product | Mode | Temp | Duration | Load */
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table th:nth-child(1),
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table td:nth-child(1) { width: 34%; }
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table th:nth-child(2),
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table td:nth-child(2) { width: 14%; text-align: center; }
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table th:nth-child(3),
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table td:nth-child(3) { width: 14%; text-align: center; }
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table th:nth-child(4),
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table td:nth-child(4) { width: 16%; text-align: center; }
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table th:nth-child(5),
+#page-manage-recipes .manage-recipes-container.recipe-load-only .manage-recipes-table td:nth-child(5) {
+    width: 22%;
+    text-align: right;
 }
 
-.recipe-table-main {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
+/* Disabled Recipes: Product | Mode | Temp | Disabled By | Disabled At | Actions */
+.disable-recipes-table th:nth-child(1),
+.disable-recipes-table td:nth-child(1) { width: 22%; }
+.disable-recipes-table th:nth-child(2),
+.disable-recipes-table td:nth-child(2) { width: 12%; text-align: center; }
+.disable-recipes-table th:nth-child(3),
+.disable-recipes-table td:nth-child(3) { width: 12%; text-align: center; }
+.disable-recipes-table th:nth-child(4),
+.disable-recipes-table td:nth-child(4) { width: 16%; text-align: center; }
+.disable-recipes-table th:nth-child(5),
+.disable-recipes-table td:nth-child(5) { width: 20%; text-align: center; }
+.disable-recipes-table th:nth-child(6),
+.disable-recipes-table td:nth-child(6) {
+    width: 18%;
+    text-align: right;
+}
+
+.manage-recipes-table .actions-cell {
+    white-space: nowrap;
+    text-align: right;
 }
 
 .recipe-table-title {
@@ -3171,10 +3212,6 @@ body {
     background: rgba(245, 158, 11, 0.18);
     border: 1px solid rgba(245, 158, 11, 0.34);
     color: #fcd34d;
-}
-
-.manage-recipes-table .actions-cell {
-    white-space: nowrap;
 }
 
 @media (max-width: 900px) {

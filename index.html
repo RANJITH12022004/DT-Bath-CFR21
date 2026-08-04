@@ -9,8 +9,8 @@
     <title>Tablet Disintegration Tester</title>
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="/styles.css?v=67" id="app-main-css"
-        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=67&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
+    <link rel="stylesheet" href="/styles.css?v=70" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=70&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -630,30 +630,23 @@
                 <div class="page" id="page-manage-recipes">
                     <div class="manage-recipes-container">
                         <div id="manage-recipes-main">
-                        <div class="recipe-page-header">
-                            <div class="recipe-page-header-copy">
-                                <h2 class="section-title">Manage Recipes</h2>
-                                <p class="section-subtitle">Create, edit, disable, review approval status, and keep the active recipe list clean.</p>
-                            </div>
-                            <div class="recipe-page-header-actions">
-                                <button class="btn btn-secondary" type="button" onclick="goToPage('settings')">Back</button>
-                                <button class="btn btn-secondary" type="button" onclick="goToPage('disable-recipes')">Disabled Recipes</button>
-                                <button class="btn-create-recipe" type="button" onclick="startRecipeCreation()">
-                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                                    </svg>
-                                    Create New Recipe
-                                </button>
-                            </div>
-                        </div>
-                        <div class="recipe-list-container manage-recipes-panel">
+                        <button class="btn-create-recipe" onclick="startRecipeCreation()">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            Create New Recipe
+                        </button>
+                        <div class="recipe-list-container">
                             <p class="empty-state-message" id="manage-recipes-message">No recipes created yet.</p>
                             <table class="manage-recipes-table" style="display: none;">
                                 <thead>
                                     <tr>
-                                        <th>Recipe</th>
+                                        <th>Product Name</th>
+                                        <th>Mode</th>
+                                        <th>Temp °C</th>
+                                        <th>Duration</th>
                                         <th>Approval</th>
                                         <th class="actions-col">Actions</th>
                                     </tr>
@@ -932,22 +925,16 @@
                 <!-- Disabled Recipes Page -->
                 <div class="page" id="page-disable-recipes">
                     <div class="manage-recipes-container disable-recipes-page">
-                        <div class="recipe-page-header">
-                            <div class="recipe-page-header-copy">
-                                <h2 class="section-title">Disabled Recipes</h2>
-                                <p class="section-subtitle">Recipes removed from active use. Enabling sends them back to the active Manage Recipes list.</p>
-                            </div>
-                            <div class="recipe-page-header-actions">
-                                <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
-                                <button type="button" class="btn btn-secondary" onclick="manageRecipes()">Manage Recipes</button>
-                            </div>
-                        </div>
-                        <div class="recipe-list-container manage-recipes-panel">
+                        <h2 class="section-title">Disabled Recipes</h2>
+                        <p class="section-subtitle">Recipes removed from active use. Enabling requires recipe management approval.</p>
+                        <div class="recipe-list-container">
                             <p class="empty-state-message" id="disable-recipes-message">No disabled recipes.</p>
                             <table class="manage-recipes-table disable-recipes-table" style="display: none;">
                                 <thead>
                                     <tr>
-                                        <th>Recipe</th>
+                                        <th>Product Name</th>
+                                        <th>Mode</th>
+                                        <th>Temp °C</th>
                                         <th>Disabled By</th>
                                         <th>Disabled At</th>
                                         <th class="actions-col">Actions</th>
@@ -955,6 +942,10 @@
                                 </thead>
                                 <tbody id="disable-recipes-table-body"></tbody>
                             </table>
+                        </div>
+                        <div class="validation-actions-row">
+                            <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
+                            <button type="button" class="btn btn-secondary" onclick="manageRecipes()">Manage Recipes</button>
                         </div>
                     </div>
                     <div id="recipe-enable-overlay" class="modal-overlay" style="display: none;">
@@ -1365,11 +1356,11 @@
                             <h3 id="recipe-print-product">Product Name</h3>
                             <table>
                                 <tr>
-                                    <th>USP</th>
+                                    <th>Mode</th>
                                     <td id="recipe-print-usp"></td>
                                 </tr>
                                 <tr>
-                                    <th>Speed (RPM)</th>
+                                    <th>Temperature</th>
                                     <td id="recipe-print-speed"></td>
                                 </tr>
                             </table>
@@ -2543,7 +2534,7 @@
     <script src="/keyboard.js?v=6"></script>
     <script src="/input-focus.js?v=2"></script>
     <script src="/rbac.js?v=11"></script>
-    <script src="/script.js?v=125"></script>
+    <script src="/script.js?v=127"></script>
     <script src="/dt_client.js?v=42"></script>
 </body>
 

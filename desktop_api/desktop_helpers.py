@@ -114,14 +114,16 @@ def _changed_fields(before_obj, after_obj):
 def audit_event(kiosk, user, **kwargs):
     """Structured audit with desktop user as actor (does not use kiosk session)."""
     fn = getattr(kiosk, "_audit_event", None)
+    u = (user or {}).get("username") or (user or {}).get("name") or "--"
+    r = (user or {}).get("role") or "--"
     if fn:
         sig = kwargs.get("signature") or desktop_signature(user)
         kwargs["signature"] = sig
+        kwargs.setdefault("actor_user", u)
+        kwargs.setdefault("actor_role", r)
         return fn(**kwargs)
 
     audit_time = _audit_time_fields(kiosk)
-    u = (user or {}).get("username") or (user or {}).get("name") or "--"
-    r = (user or {}).get("role") or "--"
     before_clean = _sanitize_audit_payload(kwargs.get("before"))
     after_clean = _sanitize_audit_payload(kwargs.get("after"))
     audit_service.log_structured_event(

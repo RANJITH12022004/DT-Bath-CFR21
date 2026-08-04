@@ -1154,10 +1154,7 @@ def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
             ("Expected", _validation_expected_display(run)),
             ("Actual", _cell_str(_validation_actual_value(run))),
         ])
-    within_spec = run.get("withinSpec")
-    if within_spec is None and "within_spec" in run:
-        within_spec = run.get("within_spec")
-    pairs.append(("Within Spec", "Yes" if within_spec is True else ("No" if within_spec is False else "--")))
+    # Intentionally omit Within Spec — operator Pass/Fail is the approval result.
     status = run.get("status")
     status_s = str(status or "").strip().upper()
     if status_s in ("PASSED", "FAILED") and run.get("approvalPassFail"):
@@ -1279,8 +1276,10 @@ def _append_validation_report_details(
         or report_data.get("createdAt")
         or td.get("createdAt")
     )
-    remarks = report_data.get("remarks")
-    if remarks is None:
+    remarks = report_data.get("approvalRemarks")
+    if remarks in (None, ""):
+        remarks = report_data.get("remarks")
+    if remarks in (None, ""):
         remarks = td.get("remarks")
     dash = "" if thermal else ("-" * width)
 
@@ -1759,14 +1758,25 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
             lines.append(f"{label}: {value}")
         approver_name = _strip_approver_role_label(report_data.get("approvedBy"))
         approver_id = report_data.get("approvedByUsername") or "--"
+        approval_remarks = report_data.get("approvalRemarks")
+        if approval_remarks in (None, ""):
+            approval_remarks = report_data.get("remarks")
+        if approval_remarks in (None, ""):
+            approval_remarks = td.get("remarks") if isinstance(td, dict) else None
         lines.extend(
             [
                 f"Approved By: {approver_name}",
                 f"Approver ID: {approver_id}",
                 f"Approved At: {_format_ts_readable(report_data.get('approvedAt'))}",
+                f"Approval Remarks: {_cell_str(approval_remarks) if approval_remarks not in (None, '') else 'N/A'}",
             ]
         )
     else:
+        approval_remarks = report_data.get("approvalRemarks")
+        if approval_remarks in (None, ""):
+            approval_remarks = report_data.get("remarks")
+        if approval_remarks in (None, ""):
+            approval_remarks = td.get("remarks") if isinstance(td, dict) else None
         lines.extend(["", "APPROVAL", sep_dash])
         _append_two_column_pairs(
             lines,
@@ -1777,6 +1787,13 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
                 ("Approved By", _strip_approver_role_label(report_data.get("approvedBy"))),
                 ("Approver ID", report_data.get("approvedByUsername", "--")),
                 ("Approved At", _format_ts_readable(report_data.get("approvedAt"))),
+                (
+                    "Approval Remarks",
+                    _truncate_with_ellipsis(
+                        approval_remarks if approval_remarks not in (None, "") else "N/A",
+                        max(16, A4_TEXT_WIDTH - 20),
+                    ),
+                ),
             ],
             width,
         )

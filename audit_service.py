@@ -40,6 +40,10 @@ def _normalize_dedupe_key(user: Optional[str], action: str, details: str) -> tup
 
 
 def _should_skip_duplicate(user: Optional[str], action: str, details: str, ts: int) -> bool:
+    # Never collapse auth failures — every wrong-password / locked attempt must appear.
+    act = str(action or "").strip().lower()
+    if act in ("login", "biometric login", "user restrict"):
+        return False
     key = _normalize_dedupe_key(user, action, details)
     with _dedupe_lock:
         prev = _recent_dedupe.get(key)

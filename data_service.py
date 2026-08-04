@@ -282,6 +282,30 @@ def _norm_recipe_id(recipe_id) -> Optional[int]:
         return None
 
 
+def _all_known_recipe_ids() -> set:
+    """Active + disabled recipe ids (prevents reuse collisions that block enable)."""
+    ids = set()
+    for r in list_recipes() or []:
+        rid = _norm_recipe_id((r or {}).get("id"))
+        if rid is not None:
+            ids.add(rid)
+    for r in list_disabled_recipes() or []:
+        rid = _norm_recipe_id((r or {}).get("id"))
+        if rid is not None:
+            ids.add(rid)
+    return ids
+
+
+def _allocate_recipe_id(preferred: Optional[int] = None) -> int:
+    """Pick a free recipe id. Prefer `preferred` when unused; else max(known)+1."""
+    used = _all_known_recipe_ids()
+    pref = _norm_recipe_id(preferred)
+    if pref is not None and pref not in used:
+        return pref
+    max_id = max(used) if used else 0
+    return int(max_id) + 1
+
+
 def save_recipe(recipe_data: Dict[str, Any]) -> int:
     """Save recipe (create or update). Enforces maxRecipes from factory settings."""
     recipes_path = _get_storage_path("recipes.json")
@@ -306,12 +330,18 @@ def save_recipe(recipe_data: Dict[str, Any]) -> int:
                 _save_json_file(recipes_path, recipes)
                 return recipe_id
 
+    # Create: never reuse an id that is still reserved by a disabled archive
     if recipe_id and not is_update:
+        if recipe_id in _all_known_recipe_ids() and not any(
+            _norm_recipe_id(r.get("id")) == recipe_id for r in recipes
+        ):
+            # preferred id is only in disabled archive — allocate a new one
+            recipe_id = _allocate_recipe_id(None)
+            recipe_data["id"] = recipe_id
         recipe_data["id"] = recipe_id
         recipes.append(recipe_data)
     else:
-        max_id = max([r.get("id", 0) for r in recipes], default=0)
-        recipe_id = max_id + 1
+        recipe_id = _allocate_recipe_id(None)
         recipe_data["id"] = recipe_id
         recipes.append(recipe_data)
 
@@ -410,12 +440,21 @@ def enable_disabled_recipe(
     archived = get_disabled_recipe(want)
     if not archived:
         return None
-    # Already active?
-    if get_recipe(want):
-        raise ValueError("Recipe is already active")
+
+    # Free the archived id first so save_recipe won't treat it as still reserved.
+    path = _get_storage_path("disabled_recipes.json")
+    remaining = [d for d in list_disabled_recipes() if _norm_recipe_id((d or {}).get("id")) != want]
+    _save_json_file(path, remaining)
 
     restored = dict(archived)
-    restored["id"] = want
+    # Legacy bug: new recipes reused ids still held by disabled archives.
+    # If an active recipe already owns this id, assign a fresh one.
+    if get_recipe(want):
+        new_id = _allocate_recipe_id(None)
+        restored["id"] = new_id
+        restored["previousId"] = want
+    else:
+        restored["id"] = want
     restored["status"] = "active"
     for key in (
         "disabledAt",
@@ -434,10 +473,6 @@ def enable_disabled_recipe(
     restored["enableApprovalRemarks"] = (enable_approval_remarks or "").strip()
 
     save_recipe(restored)
-
-    path = _get_storage_path("disabled_recipes.json")
-    remaining = [d for d in list_disabled_recipes() if _norm_recipe_id((d or {}).get("id")) != want]
-    _save_json_file(path, remaining)
     return restored
 
 
@@ -1165,12 +1200,20 @@ def record_failed_login(username: str) -> Optional[Dict[str, Any]]:
     status = str(m.get("status") or "active").strip().lower()
     if status not in ("active", "locked", "disabled"):
         status = "active"
+    # Only count attempts against active accounts (locked/disabled are already blocked).
+    if status != "active":
+        return m
     try:
         fa = int(m.get("failedAttempts") or 0)
     except (TypeError, ValueError):
         fa = 0
+    # Guard against stale counters left after older unlocks that did not reset.
+    if fa < 0:
+        fa = 0
+    if fa >= 3:
+        fa = 0
     fa += 1
-    if fa >= 3 and status == "active":
+    if fa >= 3:
         status = "locked"
     m["failedAttempts"] = fa
     m["status"] = status
@@ -1192,13 +1235,14 @@ def record_successful_login(username: str) -> Optional[Dict[str, Any]]:
 
 
 def unlock_member(member_id: int) -> Dict[str, Any]:
-    """Set member status to active. Preserves failedAttempts."""
+    """Set member status to active and clear failed login attempts."""
     m = get_member(member_id)
     if not m:
         raise ValueError("Member not found")
     if str(m.get("username", "")).strip().upper() == FACTORY_USERNAME.upper():
         raise ValueError("The factory user cannot be modified.")
     m["status"] = "active"
+    m["failedAttempts"] = 0
     _save_member_record(m)
     return m
 
@@ -1216,13 +1260,14 @@ def disable_member(member_id: int) -> Dict[str, Any]:
 
 
 def enable_member(member_id: int) -> Dict[str, Any]:
-    """Set member status to active. Preserves failedAttempts."""
+    """Set member status to active and clear failed login attempts."""
     m = get_member(member_id)
     if not m:
         raise ValueError("Member not found")
     if str(m.get("username", "")).strip().upper() == FACTORY_USERNAME.upper():
         raise ValueError("The factory user cannot be modified.")
     m["status"] = "active"
+    m["failedAttempts"] = 0
     _save_member_record(m)
     return m
 

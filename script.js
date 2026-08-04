@@ -3559,7 +3559,7 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
         'Factory settings changed', 'Power interruption', 'Power interruption logout',
         'Added new user', 'Password changed', 'Password reset',
         'User update', 'Profile updated',
-        'User disable', 'User disabled', 'User unlock', 'User enable',
+        'User disable', 'User disabled', 'User unlock', 'User enable', 'User restrict',
         'Biometric enroll', 'Biometric template delete'
     ];
     coreActions.forEach(function (a) {
@@ -5967,16 +5967,25 @@ function populateRecipePrintPreview(recipe, factorySettings) {
     setRecipePrintEl('recipe-print-previous-val', fs.lastValidationDate || 'N/A');
     setRecipePrintEl('recipe-print-next-validation', fs.nextValidationDate || 'N/A');
     setRecipePrintEl('recipe-print-product', recipe.productName || recipe.name || '--');
-    setRecipePrintEl('recipe-print-usp', recipeTestModeLabel(recipe));
-    var rpm = recipeRpm(recipe);
-    setRecipePrintEl('recipe-print-speed', rpm != null ? (rpm + ' RPM') : '--');
+    setRecipePrintEl('recipe-print-usp', String(recipe.mode || recipe.testMode || 'manual').toUpperCase());
+    var tempVal = recipe.temp != null ? recipe.temp : recipe.setTemperature;
+    setRecipePrintEl('recipe-print-speed', tempVal != null ? (tempVal + ' °C') : '--');
     var tbody = document.getElementById('recipe-print-tolerance-body');
     if (tbody) {
+        var dur = '--';
+        if (String(recipe.mode || '').toLowerCase() === 'timer' && recipe.duration != null) {
+            dur = String(recipe.duration);
+        } else if (String(recipe.mode || '').toLowerCase() === 'manual') {
+            dur = 'Manual';
+        } else {
+            dur = recipeTimeDisplay(recipe);
+        }
         tbody.innerHTML =
-            '<tr><td>Speed (RPM)</td><td>' + (rpm != null ? rpm : '--') + '</td><td>RPM</td></tr>' +
-            '<tr><td>Time</td><td>' + recipeTimeDisplay(recipe) + '</td><td>MM:SS</td></tr>' +
-            '<tr><td>Rotations</td><td>' + recipeRotationsDisplay(recipe) + '</td><td>count</td></tr>' +
-            '<tr><td>Drums</td><td>' + recipeDrumCountDisplay(recipe) + '</td><td></td></tr>';
+            '<tr><td>Temperature</td><td>' + (tempVal != null ? tempVal : '--') + '</td><td>°C</td></tr>' +
+            '<tr><td>Mode</td><td>' + String(recipe.mode || recipe.testMode || 'manual').toUpperCase() + '</td><td></td></tr>' +
+            '<tr><td>Duration</td><td>' + dur + '</td><td></td></tr>' +
+            '<tr><td>Media</td><td>' + (recipe.media || '--') + '</td><td></td></tr>' +
+            '<tr><td>Mesh</td><td>' + (recipe.mesh || '--') + '</td><td></td></tr>';
     }
 }
 
@@ -6307,7 +6316,10 @@ function _populateLegacyReportPreview(preview) {
     }
 
     var remarksEl = document.getElementById('report-remarks-box');
-    if (remarksEl) remarksEl.textContent = preview.remarks || td.remarks || 'N/A';
+    if (remarksEl) {
+        var remText = preview.approvalRemarks || preview.remarks || td.remarks || '';
+        remarksEl.textContent = (remText != null && String(remText).trim() !== '') ? remText : 'N/A';
+    }
 
     // STATISTICS: min / max / mean bath temperature for the test run
     _populateReportStatisticsSection(preview, td);
@@ -6356,6 +6368,9 @@ function _populateLegacyReportPreview(preview) {
     var drum1Label = document.getElementById('report-drum1-pass-fail-label');
     if (drum1Label) drum1Label.textContent = 'Pass / Fail';
     var apprRem = preview.approvalRemarks;
+    if (apprRem == null || String(apprRem).trim() === '') {
+        apprRem = preview.remarks || td.remarks || '';
+    }
     setReportEl('report-approval-remarks', (apprRem != null && String(apprRem).trim() !== '') ? apprRem : 'N/A');
 }
 
@@ -8364,24 +8379,6 @@ function recipeRotationsDisplay(r) {
     return '--';
 }
 
-function recipeDrumCountDisplay(r) {
-    if (!r) return '2 Drums';
-    return parseInt(r.drumCount, 10) === 1 ? '1 Drum' : '2 Drums';
-}
-
-function recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) {
-    return '' +
-        '<div class="recipe-table-main">' +
-            '<div class="recipe-table-title">' + name + '</div>' +
-            '<div class="recipe-table-meta">' +
-                '<span>' + modeLabel + '</span>' +
-                '<span>' + tempStr + ' °C</span>' +
-                '<span>' + durStr + '</span>' +
-                '<span>' + drumLabel + '</span>' +
-            '</div>' +
-        '</div>';
-}
-
 function formatDisabledRecipeTimestamp(iso) {
     if (!iso) return '--';
     try {
@@ -8401,7 +8398,7 @@ var _manageRecipesLoadGen = 0;
 
 function loadManageRecipes() {
     var msgEl = document.getElementById('manage-recipes-message');
-    var tableEl = document.querySelector('.manage-recipes-table');
+    var tableEl = document.querySelector('#page-manage-recipes .manage-recipes-table');
     var tbody = document.getElementById('manage-recipes-table-body');
     if (!tbody) return;
 
@@ -8422,11 +8419,17 @@ function loadManageRecipes() {
             if (headRow) {
                 if (mode === 'load') {
                     headRow.innerHTML =
-                        '<th>Recipe</th>' +
+                        '<th>Product Name</th>' +
+                        '<th>Mode</th>' +
+                        '<th>Temp °C</th>' +
+                        '<th>Duration</th>' +
                         '<th class="actions-col">Load</th>';
                 } else {
                     headRow.innerHTML =
-                        '<th>Recipe</th>' +
+                        '<th>Product Name</th>' +
+                        '<th>Mode</th>' +
+                        '<th>Temp °C</th>' +
+                        '<th>Duration</th>' +
                         '<th>Approval</th>' +
                         '<th class="actions-col">Actions</th>';
                 }
@@ -8458,34 +8461,37 @@ function loadManageRecipes() {
             var name = r.productName || r.name || '--';
             var modeLabel = String(r.mode || 'manual').toUpperCase();
             var tempStr = (r.temp != null ? r.temp : (r.setTemperature != null ? r.setTemperature : '--'));
-            var drumLabel = recipeDrumCountDisplay(r);
             var durStr = '--';
-            if (r.mode === 'timer' && r.duration != null) {
+            if (String(r.mode || '').toLowerCase() === 'timer' && r.duration != null) {
                 var mins = parseFloat(r.duration);
                 if (!isNaN(mins)) {
                     var m = Math.floor(mins);
                     var s = Math.round((mins - m) * 60);
                     durStr = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
                 }
-            } else if (r.mode === 'manual') {
+            } else if (String(r.mode || '').toLowerCase() === 'manual') {
                 durStr = 'Manual';
             }
 
             if (mode === 'load') {
                 var loadBtnHtml = '<button type="button" class="btn-action btn-load" onclick="loadRecipeById(' + (r.id || 0) + ')" title="Load">Load</button>';
                 tr.innerHTML =
-                    '<td>' + recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) + '</td>' +
+                    '<td>' + name + '</td>' +
+                    '<td>' + modeLabel + '</td>' +
+                    '<td>' + tempStr + '</td>' +
+                    '<td>' + durStr + '</td>' +
                     '<td class="actions-cell actions-col">' + loadBtnHtml + '</td>';
             } else {
                 var appr = getEffectiveRecipeApprovalStatus(r);
-                var apprLabel = appr === 'pending'
-                    ? '<span class="recipe-status-badge is-pending">Pending</span>'
-                    : '<span class="recipe-status-badge is-approved">Approved</span>';
+                var apprLabel = appr === 'pending' ? 'Pending' : 'Approved';
                 var actionsBtnHtml = '<button type="button" class="btn-action btn-actions" onclick="openRecipeActionsModal(' + (r.id || 0) + ')" title="Edit / Disable">' +
                     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
                     '<circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg> Actions</button>';
                 tr.innerHTML =
-                    '<td>' + recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) + '</td>' +
+                    '<td>' + name + '</td>' +
+                    '<td>' + modeLabel + '</td>' +
+                    '<td>' + tempStr + '</td>' +
+                    '<td>' + durStr + '</td>' +
                     '<td>' + apprLabel + '</td>' +
                     '<td class="actions-cell">' + actionsBtnHtml + '</td>';
             }
@@ -8540,15 +8546,15 @@ function loadDisableRecipes() {
                 var name = r.productName || r.name || '--';
                 var modeLabel = String(r.mode || r.testMode || 'manual').toUpperCase();
                 var tempStr = (r.temp != null ? r.temp : (r.setTemperature != null ? r.setTemperature : '--'));
-                var durStr = (String(r.mode || r.testMode || '').toLowerCase() === 'timer' && r.duration != null) ? String(r.duration) : 'Manual';
-                var drumLabel = recipeDrumCountDisplay(r);
                 var disabledBy = r.disabledBy || '--';
                 var disabledAt = formatDisabledRecipeTimestamp(r.disabledAt);
                 var enableBtn = canEnable
                     ? ('<button type="button" class="btn-action btn-load" onclick="openRecipeEnableModal(' + rid + ')" title="Enable">Enable</button>')
                     : '';
                 tr.innerHTML =
-                    '<td>' + recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) + '</td>' +
+                    '<td>' + name + '</td>' +
+                    '<td>' + modeLabel + '</td>' +
+                    '<td>' + tempStr + '</td>' +
                     '<td>' + disabledBy + '</td>' +
                     '<td>' + disabledAt + '</td>' +
                     '<td class="actions-cell actions-col">' + enableBtn + '</td>';
@@ -8621,7 +8627,7 @@ function enableRecipe(id, opts) {
         if (typeof loadManageRecipes === 'function') loadManageRecipes();
         recipeListMode = 'manage';
         goToPage('manage-recipes');
-        showAppModal('Recipe enabled and moved back to the active recipe list.', 'Enable Recipe');
+        showAppModal('Recipe enabled.', 'Enable Recipe');
     });
 }
 
