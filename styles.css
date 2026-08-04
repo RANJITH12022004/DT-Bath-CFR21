@@ -3056,6 +3056,138 @@ body {
     transform: translateY(-1px);
 }
 
+.recipe-page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px 24px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+
+.recipe-page-header-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.recipe-page-header-copy .section-title,
+.recipe-page-header-copy .section-subtitle {
+    margin: 0;
+}
+
+.recipe-page-header-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+}
+
+.manage-recipes-panel {
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 18px;
+    padding: 18px;
+    box-shadow: 0 18px 44px rgba(2, 6, 23, 0.18);
+}
+
+.manage-recipes-table {
+    width: 100%;
+    table-layout: fixed;
+}
+
+.manage-recipes-table th,
+.manage-recipes-table td {
+    vertical-align: middle;
+    word-break: break-word;
+    white-space: normal;
+}
+
+.manage-recipes-table th:first-child,
+.manage-recipes-table td:first-child {
+    width: 58%;
+}
+
+.disable-recipes-table th:first-child,
+.disable-recipes-table td:first-child {
+    width: 44%;
+}
+
+.recipe-table-main {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.recipe-table-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.3;
+}
+
+.recipe-table-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.recipe-table-meta span {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.14);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.recipe-status-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 96px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.recipe-status-badge.is-approved {
+    background: rgba(34, 197, 94, 0.18);
+    border: 1px solid rgba(34, 197, 94, 0.34);
+    color: #86efac;
+}
+
+.recipe-status-badge.is-pending {
+    background: rgba(245, 158, 11, 0.18);
+    border: 1px solid rgba(245, 158, 11, 0.34);
+    color: #fcd34d;
+}
+
+.manage-recipes-table .actions-cell {
+    white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+    .recipe-page-header-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .manage-recipes-panel {
+        padding: 14px;
+    }
+}
+
 .view-recipes-title {
     text-align: center;
     margin-bottom: 24px;
@@ -9864,10 +9996,26 @@ body.keyboard-open {
 .dt-temp-validation-content {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    max-width: 900px;
+    gap: 14px;
+    max-width: 640px;
     margin: 0 auto;
     width: 100%;
+    align-items: stretch;
+}
+
+.dt-temp-validation-page .dt-val-test-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.dt-val-abort-btn,
+.btn.dt-val-abort-btn {
+    background: #dc2626 !important;
+    border-color: #b91c1c !important;
+    color: #fff !important;
 }
 
 .dt-temp-set-row {
@@ -9890,6 +10038,134 @@ body.keyboard-open {
     font-weight: 700;
 }
 
+.dt-temp-hero {
+    text-align: center;
+    padding: 8px 0 4px;
+}
+
+.dt-temp-hero-measured {
+    font-size: 64px;
+    font-weight: 800;
+    line-height: 1;
+    margin: 0;
+    color: #fb923c;
+    font-variant-numeric: tabular-nums;
+}
+
+.dt-temp-hero-unit {
+    margin: 6px 0 0;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.dt-temp-hero-meta {
+    margin: 10px 0 0;
+    font-size: 15px;
+    color: #cbd5e1;
+}
+
+.dt-temp-hold-ring {
+    width: min(220px, 56vw);
+    height: min(220px, 56vw);
+    margin: 4px auto;
+    border-radius: 50%;
+    border: 6px solid rgba(56, 189, 248, 0.35);
+    background: radial-gradient(circle at 40% 35%, rgba(56, 189, 248, 0.18), rgba(15, 23, 42, 0.9));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dt-temp-hold-ring.is-holding {
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.15);
+}
+
+.dt-temp-hold-ring-inner {
+    text-align: center;
+}
+
+.dt-temp-hold-label {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.65);
+}
+
+.dt-temp-hold-time {
+    margin: 4px 0 0;
+    font-size: 42px;
+    font-weight: 800;
+    color: #f8fafc;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+}
+
+.dt-temp-status-line {
+    text-align: center;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #e2e8f0;
+}
+
+.dt-temp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+}
+
+.dt-temp-actions .btn {
+    min-width: 160px;
+}
+
+.dt-temp-result-actions {
+    text-align: center;
+    margin-top: 4px;
+}
+
+.dt-temp-pf-row {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.dt-temp-pf-row .btn {
+    min-width: 120px;
+}
+
+.stroke-complete-stats {
+    text-align: left;
+    max-width: 360px;
+    margin: 0 auto 24px;
+    color: #e2e8f0;
+    font-size: 17px;
+}
+
+.stroke-complete-stats p {
+    margin: 0 0 10px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.stroke-complete-label {
+    color: #94a3b8;
+    font-weight: 600;
+}
+
+.report-approve-passfail-validation {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+/* legacy temp stats kept for any leftover references */
 .dt-temp-stats-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -9937,16 +10213,6 @@ body.keyboard-open {
     font-size: 11px;
     color: rgba(255, 255, 255, 0.75);
     margin: 2px 0 0;
-}
-
-.dt-temp-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.dt-temp-actions .btn {
-    min-width: 120px;
 }
 
 /* Create recipe — single scroll + sticky actions (7″ CFR) */

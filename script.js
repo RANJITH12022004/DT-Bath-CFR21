@@ -1274,6 +1274,12 @@ function resetReportApproveForm() {
     if (passEl) passEl.value = '';
     var passRadio = document.querySelector('input[name="report-approve-pass-fail"][value="PASS"]');
     if (passRadio) passRadio.checked = true;
+    document.querySelectorAll('input[name="report-approve-stroke-pass-fail"]').forEach(function (el) {
+        el.checked = false;
+    });
+    document.querySelectorAll('input[name="report-approve-temp-pass-fail"]').forEach(function (el) {
+        el.checked = false;
+    });
     clearReportApproveVerifyError();
 }
 
@@ -1317,6 +1323,7 @@ function setReportApprovePanelInteractionState(preview) {
     var hintEl = document.getElementById('report-approve-operator-hint');
     if (hintEl) hintEl.style.display = (pending && isOp && !isFactory) ? 'block' : 'none';
     ['#report-approve-remarks-input', 'input[name="report-approve-pass-fail"]',
+        'input[name="report-approve-stroke-pass-fail"]', 'input[name="report-approve-temp-pass-fail"]',
         '#report-approve-verifier-username', '#report-approve-verifier-password'].forEach(function (sel) {
         apprPanel.querySelectorAll(sel).forEach(function (el) { el.disabled = !fieldsEnabled; });
     });
@@ -6308,8 +6315,34 @@ function _populateLegacyReportPreview(preview) {
     setReportEl('report-approved-by', formatApprovedByLine(preview.approvedBy || '--'));
 
     // Hardness-Cfr style: single Pass / Fail + approval remarks
+    // Validation: Stroke + Temp Pass/Fail
+    var reportTypeNorm = String(preview.type || td.type || 'test').trim().toLowerCase();
     var pf = preview.approvalPassFail || td.approvalPassFail || '--';
-    setReportEl('report-drum1-pass-fail', pf);
+    var strokePf = preview.strokePassFail || td.strokePassFail || null;
+    var tempPf = preview.tempPassFail || td.tempPassFail || null;
+    if (!strokePf || !tempPf) {
+        var runs = preview.validationRuns || td.validationRuns || [];
+        if (Array.isArray(runs)) {
+            runs.forEach(function (run) {
+                if (!run || typeof run !== 'object') return;
+                var sub = String(run.validationSubtype || '').toLowerCase();
+                if (sub === 'stroke' && !strokePf) strokePf = run.approvalPassFail || null;
+                if (sub === 'temp' && !tempPf) tempPf = run.approvalPassFail || null;
+            });
+        }
+    }
+    var pfTh = document.getElementById('report-pass-fail-th');
+    var tempPfRow = document.getElementById('report-validation-temp-pf-row');
+    if (reportTypeNorm === 'validation') {
+        if (pfTh) pfTh.textContent = 'Stroke Pass / Fail';
+        setReportEl('report-drum1-pass-fail', strokePf || pf || '--');
+        setReportEl('report-temp-pass-fail', tempPf || '--');
+        if (tempPfRow) tempPfRow.style.display = '';
+    } else {
+        if (pfTh) pfTh.textContent = 'Pass / Fail';
+        setReportEl('report-drum1-pass-fail', pf);
+        if (tempPfRow) tempPfRow.style.display = 'none';
+    }
     setReportEl('report-approval-pass-fail', pf);
     var drum2Row = document.getElementById('report-drum2-pass-fail-row');
     if (drum2Row) drum2Row.style.display = 'none';
@@ -6429,10 +6462,33 @@ function populateReportPreview(preview) {
 
 function updateReportApproveDrumPassFailUi(preview) {
     var singleGroup = document.getElementById('report-approve-passfail-single');
-    if (singleGroup) singleGroup.style.display = '';
+    var valGroup = document.getElementById('report-approve-passfail-validation');
+    var isVal = String((preview || {}).type || '').trim().toLowerCase() === 'validation';
+    if (singleGroup) singleGroup.style.display = isVal ? 'none' : '';
+    if (valGroup) valGroup.style.display = isVal ? '' : 'none';
 }
 
 function collectReportApprovePassFail(preview) {
+    var isVal = String((preview || {}).type || '').trim().toLowerCase() === 'validation';
+    if (isVal) {
+        var strokeEl = document.querySelector('input[name="report-approve-stroke-pass-fail"]:checked');
+        var tempEl = document.querySelector('input[name="report-approve-temp-pass-fail"]:checked');
+        var strokePf = strokeEl ? String(strokeEl.value).toUpperCase() : '';
+        var tempPf = tempEl ? String(tempEl.value).toUpperCase() : '';
+        if (strokePf !== 'PASS' && strokePf !== 'FAIL') {
+            return { error: 'Select Pass or Fail for Stroke validation.' };
+        }
+        if (tempPf !== 'PASS' && tempPf !== 'FAIL') {
+            return { error: 'Select Pass or Fail for Temperature validation.' };
+        }
+        var overall = (strokePf === 'FAIL' || tempPf === 'FAIL') ? 'FAIL' : 'PASS';
+        return {
+            passFail: overall,
+            strokePassFail: strokePf,
+            tempPassFail: tempPf,
+            drumPassFail: { drum1: overall, drum2: overall },
+        };
+    }
     var pfEl = document.querySelector('input[name="report-approve-pass-fail"]:checked');
     var pf = pfEl ? String(pfEl.value).toUpperCase() : '';
     if (pf !== 'PASS' && pf !== 'FAIL') return { error: 'Select Pass or Fail.' };
@@ -6523,15 +6579,18 @@ function verifyReportApproverInline(method) {
     });
 }
 
-function approveReportWithVerifier(reportId, passFail, remarks, verifyMethod, drumPassFail) {
+function approveReportWithVerifier(reportId, passFail, remarks, verifyMethod, drumPassFail, extraPassFail) {
     verifyMethod = verifyMethod === 'biometric' ? 'biometric' : 'credentials';
     var role = (typeof getCurrentRole === 'function' ? String(getCurrentRole() || '').toLowerCase() : '');
+    extraPassFail = extraPassFail || {};
 
     function postReportApprove(extraHeaders) {
         var body = { passFail: passFail, remarks: remarks };
         if (drumPassFail && typeof drumPassFail === 'object') {
             body.drumPassFail = drumPassFail;
         }
+        if (extraPassFail.strokePassFail) body.strokePassFail = extraPassFail.strokePassFail;
+        if (extraPassFail.tempPassFail) body.tempPassFail = extraPassFail.tempPassFail;
         return apiRequest(API_BASE + '/api/data/reports/' + reportId + '/approve', {
             method: 'POST',
             headers: extraHeaders || {},
@@ -6572,7 +6631,10 @@ function submitReportApprove() {
     var ta = document.getElementById('report-approve-remarks-input');
     var remarks = ta ? ta.value.trim() : '';
     clearReportApproveVerifyError();
-    approveReportWithVerifier(id, collected.passFail, remarks, 'credentials', collected.drumPassFail).then(function (ok) {
+    approveReportWithVerifier(id, collected.passFail, remarks, 'credentials', collected.drumPassFail, {
+        strokePassFail: collected.strokePassFail,
+        tempPassFail: collected.tempPassFail,
+    }).then(function (ok) {
         if (ok === true) {
             resetReportApproveForm();
             window._reportApproveFormReportId = null;
@@ -6608,7 +6670,10 @@ function submitReportApproveBiometric() {
     var remarks = ta ? ta.value.trim() : '';
     clearReportApproveVerifyError();
     setReportApproveBiometricRetryVisible(false);
-    approveReportWithVerifier(id, collected.passFail, remarks, 'biometric', collected.drumPassFail).then(function (ok) {
+    approveReportWithVerifier(id, collected.passFail, remarks, 'biometric', collected.drumPassFail, {
+        strokePassFail: collected.strokePassFail,
+        tempPassFail: collected.tempPassFail,
+    }).then(function (ok) {
         if (ok === true) {
             resetReportApproveForm();
             window._reportApproveFormReportId = null;
@@ -8297,6 +8362,19 @@ function recipeDrumCountDisplay(r) {
     return parseInt(r.drumCount, 10) === 1 ? '1 Drum' : '2 Drums';
 }
 
+function recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) {
+    return '' +
+        '<div class="recipe-table-main">' +
+            '<div class="recipe-table-title">' + name + '</div>' +
+            '<div class="recipe-table-meta">' +
+                '<span>' + modeLabel + '</span>' +
+                '<span>' + tempStr + ' °C</span>' +
+                '<span>' + durStr + '</span>' +
+                '<span>' + drumLabel + '</span>' +
+            '</div>' +
+        '</div>';
+}
+
 function formatDisabledRecipeTimestamp(iso) {
     if (!iso) return '--';
     try {
@@ -8337,17 +8415,11 @@ function loadManageRecipes() {
             if (headRow) {
                 if (mode === 'load') {
                     headRow.innerHTML =
-                        '<th>Product Name</th>' +
-                        '<th>Mode</th>' +
-                        '<th>Temp °C</th>' +
-                        '<th>Duration</th>' +
+                        '<th>Recipe</th>' +
                         '<th class="actions-col">Load</th>';
                 } else {
                     headRow.innerHTML =
-                        '<th>Product Name</th>' +
-                        '<th>Mode</th>' +
-                        '<th>Temp °C</th>' +
-                        '<th>Duration</th>' +
+                        '<th>Recipe</th>' +
                         '<th>Approval</th>' +
                         '<th class="actions-col">Actions</th>';
                 }
@@ -8379,6 +8451,7 @@ function loadManageRecipes() {
             var name = r.productName || r.name || '--';
             var modeLabel = String(r.mode || 'manual').toUpperCase();
             var tempStr = (r.temp != null ? r.temp : (r.setTemperature != null ? r.setTemperature : '--'));
+            var drumLabel = recipeDrumCountDisplay(r);
             var durStr = '--';
             if (r.mode === 'timer' && r.duration != null) {
                 var mins = parseFloat(r.duration);
@@ -8394,22 +8467,18 @@ function loadManageRecipes() {
             if (mode === 'load') {
                 var loadBtnHtml = '<button type="button" class="btn-action btn-load" onclick="loadRecipeById(' + (r.id || 0) + ')" title="Load">Load</button>';
                 tr.innerHTML =
-                    '<td>' + name + '</td>' +
-                    '<td>' + modeLabel + '</td>' +
-                    '<td>' + tempStr + '</td>' +
-                    '<td>' + durStr + '</td>' +
+                    '<td>' + recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) + '</td>' +
                     '<td class="actions-cell actions-col">' + loadBtnHtml + '</td>';
             } else {
                 var appr = getEffectiveRecipeApprovalStatus(r);
-                var apprLabel = appr === 'pending' ? 'Pending' : 'Approved';
+                var apprLabel = appr === 'pending'
+                    ? '<span class="recipe-status-badge is-pending">Pending</span>'
+                    : '<span class="recipe-status-badge is-approved">Approved</span>';
                 var actionsBtnHtml = '<button type="button" class="btn-action btn-actions" onclick="openRecipeActionsModal(' + (r.id || 0) + ')" title="Edit / Disable">' +
                     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
                     '<circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg> Actions</button>';
                 tr.innerHTML =
-                    '<td>' + name + '</td>' +
-                    '<td>' + modeLabel + '</td>' +
-                    '<td>' + tempStr + '</td>' +
-                    '<td>' + durStr + '</td>' +
+                    '<td>' + recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) + '</td>' +
                     '<td>' + apprLabel + '</td>' +
                     '<td class="actions-cell">' + actionsBtnHtml + '</td>';
             }
@@ -8464,15 +8533,15 @@ function loadDisableRecipes() {
                 var name = r.productName || r.name || '--';
                 var modeLabel = String(r.mode || r.testMode || 'manual').toUpperCase();
                 var tempStr = (r.temp != null ? r.temp : (r.setTemperature != null ? r.setTemperature : '--'));
+                var durStr = (String(r.mode || r.testMode || '').toLowerCase() === 'timer' && r.duration != null) ? String(r.duration) : 'Manual';
+                var drumLabel = recipeDrumCountDisplay(r);
                 var disabledBy = r.disabledBy || '--';
                 var disabledAt = formatDisabledRecipeTimestamp(r.disabledAt);
                 var enableBtn = canEnable
                     ? ('<button type="button" class="btn-action btn-load" onclick="openRecipeEnableModal(' + rid + ')" title="Enable">Enable</button>')
                     : '';
                 tr.innerHTML =
-                    '<td>' + name + '</td>' +
-                    '<td>' + modeLabel + '</td>' +
-                    '<td>' + tempStr + '</td>' +
+                    '<td>' + recipeSummaryCellHtml(name, modeLabel, tempStr, durStr, drumLabel) + '</td>' +
                     '<td>' + disabledBy + '</td>' +
                     '<td>' + disabledAt + '</td>' +
                     '<td class="actions-cell actions-col">' + enableBtn + '</td>';
@@ -8543,7 +8612,9 @@ function enableRecipe(id, opts) {
         try { localStorage.removeItem('disabledRecipes'); } catch (e) {}
         loadDisableRecipes();
         if (typeof loadManageRecipes === 'function') loadManageRecipes();
-        showAppModal('Recipe enabled.', 'Enable Recipe');
+        recipeListMode = 'manage';
+        goToPage('manage-recipes');
+        showAppModal('Recipe enabled and moved back to the active recipe list.', 'Enable Recipe');
     });
 }
 
@@ -9208,7 +9279,7 @@ function renderValidationDetailsInPreview(preview) {
         var minT = preview.minTemp != null ? preview.minTemp : td.minTemp;
         var maxT = preview.maxTemp != null ? preview.maxTemp : td.maxTemp;
         var maxDev = preview.maxDeviation != null ? preview.maxDeviation : td.maxDeviation;
-        var lim = preview.requiredDeviation != null ? preview.requiredDeviation : (td.requiredDeviation != null ? td.requiredDeviation : 0.5);
+        var lim = preview.requiredDeviation != null ? preview.requiredDeviation : (td.requiredDeviation != null ? td.requiredDeviation : 2.0);
         rows.push('<tr><th>Date / Time</th><td colspan="3">' + dateStr + '</td></tr>');
         rows.push('<tr><th>Procedure</th><td>Temperature Hold</td><th>Basket</th><td>' + (basket != null ? basket : '--') + '</td></tr>');
         rows.push('<tr><th>Set Temp (°C)</th><td>' + (setT != null ? setT : '--') + '</td><th>Status</th><td>' + status + '</td></tr>');

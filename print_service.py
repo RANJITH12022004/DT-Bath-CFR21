@@ -645,14 +645,45 @@ def _drum_approval_results(report_data: Dict[str, Any], td: Dict[str, Any]) -> l
 def _approval_result_pairs(
     report_data: Dict[str, Any], td: Dict[str, Any], report_type: str = "test"
 ) -> list:
-    """Approval pass/fail lines: single Result (Hardness-Cfr / DT-CFR)."""
-    result = _effective_approval_result(report_data, td)
+    """Approval pass/fail lines. Validation shows Stroke + Temp when present."""
     rtype = str(report_type or "test").strip().lower()
-    if rtype == "validation" and not result:
-        result = _validation_overall_status_label(
-            td if isinstance(td, dict) else {},
-            report_data if isinstance(report_data, dict) else {},
-        )
+    if rtype == "validation":
+        stroke_pf = None
+        temp_pf = None
+        if isinstance(report_data, dict):
+            stroke_pf = report_data.get("strokePassFail")
+            temp_pf = report_data.get("tempPassFail")
+        if isinstance(td, dict):
+            if not stroke_pf:
+                stroke_pf = td.get("strokePassFail")
+            if not temp_pf:
+                temp_pf = td.get("tempPassFail")
+        runs = []
+        if isinstance(td, dict) and isinstance(td.get("validationRuns"), list):
+            runs = td.get("validationRuns")
+        elif isinstance(report_data, dict) and isinstance(report_data.get("validationRuns"), list):
+            runs = report_data.get("validationRuns")
+        for run in runs or []:
+            if not isinstance(run, dict):
+                continue
+            sub = str(run.get("validationSubtype") or "").strip().lower()
+            run_pf = run.get("approvalPassFail")
+            if sub == "stroke" and not stroke_pf:
+                stroke_pf = run_pf
+            elif sub == "temp" and not temp_pf:
+                temp_pf = run_pf
+        stroke_n = _normalize_pass_fail(stroke_pf)
+        temp_n = _normalize_pass_fail(temp_pf)
+        if stroke_n or temp_n:
+            return [
+                ("Stroke Pass / Fail", stroke_n or "--"),
+                ("Temp Pass / Fail", temp_n or "--"),
+            ]
+        # Do not fall back to auto hardware PASSED/FAILED status
+        overall = _effective_approval_result(report_data, td)
+        overall_n = _normalize_pass_fail(overall)
+        return [("Pass / Fail", overall_n or "--")]
+    result = _effective_approval_result(report_data, td)
     normalized = _normalize_pass_fail(result)
     return [("Pass / Fail", normalized or _cell_str(result) or "--")]
 
@@ -1107,7 +1138,7 @@ def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
             ("Min Temp (°C)", _cell_str(run.get("minTemp"))),
             ("Max Temp (°C)", _cell_str(run.get("maxTemp"))),
             ("Max Deviation", _cell_str(run.get("maxDeviation"))),
-            ("Limit (±°C)", _cell_str(run.get("requiredDeviation") or "0.5")),
+            ("Limit (±°C)", _cell_str(run.get("requiredDeviation") or "2.0")),
         ])
     elif sub == "calibration":
         pairs.extend([
@@ -1123,7 +1154,16 @@ def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
             ("Expected", _validation_expected_display(run)),
             ("Actual", _cell_str(_validation_actual_value(run))),
         ])
-    pairs.append(("Status", _cell_str(run.get("status"))))
+    within_spec = run.get("withinSpec")
+    if within_spec is None and "within_spec" in run:
+        within_spec = run.get("within_spec")
+    pairs.append(("Within Spec", "Yes" if within_spec is True else ("No" if within_spec is False else "--")))
+    status = run.get("status")
+    status_s = str(status or "").strip().upper()
+    if status_s in ("PASSED", "FAILED") and run.get("approvalPassFail"):
+        pairs.append(("Status", _cell_str(run.get("approvalPassFail"))))
+    else:
+        pairs.append(("Status", _cell_str(status)))
     return pairs
 
 

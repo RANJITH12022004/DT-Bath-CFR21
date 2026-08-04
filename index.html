@@ -9,8 +9,8 @@
     <title>Tablet Disintegration Tester</title>
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="/styles.css?v=62" id="app-main-css"
-        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=62&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
+    <link rel="stylesheet" href="/styles.css?v=64" id="app-main-css"
+        onerror="(function(l){var n=parseInt(l.getAttribute('data-retry')||'0',10);if(n>=8)return;l.setAttribute('data-retry',String(n+1));setTimeout(function(){l.href='/styles.css?v=64&r='+(n+1)+'&t='+Date.now();},200*(n+1));})(this)">
 </head>
 
 <body>
@@ -630,22 +630,30 @@
                 <div class="page" id="page-manage-recipes">
                     <div class="manage-recipes-container">
                         <div id="manage-recipes-main">
-                        <button class="btn-create-recipe" onclick="startRecipeCreation()">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="12" y1="5" x2="12" y2="19"></line>
-                                <line x1="5" y1="12" x2="19" y2="12"></line>
-                            </svg>
-                            Create New Recipe
-                        </button>
-                        <div class="recipe-list-container">
+                        <div class="recipe-page-header">
+                            <div class="recipe-page-header-copy">
+                                <h2 class="section-title">Manage Recipes</h2>
+                                <p class="section-subtitle">Create, edit, disable, review approval status, and keep the active recipe list clean.</p>
+                            </div>
+                            <div class="recipe-page-header-actions">
+                                <button class="btn btn-secondary" type="button" onclick="goToPage('settings')">Back</button>
+                                <button class="btn btn-secondary" type="button" onclick="goToPage('disable-recipes')">Disabled Recipes</button>
+                                <button class="btn-create-recipe" type="button" onclick="startRecipeCreation()">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                    </svg>
+                                    Create New Recipe
+                                </button>
+                            </div>
+                        </div>
+                        <div class="recipe-list-container manage-recipes-panel">
                             <p class="empty-state-message" id="manage-recipes-message">No recipes created yet.</p>
                             <table class="manage-recipes-table" style="display: none;">
                                 <thead>
                                     <tr>
-                                        <th>Product Name</th>
-                                        <th>Mode</th>
-                                        <th>Temp °C</th>
+                                        <th>Recipe</th>
                                         <th>Approval</th>
                                         <th class="actions-col">Actions</th>
                                     </tr>
@@ -924,16 +932,22 @@
                 <!-- Disabled Recipes Page -->
                 <div class="page" id="page-disable-recipes">
                     <div class="manage-recipes-container disable-recipes-page">
-                        <h2 class="section-title">Disabled Recipes</h2>
-                        <p class="section-subtitle">Disintegration recipes removed from active use. Enabling requires recipe management approval.</p>
-                        <div class="recipe-list-container">
+                        <div class="recipe-page-header">
+                            <div class="recipe-page-header-copy">
+                                <h2 class="section-title">Disabled Recipes</h2>
+                                <p class="section-subtitle">Recipes removed from active use. Enabling sends them back to the active Manage Recipes list.</p>
+                            </div>
+                            <div class="recipe-page-header-actions">
+                                <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
+                                <button type="button" class="btn btn-secondary" onclick="manageRecipes()">Manage Recipes</button>
+                            </div>
+                        </div>
+                        <div class="recipe-list-container manage-recipes-panel">
                             <p class="empty-state-message" id="disable-recipes-message">No disabled recipes.</p>
                             <table class="manage-recipes-table disable-recipes-table" style="display: none;">
                                 <thead>
                                     <tr>
-                                        <th>Product Name</th>
-                                        <th>Mode</th>
-                                        <th>Temp °C</th>
+                                        <th>Recipe</th>
                                         <th>Disabled By</th>
                                         <th>Disabled At</th>
                                         <th class="actions-col">Actions</th>
@@ -941,9 +955,6 @@
                                 </thead>
                                 <tbody id="disable-recipes-table-body"></tbody>
                             </table>
-                        </div>
-                        <div class="validation-actions-row">
-                            <button type="button" class="btn btn-secondary" onclick="goToPage('settings')">Back</button>
                         </div>
                     </div>
                     <div id="recipe-enable-overlay" class="modal-overlay" style="display: none;">
@@ -1194,8 +1205,14 @@
                                 <tr>
                                     <th>Approved By</th>
                                     <td id="report-approved-by"></td>
-                                    <th>Pass / Fail</th>
+                                    <th id="report-pass-fail-th">Pass / Fail</th>
                                     <td id="report-drum1-pass-fail"></td>
+                                </tr>
+                                <tr id="report-validation-temp-pf-row" style="display:none;">
+                                    <th>Temp Pass / Fail</th>
+                                    <td id="report-temp-pass-fail"></td>
+                                    <th></th>
+                                    <td></td>
                                 </tr>
                                 <tr id="report-approval-remarks-row">
                                     <th>Approval remarks</th>
@@ -1224,6 +1241,34 @@
                                             <input type="radio" name="report-approve-pass-fail" value="FAIL" class="report-approve-pf-input">
                                             <span class="report-approve-card">Fail</span>
                                         </label>
+                                    </div>
+                                </div>
+                                <div id="report-approve-passfail-validation" class="report-approve-passfail-validation" style="display:none;">
+                                    <div class="form-group report-approve-passfail-group">
+                                        <span class="report-approve-passfail-label">Stroke validation</span>
+                                        <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Stroke Pass or Fail">
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-stroke-pass-fail" value="PASS" class="report-approve-pf-input">
+                                                <span class="report-approve-card">Pass</span>
+                                            </label>
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-stroke-pass-fail" value="FAIL" class="report-approve-pf-input">
+                                                <span class="report-approve-card">Fail</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="form-group report-approve-passfail-group">
+                                        <span class="report-approve-passfail-label">Temperature validation</span>
+                                        <div class="report-approve-passfail-cards" role="radiogroup" aria-label="Temperature Pass or Fail">
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-temp-pass-fail" value="PASS" class="report-approve-pf-input">
+                                                <span class="report-approve-card">Pass</span>
+                                            </label>
+                                            <label class="report-approve-card-wrap">
+                                                <input type="radio" name="report-approve-temp-pass-fail" value="FAIL" class="report-approve-pf-input">
+                                                <span class="report-approve-card">Fail</span>
+                                            </label>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="form-group full-width">
@@ -1469,7 +1514,7 @@
                             </div>
                             <div class="validation-type-settings-card dt-val-card-temp selected">
                                 <h3>2. Temperature Validation</h3>
-                                <p class="step1-card-sublabel">Hold ±0.5°C · 2 min</p>
+                                <p class="step1-card-sublabel">Hold ±2.0°C · 2 min</p>
                             </div>
                         </div>
                         <button type="button" class="btn btn-primary validation-start-btn" onclick="startValidationProcess()" style="margin-top:18px;width:100%;max-width:420px;display:block;margin-left:auto;margin-right:auto;">
@@ -1493,9 +1538,6 @@
                             <p class="section-subtitle" style="margin-top:4px;">time remaining</p>
                             <p class="dt-stroke-counter" id="stroke-counter">0</p>
                             <p class="section-subtitle">stroke count</p>
-                            <div id="stroke-validation-status-card" class="dt-val-status-card" style="display:none;">
-                                <p id="stroke-validation-status-text" class="dt-val-status-text">VALIDATION PASSED</p>
-                            </div>
                             <button type="button" id="stroke-complete-btn" class="btn btn-primary" onclick="dtStrokePrimaryAction()">
                                 Start
                             </button>
@@ -1508,6 +1550,7 @@
                     <div class="validation-type-page dt-temp-validation-page">
                         <div class="dt-val-test-header">
                             <h2 class="section-title">Temperature Validation — Beaker <span id="temp-beaker">1</span></h2>
+                            <button type="button" class="btn btn-danger dt-val-abort-btn" id="temp-validation-exit-btn" onclick="exitTempValidation()">Abort</button>
                         </div>
                         <div class="dt-temp-validation-content">
                             <div class="dt-temp-set-row" id="temp-validation-set-temp-container">
@@ -1515,40 +1558,36 @@
                                 <input type="text" id="temp-validation-set-temp-input" class="input-field validation-temp-input decimal-input" value="37.0"
                                     inputmode="decimal" data-decimal-input="true" autocomplete="off"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                                <button type="button" class="btn btn-secondary" onclick="applyValidationSetTemp()">Apply</button>
+                                <button type="button" class="btn btn-secondary" id="temp-validation-apply-btn" onclick="applyValidationSetTemp()">Apply</button>
                             </div>
-                            <div class="dt-temp-stats-grid">
-                                <div class="dt-temp-stat dt-temp-stat-set">
-                                    <p class="dt-temp-stat-label">Set</p>
-                                    <p class="dt-temp-stat-value" id="set-temp-display">37.0</p>
-                                    <p class="dt-temp-stat-unit">°C</p>
-                                </div>
-                                <div class="dt-temp-stat dt-temp-stat-meas">
-                                    <p class="dt-temp-stat-label">Measured</p>
-                                    <p class="dt-temp-stat-value" id="measured-temp-display">0.0</p>
-                                    <p class="dt-temp-stat-unit">°C</p>
-                                </div>
-                                <div class="dt-temp-stat">
-                                    <p class="dt-temp-stat-label">Max Deviation</p>
-                                    <p class="dt-temp-stat-value dt-temp-stat-value--sm" id="deviation-display">±0.0°C</p>
-                                </div>
-                                <div class="dt-temp-stat">
-                                    <p class="dt-temp-stat-label">Holding</p>
-                                    <p class="dt-temp-stat-value dt-temp-stat-value--sm" id="temp-validation-elapsed">02:00</p>
+                            <div class="dt-temp-hero">
+                                <p class="dt-temp-hero-measured" id="measured-temp-display">0.0</p>
+                                <p class="dt-temp-hero-unit">°C measured</p>
+                                <p class="dt-temp-hero-meta">
+                                    Set <span id="set-temp-display">37.0</span>°C
+                                    · Deviation <span id="deviation-display">±0.0°C</span>
+                                    · Limit ±2.0°C
+                                </p>
+                            </div>
+                            <div class="dt-temp-hold-ring" id="temp-validation-hold-ring" aria-live="polite">
+                                <div class="dt-temp-hold-ring-inner">
+                                    <p class="dt-temp-hold-label">Hold</p>
+                                    <p class="dt-temp-hold-time" id="temp-validation-elapsed">02:00</p>
                                 </div>
                             </div>
-                            <div id="validation-result-card" class="dt-val-status-card">
-                                <p class="section-subtitle" id="validation-message">Ready to Validate</p>
-                                <p class="dt-val-status-text" id="validation-status">-</p>
-                            </div>
+                            <p class="dt-temp-status-line" id="validation-message">Apply setpoint</p>
+                            <p class="dt-val-status-text" id="validation-status" style="display:none;">-</p>
                             <div class="dt-temp-actions">
-                                <button type="button" id="validation-stop-btn" class="btn btn-primary" onclick="toggleTempValidation()">
-                                    <span id="validation-stop-btn-text">START</span>
+                                <button type="button" id="validation-stop-btn" class="btn btn-primary" onclick="toggleTempValidation()" disabled>
+                                    <span id="validation-stop-btn-text">Start</span>
                                 </button>
-                                <button type="button" id="complete-temp-validation-btn" class="btn btn-primary" onclick="completeValidation('temp')" style="display:none;">
-                                    Complete &amp; Save
-                                </button>
-                                <button type="button" id="temp-validation-exit-btn" class="btn btn-secondary" onclick="exitTempValidation()">Exit</button>
+                            </div>
+                            <div id="temp-validation-result-actions" class="dt-temp-result-actions" style="display:none;">
+                                <p class="section-subtitle">Mark this validation</p>
+                                <div class="dt-temp-pf-row">
+                                    <button type="button" class="btn btn-primary" onclick="operatorTempValidationPassFail('PASS')">Pass</button>
+                                    <button type="button" class="btn btn-danger" onclick="operatorTempValidationPassFail('FAIL')">Fail</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2473,12 +2512,35 @@
             <button type="button" class="btn btn-secondary validation-due-cancel" onclick="cancelValidationDueModal()">Cancel</button>
         </div>
     </div>
+    <div id="stroke-complete-modal-overlay" class="validation-due-modal-overlay" style="display:none;" aria-hidden="true">
+        <div class="validation-due-modal stroke-complete-modal" role="dialog" aria-labelledby="stroke-complete-modal-title">
+            <h2 id="stroke-complete-modal-title" class="validation-due-modal-title">Stroke Complete</h2>
+            <p class="validation-due-modal-sub">Beaker <span id="stroke-complete-beaker">1</span></p>
+            <div class="stroke-complete-stats">
+                <p><span class="stroke-complete-label">Duration</span> <span id="stroke-complete-duration">60 s</span></p>
+                <p><span class="stroke-complete-label">Strokes</span> <span id="stroke-complete-strokes">0</span></p>
+                <p><span class="stroke-complete-label">Strokes/min</span> <span id="stroke-complete-spm">0</span></p>
+                <p class="section-subtitle">Required range (reference): 29–32 /min</p>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="continueAfterStrokeComplete()">Continue</button>
+        </div>
+    </div>
+    <div id="validation-calibrate-modal-overlay" class="validation-due-modal-overlay" style="display:none;" aria-hidden="true">
+        <div class="validation-due-modal" role="dialog" aria-labelledby="validation-calibrate-modal-title">
+            <h2 id="validation-calibrate-modal-title" class="validation-due-modal-title">Validation failed</h2>
+            <p class="validation-due-modal-sub">Calibrate this beaker again.</p>
+            <div class="validation-due-modal-actions">
+                <button type="button" class="btn btn-primary" onclick="goToCalibrationAfterValidationFail()">Go to Calibration</button>
+                <button type="button" class="btn btn-secondary" onclick="closeValidationCalibrateModal()">Close</button>
+            </div>
+        </div>
+    </div>
     <div id="keyboard-root"></div>
     <script src="/keyboard.js?v=6"></script>
     <script src="/input-focus.js?v=2"></script>
     <script src="/rbac.js?v=11"></script>
-    <script src="/script.js?v=122"></script>
-    <script src="/dt_client.js?v=39"></script>
+    <script src="/script.js?v=124"></script>
+    <script src="/dt_client.js?v=40"></script>
 </body>
 
 </html>

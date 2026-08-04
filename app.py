@@ -2046,16 +2046,30 @@ def approve_report(report_id):
         drum_raw = body.get("drumPassFail") or body.get("drum_pass_fail") or {}
         drum1_pf = (drum_raw.get("drum1") or body.get("drum1PassFail") or body.get("drum1_pass_fail") or pf or "").strip().upper()
         drum2_pf = (drum_raw.get("drum2") or body.get("drum2PassFail") or body.get("drum2_pass_fail") or pf or "").strip().upper()
-        if drum1_pf not in ("PASS", "FAIL") or drum2_pf not in ("PASS", "FAIL"):
-            return jsonify({"ok": False, "error": "Each drum passFail must be PASS or FAIL"}), 400
-        if pf not in ("PASS", "FAIL"):
-            pf = "FAIL" if ("FAIL" in (drum1_pf, drum2_pf)) else "PASS"
+        stroke_pf = (body.get("strokePassFail") or body.get("stroke_pass_fail") or "").strip().upper()
+        temp_pf = (body.get("tempPassFail") or body.get("temp_pass_fail") or "").strip().upper()
         remarks = (body.get("remarks") or "").strip()
         approver_name = (body.get("approverName") or "").strip()
         role_header = (request.headers.get("X-User-Role") or "").strip()
         report = data_service.get_report(report_id)
         if not report:
             return jsonify({"ok": False, "error": "Report not found"}), 404
+        report_type_norm = str(report.get("type") or "test").strip().lower() or "test"
+        is_validation = report_type_norm == "validation"
+        if is_validation:
+            if stroke_pf not in ("PASS", "FAIL") or temp_pf not in ("PASS", "FAIL"):
+                return jsonify({"ok": False, "error": "Stroke and Temperature passFail must each be PASS or FAIL"}), 400
+            pf = "FAIL" if ("FAIL" in (stroke_pf, temp_pf)) else "PASS"
+            # Keep drum fields valid for shared persistence paths
+            if drum1_pf not in ("PASS", "FAIL"):
+                drum1_pf = pf
+            if drum2_pf not in ("PASS", "FAIL"):
+                drum2_pf = pf
+        else:
+            if drum1_pf not in ("PASS", "FAIL") or drum2_pf not in ("PASS", "FAIL"):
+                return jsonify({"ok": False, "error": "Each drum passFail must be PASS or FAIL"}), 400
+            if pf not in ("PASS", "FAIL"):
+                pf = "FAIL" if ("FAIL" in (drum1_pf, drum2_pf)) else "PASS"
         if token and verified:
             token_report_type = str(verified.get("reportType") or "test").strip().lower() or "test"
             actual_report_type = str(report.get("type") or "test").strip().lower() or "test"
@@ -2087,6 +2101,24 @@ def approve_report(report_id):
         report["reportApprovalStatus"] = "approved"
         report["approvalPassFail"] = pf
         report["drumPassFail"] = {"drum1": drum1_pf, "drum2": drum2_pf}
+        if is_validation:
+            report["strokePassFail"] = stroke_pf
+            report["tempPassFail"] = temp_pf
+            runs = report.get("validationRuns")
+            if isinstance(runs, list):
+                updated_runs = []
+                for run in runs:
+                    if not isinstance(run, dict):
+                        updated_runs.append(run)
+                        continue
+                    r = dict(run)
+                    sub = str(r.get("validationSubtype") or "").strip().lower()
+                    if sub == "stroke":
+                        r["approvalPassFail"] = stroke_pf
+                    elif sub == "temp":
+                        r["approvalPassFail"] = temp_pf
+                    updated_runs.append(r)
+                report["validationRuns"] = updated_runs
         report["approvalRemarks"] = remarks
         report["approvedBy"] = by_line
         # Preserve original username casing for display; comparisons use verified_username (lower).
@@ -2106,6 +2138,11 @@ def approve_report(report_id):
                             row["drumLabel"] = "Drum {}".format(idx + 1)
             td["approvalPassFail"] = pf
             td["drumPassFail"] = {"drum1": drum1_pf, "drum2": drum2_pf}
+            if is_validation:
+                td["strokePassFail"] = stroke_pf
+                td["tempPassFail"] = temp_pf
+                if isinstance(report.get("validationRuns"), list):
+                    td["validationRuns"] = report["validationRuns"]
             report["testData"] = td
         data_service.save_report(report)
         try:
@@ -2117,9 +2154,9 @@ def approve_report(report_id):
             pdf_ok = _generate_report_pdf_file(report_id, write_audit=False)
         except Exception:
             app.logger.exception("Approved-report PDF generation failed for id %s", report_id)
-        if (report.get("type") or "").strip().lower() == "validation":
+        if is_validation:
             is_aborted_val = bool(report.get("aborted")) or str(report.get("status") or "").upper() == "ABORTED"
-            if not is_aborted_val:
+            if not is_aborted_val and pf == "PASS":
                 try:
                     report_service.apply_pending_validation_due(report)
                 except Exception:
@@ -2134,6 +2171,10 @@ def approve_report(report_id):
             _audit_report_pdf_generated(report_id, report)
         ctx = _format_report_audit_details(report_id, report)
         appr_detail = "{} | {} | verified by {}".format(ctx, pf, verified_name)
+        if is_validation:
+            appr_detail = "{} | stroke={} temp={} | verified by {}".format(
+                ctx, stroke_pf, temp_pf, verified_name
+            )
         v_audit_user = verified.get("username") or verified_username or verified_name
         v_audit_role = (verified.get("role") or "").strip() or "--"
         rtype = str(report.get("type") or "test").strip().lower() or "test"
@@ -2711,7 +2752,7 @@ def login():
                 outcome="denied",
                 entity_type="session",
                 entity_name="password",
-                details="Invalid username or password for user: {}".format(username or "--"),
+                details="Invalid username or password | User ID entered: {}".format(username or "--"),
                 target_user=username,
             )
             return jsonify({"error": "Invalid username or password"}), 401
@@ -2795,7 +2836,7 @@ def login():
                 outcome="denied",
                 entity_type="session",
                 entity_name="password",
-                details="Invalid username or password for user: {} | remaining attempts: {}".format(username or "--", remaining),
+                details="Invalid username or password | User ID entered: {} | remaining attempts: {}".format(username or "--", remaining),
                 target_user=username,
                 extra={"remainingAttempts": remaining, "failedAttempts": fa},
             )
@@ -2815,7 +2856,7 @@ def login():
             outcome="denied",
             entity_type="session",
             entity_name="password",
-            details="Invalid username or password for user: {}".format(username or "--"),
+            details="Invalid username or password | User ID entered: {}".format(username or "--"),
             target_user=username,
         )
         return jsonify({"error": "Invalid username or password"}), 401
@@ -3299,7 +3340,7 @@ def approval_verify():
             outcome="success",
             entity_type="verification",
             entity_name=purpose,
-            details="Verification token issued",
+            details="Verification token issued | issued by User ID: {}".format(vname or "--"),
             target_user=vname,
             signature={"mode": method, "username": vname, "role": verifier_role},
             extra={"purpose": purpose, "method": method},
@@ -5591,15 +5632,30 @@ def dt_stroke_save(basket):
     return jsonify({"ok": True, "report": saved})
 
 
+@app.route("/api/data/dt/validation/temp/<int:basket>/arm", methods=["POST"])
+def dt_temp_arm(basket):
+    gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
+    if gate:
+        return gate
+    data = request.get_json(force=True, silent=True) or {}
+    result = dt_validation_service.arm_temp_validation(
+        basket,
+        set_temperature=data.get("setTemperature") or data.get("temp") or 37.0,
+        operator=_session_operator(),
+    )
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
 @app.route("/api/data/dt/validation/temp/<int:basket>/start", methods=["POST"])
 def dt_temp_start(basket):
     gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
     if gate:
         return gate
     data = request.get_json(force=True, silent=True) or {}
+    # Hold start — setpoint must already be armed via /arm. Optional setTemperature ignored when armed.
     result = dt_validation_service.start_temp_validation(
         basket,
-        set_temperature=data.get("setTemperature") or data.get("temp") or 37.0,
+        set_temperature=data.get("setTemperature") or data.get("temp"),
         operator=_session_operator(),
     )
     return jsonify(result), (200 if result.get("ok") else 400)
@@ -5718,12 +5774,16 @@ def dt_combined_validation_save(basket):
     stroke_payload = data.get("stroke") if isinstance(data.get("stroke"), dict) else None
     temp_payload = data.get("temp") if isinstance(data.get("temp"), dict) else None
     pending_due = data.get("pendingValidationDue") if isinstance(data.get("pendingValidationDue"), dict) else None
+    op_pf = (data.get("operatorValidationPassFail") or data.get("operator_validation_pass_fail") or "").strip().upper()
+    if op_pf not in ("PASS", "FAIL"):
+        op_pf = None
     report = dt_validation_service.build_combined_validation_report(
         basket,
         stroke_payload=stroke_payload,
         temp_payload=temp_payload,
         pending_due=pending_due,
         operator=_session_operator(),
+        operator_validation_pass_fail=op_pf,
     )
     if not (report.get("validationRuns") or []):
         return jsonify({"ok": False, "error": "No stroke/temp validation results to save"}), 400

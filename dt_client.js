@@ -1788,30 +1788,75 @@
     _valKind = null;
     var msg = document.getElementById('validation-message');
     var st = document.getElementById('validation-status');
-    if (msg) msg.textContent = 'Ready to Validate';
+    if (msg) msg.textContent = 'Apply setpoint';
     if (st) st.textContent = '-';
-    var completeTemp = document.getElementById('complete-temp-validation-btn');
-    if (completeTemp) completeTemp.style.display = 'none';
+    var resultActions = document.getElementById('temp-validation-result-actions');
+    if (resultActions) resultActions.style.display = 'none';
+    var startBtn = document.getElementById('validation-stop-btn');
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.style.display = '';
+    }
     var startLbl = document.getElementById('validation-stop-btn-text');
-    if (startLbl) startLbl.textContent = 'START';
+    if (startLbl) startLbl.textContent = 'Start';
     var elapsed = document.getElementById('temp-validation-elapsed');
     if (elapsed) elapsed.textContent = '02:00';
-    var card = document.getElementById('validation-result-card');
-    if (card) {
-      card.classList.remove('is-pass', 'is-fail');
-    }
+    var ring = document.getElementById('temp-validation-hold-ring');
+    if (ring) ring.classList.remove('is-holding');
+    var applyBtn = document.getElementById('temp-validation-apply-btn');
+    if (applyBtn) applyBtn.disabled = false;
+    var setInput = document.getElementById('temp-validation-set-temp-input');
+    if (setInput) setInput.disabled = false;
+    var dev = document.getElementById('deviation-display');
+    if (dev) dev.textContent = '±0.0°C';
   }
+
+  function openStrokeCompleteModal(strokeSession) {
+    var basket = currentValBasket();
+    var overlay = document.getElementById('stroke-complete-modal-overlay');
+    if (!overlay) {
+      advanceToTempAfterStroke(strokeSession);
+      return;
+    }
+    window._pendingStrokeCompleteSession = strokeSession;
+    var beakerEl = document.getElementById('stroke-complete-beaker');
+    if (beakerEl) beakerEl.textContent = String(basket);
+    var dur = strokeSession.durationSec != null ? strokeSession.durationSec : 60;
+    var durEl = document.getElementById('stroke-complete-duration');
+    if (durEl) durEl.textContent = String(dur) + ' s';
+    var strokes = strokeSession.pulsesSeen != null ? strokeSession.pulsesSeen
+      : (strokeSession.strokesPerMin != null ? strokeSession.strokesPerMin : 0);
+    var strokesEl = document.getElementById('stroke-complete-strokes');
+    if (strokesEl) strokesEl.textContent = String(strokes);
+    var spmEl = document.getElementById('stroke-complete-spm');
+    if (spmEl) spmEl.textContent = String(strokeSession.strokesPerMin != null ? strokeSession.strokesPerMin : strokes);
+    overlay.style.display = 'flex';
+    overlay.setAttribute('aria-hidden', 'false');
+    syncDtNavLock();
+  }
+
+  window.continueAfterStrokeComplete = function () {
+    var overlay = document.getElementById('stroke-complete-modal-overlay');
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.setAttribute('aria-hidden', 'true');
+    }
+    var s = window._pendingStrokeCompleteSession;
+    window._pendingStrokeCompleteSession = null;
+    if (s) advanceToTempAfterStroke(s);
+  };
 
   function advanceToTempAfterStroke(strokeSession) {
     var basket = currentValBasket();
     var snap = {
-      status: strokeSession.status,
+      status: strokeSession.status || 'COMPLETE',
       strokesPerMin: strokeSession.strokesPerMin,
       pulsesSeen: strokeSession.pulsesSeen,
       actualStrokes: strokeSession.pulsesSeen != null ? strokeSession.pulsesSeen : strokeSession.strokesPerMin,
       requiredRange: strokeSession.requiredRange || '29-32',
       requiredMin: strokeSession.requiredMin,
       requiredMax: strokeSession.requiredMax,
+      withinSpec: strokeSession.withinSpec,
       durationSec: strokeSession.durationSec || 60,
       sensorSilent: strokeSession.sensorSilent,
       error: strokeSession.error,
@@ -1851,8 +1896,12 @@
     if (counter) counter.textContent = '0';
     var timer = document.getElementById('stroke-timer');
     if (timer) timer.textContent = '01:00';
-    var statusCard = document.getElementById('stroke-validation-status-card');
-    if (statusCard) statusCard.style.display = 'none';
+    var strokeModal = document.getElementById('stroke-complete-modal-overlay');
+    if (strokeModal) {
+      strokeModal.style.display = 'none';
+      strokeModal.setAttribute('aria-hidden', 'true');
+    }
+    window._pendingStrokeCompleteSession = null;
     var stopBtn = document.getElementById('stroke-stop-btn');
     if (stopBtn) stopBtn.style.display = 'none';
     setStrokePrimaryBtn('start');
@@ -1916,35 +1965,34 @@
 
   window.dtStartTempValidation = function () {
     var basket = currentValBasket();
-    var setInput = document.getElementById('temp-validation-set-temp-input');
-    var hidden = document.getElementById('dt-val-temp');
-    var temp = parseFloat((setInput && setInput.value) || (hidden && hidden.value) || '37');
-    if (isNaN(temp) || temp < 20 || temp > 55) {
-      toast('Set temperature must be 20–55°C', 'error');
-      return;
-    }
-    if (hidden) hidden.value = String(temp);
-    var setDisp = document.getElementById('set-temp-display');
-    if (setDisp) setDisp.textContent = temp.toFixed(1);
     clearValPoll();
     clearValAwaitingSave();
     api('/api/data/dt/validation/temp/' + basket + '/start', {
       method: 'POST',
-      body: { setTemperature: temp },
+      body: {},
     }).then(function (res) {
       if (!res.ok) throw new Error(res.error || 'Start failed');
       _tempValRunning = true;
       syncDtNavLock();
+      var startBtn = document.getElementById('validation-stop-btn');
+      if (startBtn) startBtn.disabled = true;
       var startLbl = document.getElementById('validation-stop-btn-text');
-      if (startLbl) startLbl.textContent = 'STOP';
+      if (startLbl) startLbl.textContent = 'Holding…';
       var msg = document.getElementById('validation-message');
-      if (msg) msg.textContent = 'Temperature hold in progress';
-      toast('Temp validation started', 'info');
+      if (msg) msg.textContent = 'Holding';
+      var ring = document.getElementById('temp-validation-hold-ring');
+      if (ring) ring.classList.add('is-holding');
+      var applyBtn = document.getElementById('temp-validation-apply-btn');
+      if (applyBtn) applyBtn.disabled = true;
+      var setInput = document.getElementById('temp-validation-set-temp-input');
+      if (setInput) setInput.disabled = true;
+      toast('Temp hold started', 'info');
       pollValidation('temp', basket);
     }).catch(function (e) { toast(e.message || 'Failed', 'error'); });
   };
 
   window.applyValidationSetTemp = function () {
+    var basket = currentValBasket();
     var setInput = document.getElementById('temp-validation-set-temp-input');
     var temp = parseFloat(setInput && setInput.value);
     if (isNaN(temp) || temp < 20 || temp > 55) {
@@ -1955,12 +2003,29 @@
     if (hidden) hidden.value = String(temp);
     var setDisp = document.getElementById('set-temp-display');
     if (setDisp) setDisp.textContent = temp.toFixed(1);
-    toast('Set temperature applied: ' + temp.toFixed(1) + '°C', 'success');
+    var startBtn = document.getElementById('validation-stop-btn');
+    if (startBtn) startBtn.disabled = true;
+    var startLbl = document.getElementById('validation-stop-btn-text');
+    if (startLbl) startLbl.textContent = 'Start';
+    var msg = document.getElementById('validation-message');
+    if (msg) msg.textContent = 'Heating — waiting for ready';
+    clearValPoll();
+    api('/api/data/dt/validation/temp/' + basket + '/arm', {
+      method: 'POST',
+      body: { setTemperature: temp },
+    }).then(function (res) {
+      if (!res.ok) throw new Error(res.error || 'Apply failed');
+      toast('Set temperature applied: ' + temp.toFixed(1) + '°C', 'success');
+      pollValidation('temp', basket);
+    }).catch(function (e) {
+      if (msg) msg.textContent = 'Apply setpoint';
+      toast(e.message || 'Failed', 'error');
+    });
   };
 
   window.toggleTempValidation = function () {
     if (_tempValRunning) {
-      window.stopValidation();
+      // Abort is via Abort button; Start only begins hold
       return;
     }
     window.dtStartTempValidation();
@@ -1973,15 +2038,15 @@
       (_valSession && _valSession.phase === 'temp' ? 'temp' : null) ||
       (_valSession && _valSession.phase === 'stroke' ? 'stroke' : null);
 
-    // Finished validation waiting for Complete & Save / due modal — cannot leave yet
+    // Finished validation waiting for Pass/Fail / due modal — cannot leave yet
     if ((_valAwaitingSave || (_valSession && _valSession.tempDone)) && !opts.force) {
       if (typeof showAppModal === 'function') {
         showAppModal(
-          'Hit Complete & Save and approve the report to exit this page.',
+          'Select Pass or Fail and finish saving the report to exit this page.',
           'Validation'
         );
       } else {
-        toast('Hit Complete & Save and approve the report to exit', 'info');
+        toast('Select Pass or Fail to finish validation', 'info');
       }
       return;
     }
@@ -2038,14 +2103,19 @@
     closeValidationDueModal();
     syncDtNavLock();
     var startLbl = document.getElementById('validation-stop-btn-text');
-    if (startLbl) startLbl.textContent = 'START';
+    if (startLbl) startLbl.textContent = 'Start';
     var stopBtn = document.getElementById('stroke-stop-btn');
     if (stopBtn) stopBtn.style.display = 'none';
     setStrokePrimaryBtn('start');
     var timer = document.getElementById('stroke-timer');
     if (timer) timer.textContent = '01:00';
-    var completeTemp = document.getElementById('complete-temp-validation-btn');
-    if (completeTemp) completeTemp.style.display = 'none';
+    var resultActions = document.getElementById('temp-validation-result-actions');
+    if (resultActions) resultActions.style.display = 'none';
+    var startBtn = document.getElementById('validation-stop-btn');
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.style.display = '';
+    }
 
     var openPreview = opts.openPreview !== false && !opts.stay;
     saveAbortedCombinedValidationReport({
@@ -2108,9 +2178,15 @@
   function saveValidationAndPreview(kind, basket, opts) {
     opts = opts || {};
     if (_valSaveLock) return Promise.resolve(null);
-    // Combined Stroke→Temp: open due-interval modal instead of single-kind save
+    // Combined Stroke→Temp: operator Pass/Fail / due modal owns save — do not auto-save here
     if (_valSession && _valSession.strokeDone && _valSession.tempDone) {
-      openValidationDueModal(basket);
+      var resultActions = document.getElementById('temp-validation-result-actions');
+      if (resultActions && resultActions.style.display !== 'none') {
+        return Promise.resolve(null);
+      }
+      if (_valSession.operatorValidationPassFail === 'PASS') {
+        openValidationDueModal(basket);
+      }
       return Promise.resolve(null);
     }
     _valSaveLock = true;
@@ -2178,6 +2254,74 @@
     if (overlay) overlay.style.display = 'none';
   }
 
+  function openValidationCalibrateModal(basket) {
+    var overlay = document.getElementById('validation-calibrate-modal-overlay');
+    if (!overlay) {
+      toast('Validation failed. Calibrate this beaker again.', 'error');
+      return;
+    }
+    overlay.dataset.basket = String(basket === 2 ? 2 : 1);
+    overlay.style.display = 'flex';
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+
+  window.closeValidationCalibrateModal = function () {
+    var overlay = document.getElementById('validation-calibrate-modal-overlay');
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.setAttribute('aria-hidden', 'true');
+    }
+    var rid = window._pendingValidationReportAfterCalibrate;
+    window._pendingValidationReportAfterCalibrate = null;
+    if (rid != null && typeof openReportPreview === 'function') {
+      openReportPreview(rid, { setGate: true });
+    }
+  };
+
+  window.goToCalibrationAfterValidationFail = function () {
+    var overlay = document.getElementById('validation-calibrate-modal-overlay');
+    var basket = parseInt((overlay && overlay.dataset.basket) || String(currentValBasket()), 10);
+    basket = basket === 2 ? 2 : 1;
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.setAttribute('aria-hidden', 'true');
+    }
+    window._pendingValidationReportAfterCalibrate = null;
+    try {
+      window._dtCalBasket = basket;
+      if (typeof DT !== 'undefined') DT.calBasket = basket;
+    } catch (e) {}
+    try { _suppressDtOpNavGuardOnce = true; } catch (e2) {}
+    if (typeof clearReportApprovalGate === 'function') {
+      try { clearReportApprovalGate(); } catch (e3) {}
+    }
+    if (typeof goToPage === 'function') goToPage('calibrate-beaker');
+    else go('calibrate-beaker');
+  };
+
+  window.operatorTempValidationPassFail = function (outcome) {
+    var pf = String(outcome || '').toUpperCase();
+    if (pf !== 'PASS' && pf !== 'FAIL') return;
+    var basket = currentValBasket();
+    var resultActions = document.getElementById('temp-validation-result-actions');
+    if (resultActions) resultActions.style.display = 'none';
+    if (_valSession) {
+      _valSession.operatorValidationPassFail = pf;
+      _valSession.tempDone = true;
+    }
+    if (pf === 'PASS') {
+      _valSession && (_valSession.phase = 'awaiting_due');
+      setValAwaitingSave('temp', basket);
+      syncDtNavLock();
+      openValidationDueModal(basket);
+      return;
+    }
+    _valSession && (_valSession.phase = 'awaiting_fail_save');
+    setValAwaitingSave('temp', basket);
+    syncDtNavLock();
+    saveCombinedValidationReport(basket, null, { operatorPassFail: 'FAIL', openCalibrateModal: true });
+  };
+
   window.cancelValidationDueModal = function () {
     closeValidationDueModal();
   };
@@ -2192,26 +2336,35 @@
     var basket = parseInt((overlay && overlay.dataset.basket) || String(currentValBasket()), 10);
     basket = basket === 2 ? 2 : 1;
     closeValidationDueModal();
-    saveCombinedValidationReport(basket, m);
+    saveCombinedValidationReport(basket, m, { operatorPassFail: 'PASS' });
   };
 
-  function saveCombinedValidationReport(basket, months) {
+  function saveCombinedValidationReport(basket, months, opts) {
+    opts = opts || {};
     if (_valSaveLock) return;
     _valSaveLock = true;
-    var today = new Date();
-    var last = formatLocalDdMmYyyy(today);
-    var next = addMonthsDdMmYyyy(today, months);
     var strokeSnap = (_valSession && _valSession.strokeSnapshot) || null;
+    var tempSnap = (_valSession && _valSession.tempSnapshot) || null;
+    var opPf = opts.operatorPassFail
+      || (_valSession && _valSession.operatorValidationPassFail)
+      || null;
     var body = {
       stroke: strokeSnap,
-      pendingValidationDue: {
+      temp: tempSnap,
+      operatorValidationPassFail: opPf,
+    };
+    if (months != null && opPf === 'PASS') {
+      var today = new Date();
+      var last = formatLocalDdMmYyyy(today);
+      var next = addMonthsDdMmYyyy(today, months);
+      body.pendingValidationDue = {
         months: months,
         lastValidationDate: last,
         nextValidationDate: next,
         dueKind: 'validation',
         beaker: basket,
-      },
-    };
+      };
+    }
     api('/api/data/dt/validation/' + basket + '/combined/save', { method: 'POST', body: body })
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Save failed');
@@ -2222,10 +2375,16 @@
         clearValAwaitingSave();
         clearValSession();
         syncDtNavLock();
-        var completeTemp = document.getElementById('complete-temp-validation-btn');
-        if (completeTemp) completeTemp.style.display = 'none';
+        var resultActions = document.getElementById('temp-validation-result-actions');
+        if (resultActions) resultActions.style.display = 'none';
         var report = res.report || {};
         var rid = report.id;
+        if (opts.openCalibrateModal) {
+          openValidationCalibrateModal(basket);
+          // Keep pending report available; open preview after calibrate modal closes if still needed
+          window._pendingValidationReportAfterCalibrate = rid;
+          return res;
+        }
         if (rid && typeof openReportPreview === 'function') {
           openReportPreview(rid, { setGate: true });
         } else {
@@ -2250,12 +2409,16 @@
     var basket = currentValBasket();
     clearValPoll();
     _valSaveLock = false;
-    // Combined session after both done → due modal
+    // Combined session after both done → operator Pass/Fail already shown on temp page
     if (_valSession && _valSession.strokeDone && (kind === 'temp' || _valSession.tempDone)) {
       if (!_valSession.tempDone) _valSession.tempDone = true;
-      _valSession.phase = 'awaiting_due';
-      setValAwaitingSave('temp', basket);
-      syncDtNavLock();
+      var resultActions = document.getElementById('temp-validation-result-actions');
+      if (resultActions) {
+        resultActions.style.display = '';
+        setValAwaitingSave('temp', basket);
+        syncDtNavLock();
+        return;
+      }
       openValidationDueModal(basket);
       return;
     }
@@ -2309,36 +2472,20 @@
             if (wasAborted) {
               var stopBtnA = document.getElementById('stroke-stop-btn');
               if (stopBtnA) stopBtnA.style.display = 'none';
-              var cardA = document.getElementById('stroke-validation-status-card');
-              var textA = document.getElementById('stroke-validation-status-text');
-              if (cardA) {
-                cardA.style.display = '';
-                cardA.className = 'dt-val-status-card is-fail';
-              }
-              if (textA) textA.textContent = 'VALIDATION ABORTED';
               setStrokePrimaryBtn('start');
+              toast('Stroke validation aborted', 'error');
               // Persist aborted report for approval (operator abort via Stop already does this;
               // this covers HW/session abort while still on the page).
               saveAbortedCombinedValidationReport({ basket: basket, phase: 'stroke', openPreview: true });
             } else {
-              // Combined flow: stash stroke and continue to temperature
+              // Combined flow: show metrics modal, then Continue → temperature
               var stopBtn = document.getElementById('stroke-stop-btn');
               if (stopBtn) stopBtn.style.display = 'none';
-              var card = document.getElementById('stroke-validation-status-card');
-              var text = document.getElementById('stroke-validation-status-text');
               var finalCount = s.pulsesSeen != null ? s.pulsesSeen
                 : (s.strokesPerMin != null ? s.strokesPerMin : null);
               if (counter && finalCount != null) counter.textContent = String(finalCount);
-              if (card) {
-                card.style.display = '';
-                card.className = 'dt-val-status-card ' + (s.status === 'PASSED' ? 'is-pass' : 'is-fail');
-              }
-              if (text) {
-                var countLabel = finalCount != null ? (' (' + finalCount + ' strokes)' ) : '';
-                text.textContent = ((s.status === 'PASSED' ? 'VALIDATION PASSED' : 'VALIDATION FAILED') + countLabel);
-              }
-              setStrokePrimaryBtn('running');
-              advanceToTempAfterStroke(s);
+              setStrokePrimaryBtn('start');
+              openStrokeCompleteModal(s);
             }
           }
         }
@@ -2362,13 +2509,20 @@
           if (s.maxDeviation != null) {
             var dev = document.getElementById('deviation-display');
             if (dev) dev.textContent = '±' + Number(s.maxDeviation).toFixed(2) + '°C';
+          } else if (measured != null && (s.setTemperature != null || s.setTemp != null)) {
+            var setV = s.setTemperature != null ? s.setTemperature : s.setTemp;
+            var liveDev = Math.abs(Number(measured) - Number(setV));
+            var devLive = document.getElementById('deviation-display');
+            if (devLive && (s.state === 'PREHEAT' || s.state === 'READY' || s.state === 'ARMED')) {
+              devLive.textContent = '±' + liveDev.toFixed(2) + '°C';
+            }
           }
           var rem = null;
           if (s.remainingSec != null) rem = s.remainingSec;
           else if (s.holdRemaining != null) rem = s.holdRemaining;
           else if (s.state === 'HOLDING' && s.holdStartedAtEpoch && s.durationSec) {
             rem = Math.max(0, Number(s.durationSec) - ((Date.now() / 1000) - Number(s.holdStartedAtEpoch)));
-          } else if (s.state === 'PREHEAT') {
+          } else if (s.state === 'PREHEAT' || s.state === 'READY' || s.state === 'ARMED') {
             rem = s.durationSec || 120;
           }
           if (rem != null) {
@@ -2377,38 +2531,75 @@
           }
           var msg = document.getElementById('validation-message');
           var st = document.getElementById('validation-status');
-          if (msg) msg.textContent = s.state || 'Running';
+          var startBtn = document.getElementById('validation-stop-btn');
+          var startLbl = document.getElementById('validation-stop-btn-text');
+          var ring = document.getElementById('temp-validation-hold-ring');
+          if (s.state === 'PREHEAT' || s.state === 'ARMED') {
+            if (msg) msg.textContent = 'Heating — waiting for ready';
+            if (startBtn) startBtn.disabled = true;
+            if (startLbl) startLbl.textContent = 'Start';
+            if (ring) ring.classList.remove('is-holding');
+          } else if (s.state === 'READY') {
+            if (msg) msg.textContent = 'Ready — press Start';
+            if (startBtn && !_tempValRunning) startBtn.disabled = false;
+            if (startLbl) startLbl.textContent = 'Start';
+            if (ring) ring.classList.remove('is-holding');
+          } else if (s.state === 'HOLDING') {
+            if (msg) msg.textContent = 'Holding';
+            _tempValRunning = true;
+            if (startBtn) startBtn.disabled = true;
+            if (startLbl) startLbl.textContent = 'Holding…';
+            if (ring) ring.classList.add('is-holding');
+          } else if (msg) {
+            msg.textContent = s.state || 'Running';
+          }
           if (st) st.textContent = s.status || '-';
           if (s.state === 'COMPLETE' || s.state === 'ABORTED') {
             clearValPoll();
             _tempValRunning = false;
             var tempAborted = s.state === 'ABORTED';
             _valKind = null;
+            if (ring) ring.classList.remove('is-holding');
             if (tempAborted) {
-              var startLblA = document.getElementById('validation-stop-btn-text');
-              if (startLblA) startLblA.textContent = 'START';
-              var msgA = document.getElementById('validation-message');
-              var stA = document.getElementById('validation-status');
-              if (msgA) msgA.textContent = 'Aborted';
-              if (stA) stA.textContent = s.status || '-';
+              if (startLbl) startLbl.textContent = 'Start';
+              if (startBtn) startBtn.disabled = true;
+              if (msg) msg.textContent = 'Aborted';
+              if (st) st.textContent = s.status || '-';
               saveAbortedCombinedValidationReport({ basket: basket, phase: 'temp', openPreview: true });
             } else {
               if (_valSession) {
                 _valSession.tempDone = true;
-                _valSession.phase = 'awaiting_due';
+                _valSession.phase = 'awaiting_pf';
+                _valSession.tempSnapshot = {
+                  status: s.status || 'COMPLETE',
+                  setTemperature: s.setTemperature,
+                  minTemp: s.minTemp,
+                  maxTemp: s.maxTemp,
+                  maxDeviation: s.maxDeviation,
+                  requiredDeviation: s.requiredDeviation != null ? s.requiredDeviation : 2.0,
+                  withinSpec: s.withinSpec,
+                  error: s.error,
+                  completedAt: s.endedAt || s.completedAt,
+                  testStartTime: s.holdStartedAt || s.startedAt,
+                  testEndTime: s.endedAt,
+                  beaker: basket,
+                  basket: basket,
+                  validationSubtype: 'temp',
+                };
               }
               setValAwaitingSave('temp', basket);
               syncDtNavLock();
-              var startLbl = document.getElementById('validation-stop-btn-text');
-              if (startLbl) startLbl.textContent = 'START';
-              var msg = document.getElementById('validation-message');
-              var st = document.getElementById('validation-status');
-              if (msg) msg.textContent = 'Hold complete';
+              if (startLbl) startLbl.textContent = 'Start';
+              if (startBtn) {
+                startBtn.disabled = true;
+                startBtn.style.display = 'none';
+              }
+              if (msg) msg.textContent = 'Complete';
               if (st) st.textContent = s.status || '-';
-              var completeTemp = document.getElementById('complete-temp-validation-btn');
-              if (completeTemp) {
-                completeTemp.style.display = '';
-                toast('Validation finished — press Complete & Save', 'success');
+              var resultActions = document.getElementById('temp-validation-result-actions');
+              if (resultActions) {
+                resultActions.style.display = '';
+                toast('Hold complete — select Pass or Fail', 'success');
               }
             }
           }

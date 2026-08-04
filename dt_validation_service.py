@@ -2,8 +2,10 @@
 """
 dt_validation_service.py - Stroke rate and temperature hold validation.
 
-Stroke: real ESP32 S1/S2 deltas over 60s; FAIL if no pulses; PASS if 29-32 /min.
-Temp: 2-minute hold; pass if (maxTemp - minTemp) / 2 <= 0.5 °C.
+Stroke: real ESP32 S1/S2 deltas over 60s; COMPLETE with withinSpec vs 29-32 /min
+(sensor-silent / abort → FAILED/ABORTED). Pass/Fail is set at approval.
+Temp: Apply arms preheat; Start begins 2-minute hold. COMPLETE with withinSpec
+vs ±TEMP_DEVIATION_LIMIT °C. Pass/Fail is set at approval.
 """
 
 from __future__ import annotations
@@ -26,7 +28,8 @@ STROKE_TRAVEL_DELAY_SEC = 2.5
 STROKE_MIN = 29
 STROKE_MAX = 32
 TEMP_HOLD_SEC = 120
-TEMP_DEVIATION_LIMIT = 0.5
+TEMP_DEVIATION_LIMIT = 2.0
+TEMP_READY_NEAR_C = 3.0
 
 
 def init(logger=None, audit_fn: Optional[Callable] = None) -> None:
@@ -73,8 +76,9 @@ def get_session(kind: str, basket: int) -> Optional[Dict[str, Any]]:
         started = float(out.get("holdStartedAtEpoch") or 0)
         dur = float(out.get("durationSec") or TEMP_HOLD_SEC)
         out["remainingSec"] = max(0, int(round(dur - (time.time() - started))))
-    elif kind == "temp" and state == "PREHEAT":
+    elif kind == "temp" and state in ("PREHEAT", "ARMED", "READY"):
         out["remainingSec"] = int(out.get("durationSec") or TEMP_HOLD_SEC)
+        out["ready"] = state == "READY" or bool(out.get("ready"))
     return out
 
 
@@ -157,6 +161,9 @@ def _build_stroke_report(session: Dict[str, Any], basket: int) -> Dict[str, Any]
     strokes_per_min = session.get("strokesPerMin")
     if strokes_per_min is None:
         strokes_per_min = actual
+    within_spec = session.get("withinSpec")
+    if within_spec is None and strokes_per_min is not None and status == "COMPLETE":
+        within_spec = STROKE_MIN <= float(strokes_per_min) <= STROKE_MAX
     return {
         "type": "validation",
         "validationSubtype": "stroke",
@@ -168,6 +175,7 @@ def _build_stroke_report(session: Dict[str, Any], basket: int) -> Dict[str, Any]
         "requiredRange": f"{STROKE_MIN}-{STROKE_MAX}",
         "requiredMin": STROKE_MIN,
         "requiredMax": STROKE_MAX,
+        "withinSpec": within_spec,
         "durationSec": session.get("durationSec") or STROKE_DURATION_SEC,
         "beaker": basket,
         "basket": basket,
@@ -267,12 +275,12 @@ def _stroke_worker(basket: int) -> None:
         silent = not saw_any_line and pulses == 0
         strokes_per_min = pulses  # 60s window
         if silent:
-            passed = False
+            within_spec = False
             status = "FAILED"
             error = "Stroke sensor silent — no S1/S2 pulses received"
         else:
-            passed = STROKE_MIN <= strokes_per_min <= STROKE_MAX
-            status = "PASSED" if passed else "FAILED"
+            within_spec = STROKE_MIN <= strokes_per_min <= STROKE_MAX
+            status = "COMPLETE"
             error = None
 
         with _lock:
@@ -284,7 +292,8 @@ def _stroke_worker(basket: int) -> None:
                 "pulsesSeen": pulses,
                 "strokesPerMin": strokes_per_min,
                 "remainingSec": 0,
-                "passed": passed,
+                "withinSpec": within_spec,
+                "passed": None,
                 "status": status,
                 "sensorSilent": silent,
                 "error": error,
@@ -298,14 +307,15 @@ def _stroke_worker(basket: int) -> None:
 
         _audit(
             "Validation finished",
-            f"Stroke validation | Beaker {basket} | result {status} | {strokes_per_min} strokes/min",
+            f"Stroke validation | Beaker {basket} | result {status} | {strokes_per_min} strokes/min | withinSpec={within_spec}",
             entity_type="validation",
             entity_id=f"stroke-{basket}",
-            outcome="success" if passed else "failure",
+            outcome="success" if status == "COMPLETE" else "failure",
             extra={
                 "basket": basket,
                 "strokesPerMin": strokes_per_min,
                 "status": status,
+                "withinSpec": within_spec,
                 "sensorSilent": silent,
                 "travelDelaySec": STROKE_TRAVEL_DELAY_SEC,
                 "mock": hw.is_mock_mode(),
@@ -357,11 +367,25 @@ def abort_stroke_validation(basket: int) -> Dict[str, Any]:
 
 # -------------------- Temperature validation --------------------
 
-def start_temp_validation(
+def _temp_is_ready(basket: int, set_t: Optional[float]) -> bool:
+    live = hw.get_live_state()
+    temps = hw.get_latest_temps()
+    ir_key = "IR1" if basket == 1 else "IR2"
+    ir = temps.get(ir_key)
+    near = (
+        set_t is not None
+        and ir is not None
+        and abs(float(ir) - float(set_t)) <= TEMP_READY_NEAR_C
+    )
+    return bool(live.get(f"TR{basket}") or near)
+
+
+def arm_temp_validation(
     basket: int,
     set_temperature: float,
     operator: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Apply setpoint and arm preheat. Does not start the 2-minute hold."""
     basket = int(basket)
     if basket not in (1, 2):
         return {"ok": False, "error": "basket must be 1 or 2"}
@@ -375,13 +399,11 @@ def start_temp_validation(
     key = f"temp:{basket}"
     with _lock:
         existing = _sessions.get(key)
-        if existing and existing.get("state") in ("PREHEAT", "HOLDING", "RUNNING"):
+        if existing and existing.get("state") in ("PREHEAT", "ARMED", "READY", "HOLDING", "RUNNING"):
             return {"ok": False, "error": "temp validation already running"}
 
-    heater = hw.get_heater_state()
     t1 = temp if basket == 1 else 0.0
     t2 = temp if basket == 2 else 0.0
-    # Preserve other basket heater if needed — for validation isolate to selected beaker
     if basket == 1:
         t2 = 0.0
     else:
@@ -405,6 +427,8 @@ def start_temp_validation(
         "samples": [],
         "status": None,
         "passed": None,
+        "withinSpec": None,
+        "ready": False,
         "mock": hw.is_mock_mode(),
         "operatorName": (operator or {}).get("name"),
         "operatorId": (operator or {}).get("employeeId") or (operator or {}).get("id"),
@@ -415,64 +439,143 @@ def start_temp_validation(
     with _lock:
         _sessions[key] = session
     _audit(
-        "Validation started",
-        f"Temperature validation | Beaker {basket} | setpoint {temp}°C | hold 120 s",
+        "Validation armed",
+        f"Temperature validation | Beaker {basket} | setpoint {temp}°C | waiting for ready",
         entity_type="validation",
         entity_id=f"temp-{basket}",
         extra={"basket": basket, "kind": "temp", "setTemperature": temp, "mock": hw.is_mock_mode()},
     )
     threading.Thread(
-        target=_temp_worker,
+        target=_temp_preheat_worker,
         args=(basket,),
         daemon=True,
-        name=f"dt-temp-val-{basket}",
+        name=f"dt-temp-preheat-{basket}",
     ).start()
     return {"ok": True, "session": dict(session), "hardware": hw_result}
 
 
-def _temp_worker(basket: int) -> None:
+def _temp_preheat_worker(basket: int) -> None:
     key = f"temp:{basket}"
-    ir_key = "IR1" if basket == 1 else "IR2"
     try:
-        # Wait for TR ready (up to 10 minutes)
         ready_deadline = time.time() + 600
         while time.time() < ready_deadline:
             with _lock:
                 session = _sessions.get(key)
                 if not session or session.get("state") == "ABORTED":
                     return
-            live = hw.get_live_state()
-            temps = hw.get_latest_temps()
-            # Also treat within ±3°C as ready for mock reliability
-            set_t = None
-            with _lock:
-                set_t = (_sessions.get(key) or {}).get("setTemperature")
-            ir = temps.get(ir_key)
-            near = set_t is not None and ir is not None and abs(float(ir) - float(set_t)) <= 3.0
-            if live.get(f"TR{basket}") or near:
-                break
+                if session.get("state") in ("HOLDING", "COMPLETE"):
+                    return
+                set_t = session.get("setTemperature")
+            if _temp_is_ready(basket, set_t):
+                with _lock:
+                    if key not in _sessions or _sessions[key].get("state") == "ABORTED":
+                        return
+                    if _sessions[key].get("state") in ("HOLDING", "COMPLETE"):
+                        return
+                    _sessions[key]["state"] = "READY"
+                    _sessions[key]["ready"] = True
+                return
             time.sleep(0.5)
-        else:
-            with _lock:
-                if key in _sessions:
-                    _sessions[key].update({
-                        "state": "ABORTED",
-                        "status": "FAILED",
-                        "passed": False,
-                        "error": "timeout waiting for temperature ready",
-                        "endedAt": _now_iso(),
-                    })
-            hw.cmd_stop(basket)
-            return
+        with _lock:
+            if key in _sessions and _sessions[key].get("state") in ("PREHEAT", "ARMED"):
+                _sessions[key].update({
+                    "state": "ABORTED",
+                    "status": "FAILED",
+                    "passed": False,
+                    "ready": False,
+                    "error": "timeout waiting for temperature ready",
+                    "endedAt": _now_iso(),
+                })
+        hw.cmd_stop(basket)
+    except Exception as e:
+        hw.cmd_stop(basket)
+        with _lock:
+            if key in _sessions and _sessions[key].get("state") not in ("HOLDING", "COMPLETE", "ABORTED"):
+                _sessions[key].update({
+                    "state": "ABORTED",
+                    "error": str(e),
+                    "status": "FAILED",
+                    "passed": False,
+                    "endedAt": _now_iso(),
+                })
+        if _logger:
+            _logger.exception("temp preheat wait failed")
 
+
+def start_temp_validation(
+    basket: int,
+    set_temperature: Optional[float] = None,
+    operator: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Start the 2-minute hold. Requires an armed/ready session from arm_temp_validation.
+    set_temperature is ignored when already armed (kept for API compatibility).
+    """
+    basket = int(basket)
+    if basket not in (1, 2):
+        return {"ok": False, "error": "basket must be 1 or 2"}
+
+    key = f"temp:{basket}"
+    with _lock:
+        existing = _sessions.get(key)
+        if not existing:
+            return {"ok": False, "error": "Apply setpoint first (temp validation not armed)"}
+        state = existing.get("state")
+        if state == "HOLDING":
+            return {"ok": False, "error": "temp validation already holding"}
+        if state not in ("PREHEAT", "ARMED", "READY"):
+            return {"ok": False, "error": f"temp validation not ready to start (state={state})"}
+        set_t = existing.get("setTemperature")
+        ready = state == "READY" or bool(existing.get("ready"))
+
+    if not ready and not _temp_is_ready(basket, set_t):
+        return {"ok": False, "error": "Temperature not ready — wait for TR / near setpoint"}
+
+    with _lock:
+        if key not in _sessions or _sessions[key].get("state") == "ABORTED":
+            return {"ok": False, "error": "temp validation session aborted"}
+        if _sessions[key].get("state") == "HOLDING":
+            return {"ok": False, "error": "temp validation already holding"}
+        _sessions[key]["state"] = "HOLDING"
+        _sessions[key]["ready"] = True
+        _sessions[key]["holdStartedAt"] = _now_iso()
+        _sessions[key]["holdStartedAtEpoch"] = time.time()
+        session = dict(_sessions[key])
+
+    _audit(
+        "Validation started",
+        f"Temperature validation | Beaker {basket} | setpoint {session.get('setTemperature')}°C | hold 120 s",
+        entity_type="validation",
+        entity_id=f"temp-{basket}",
+        extra={
+            "basket": basket,
+            "kind": "temp",
+            "setTemperature": session.get("setTemperature"),
+            "mock": hw.is_mock_mode(),
+        },
+    )
+    threading.Thread(
+        target=_temp_hold_worker,
+        args=(basket,),
+        daemon=True,
+        name=f"dt-temp-val-{basket}",
+    ).start()
+    return {"ok": True, "session": session}
+
+
+def _temp_hold_worker(basket: int) -> None:
+    key = f"temp:{basket}"
+    ir_key = "IR1" if basket == 1 else "IR2"
+    try:
         with _lock:
             if key not in _sessions or _sessions[key].get("state") == "ABORTED":
                 return
-            _sessions[key]["state"] = "HOLDING"
-            _sessions[key]["holdStartedAt"] = _now_iso()
-            _sessions[key]["holdStartedAtEpoch"] = time.time()
+            if _sessions[key].get("holdStartedAtEpoch") is None:
+                _sessions[key]["holdStartedAt"] = _now_iso()
+                _sessions[key]["holdStartedAtEpoch"] = time.time()
+            hold_started = float(_sessions[key]["holdStartedAtEpoch"])
 
-        hold_end = time.time() + TEMP_HOLD_SEC
+        hold_end = hold_started + TEMP_HOLD_SEC
         min_t = None
         max_t = None
         samples = []
@@ -501,14 +604,14 @@ def _temp_worker(basket: int) -> None:
         hw.cmd_stop(basket)
 
         if min_t is None or max_t is None:
-            passed = False
+            within_spec = False
             status = "FAILED"
             max_dev = None
             error = "no temperature samples during hold"
         else:
             max_dev = round((max_t - min_t) / 2.0, 3)
-            passed = max_dev <= TEMP_DEVIATION_LIMIT
-            status = "PASSED" if passed else "FAILED"
+            within_spec = max_dev <= TEMP_DEVIATION_LIMIT
+            status = "COMPLETE"
             error = None
 
         with _lock:
@@ -520,7 +623,8 @@ def _temp_worker(basket: int) -> None:
                 "minTemp": min_t,
                 "maxTemp": max_t,
                 "maxDeviation": max_dev,
-                "passed": passed,
+                "withinSpec": within_spec,
+                "passed": None,
                 "status": status,
                 "error": error,
             })
@@ -536,6 +640,7 @@ def _temp_worker(basket: int) -> None:
             "maxTemp": max_t,
             "maxDeviation": max_dev,
             "requiredDeviation": TEMP_DEVIATION_LIMIT,
+            "withinSpec": within_spec,
             "beaker": basket,
             "basket": basket,
             "operatorName": session.get("operatorName"),
@@ -555,15 +660,16 @@ def _temp_worker(basket: int) -> None:
 
         _audit(
             "Validation finished",
-            f"Temperature validation | Beaker {basket} | result {status} | deviation ±{max_dev}°C | range {min_t}–{max_t}°C",
+            f"Temperature validation | Beaker {basket} | result {status} | deviation ±{max_dev}°C | withinSpec={within_spec} | range {min_t}–{max_t}°C",
             entity_type="validation",
             entity_id=f"temp-{basket}",
-            outcome="success" if passed else "failure",
+            outcome="success" if status == "COMPLETE" else "failure",
             extra={
                 "basket": basket,
                 "minTemp": min_t,
                 "maxTemp": max_t,
                 "maxDeviation": max_dev,
+                "withinSpec": within_spec,
                 "status": status,
                 "mock": hw.is_mock_mode(),
             },
@@ -593,6 +699,7 @@ def abort_temp_validation(basket: int) -> Dict[str, Any]:
                 "state": "ABORTED",
                 "status": "ABORTED",
                 "passed": False,
+                "ready": False,
                 "endedAt": _now_iso(),
                 "error": "aborted by operator",
             })
@@ -607,6 +714,7 @@ def abort_temp_validation(basket: int) -> Dict[str, Any]:
                 "maxTemp": sess.get("maxTemp"),
                 "maxDeviation": sess.get("maxDeviation"),
                 "requiredDeviation": TEMP_DEVIATION_LIMIT,
+                "withinSpec": sess.get("withinSpec"),
                 "beaker": basket,
                 "basket": basket,
                 "operatorName": sess.get("operatorName"),
@@ -651,7 +759,13 @@ def _stroke_run_from_payload(stroke: Dict[str, Any], basket: int) -> Dict[str, A
     spm = s.get("strokesPerMin")
     if spm is None:
         spm = pulses
-    return {
+    within_spec = s.get("withinSpec")
+    if within_spec is None and spm is not None and str(status).upper() == "COMPLETE":
+        try:
+            within_spec = STROKE_MIN <= float(spm) <= STROKE_MAX
+        except (TypeError, ValueError):
+            within_spec = None
+    run = {
         "validationSubtype": "stroke",
         "usp": "Stroke",
         "status": status,
@@ -662,6 +776,7 @@ def _stroke_run_from_payload(stroke: Dict[str, Any], basket: int) -> Dict[str, A
         "requiredRange": s.get("requiredRange") or f"{STROKE_MIN}-{STROKE_MAX}",
         "requiredMin": s.get("requiredMin", STROKE_MIN),
         "requiredMax": s.get("requiredMax", STROKE_MAX),
+        "withinSpec": within_spec,
         "durationSec": s.get("durationSec") or STROKE_DURATION_SEC,
         "beaker": basket,
         "basket": basket,
@@ -671,19 +786,32 @@ def _stroke_run_from_payload(stroke: Dict[str, Any], basket: int) -> Dict[str, A
         "testStartTime": s.get("testStartTime") or s.get("startedAt"),
         "testEndTime": s.get("testEndTime") or s.get("endedAt") or s.get("completedAt"),
     }
+    for pf_key in ("approvalPassFail", "operatorPassFail"):
+        if s.get(pf_key):
+            run[pf_key] = str(s.get(pf_key)).strip().upper()
+    return run
 
 
 def _temp_run_from_payload(temp: Dict[str, Any], basket: int) -> Dict[str, Any]:
     t = dict(temp or {})
-    return {
+    status = t.get("status") or "FAILED"
+    max_dev = t.get("maxDeviation")
+    within_spec = t.get("withinSpec")
+    if within_spec is None and max_dev is not None and str(status).upper() == "COMPLETE":
+        try:
+            within_spec = float(max_dev) <= TEMP_DEVIATION_LIMIT
+        except (TypeError, ValueError):
+            within_spec = None
+    run = {
         "validationSubtype": "temp",
         "usp": "Temperature",
-        "status": t.get("status") or "FAILED",
+        "status": status,
         "setTemperature": t.get("setTemperature"),
         "minTemp": t.get("minTemp"),
         "maxTemp": t.get("maxTemp"),
-        "maxDeviation": t.get("maxDeviation"),
+        "maxDeviation": max_dev,
         "requiredDeviation": t.get("requiredDeviation", TEMP_DEVIATION_LIMIT),
+        "withinSpec": within_spec,
         "beaker": basket,
         "basket": basket,
         "error": t.get("error"),
@@ -692,6 +820,10 @@ def _temp_run_from_payload(temp: Dict[str, Any], basket: int) -> Dict[str, Any]:
         "testStartTime": t.get("testStartTime") or t.get("holdStartedAt") or t.get("startedAt"),
         "testEndTime": t.get("testEndTime") or t.get("endedAt") or t.get("completedAt"),
     }
+    for pf_key in ("approvalPassFail", "operatorPassFail"):
+        if t.get(pf_key):
+            run[pf_key] = str(t.get(pf_key)).strip().upper()
+    return run
 
 
 def build_combined_validation_report(
@@ -701,10 +833,12 @@ def build_combined_validation_report(
     temp_payload: Optional[Dict[str, Any]] = None,
     pending_due: Optional[Dict[str, Any]] = None,
     operator: Optional[Dict[str, Any]] = None,
+    operator_validation_pass_fail: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build one pending validation report with stroke + temp runs.
     Consumes completed temp session report when temp_payload is omitted.
+    Overall status is COMPLETE until approval (not auto PASSED/FAILED).
     """
     basket = int(basket)
     stroke_src = dict(stroke_payload or {})
@@ -721,9 +855,25 @@ def build_combined_validation_report(
 
     stroke_run = _stroke_run_from_payload(stroke_src, basket)
     temp_run = _temp_run_from_payload(temp_src, basket)
-    stroke_pass = str(stroke_run.get("status") or "").upper() == "PASSED"
-    temp_pass = str(temp_run.get("status") or "").upper() == "PASSED"
-    overall = "PASSED" if (stroke_pass and temp_pass) else "FAILED"
+
+    stroke_st = str(stroke_run.get("status") or "").upper()
+    temp_st = str(temp_run.get("status") or "").upper()
+    if stroke_st == "ABORTED" or temp_st == "ABORTED":
+        overall = "ABORTED"
+    else:
+        overall = "COMPLETE"
+
+    op_pf = str(operator_validation_pass_fail or "").strip().upper()
+    if op_pf not in ("PASS", "FAIL"):
+        op_pf = str(
+            stroke_src.get("operatorValidationPassFail")
+            or temp_src.get("operatorValidationPassFail")
+            or ""
+        ).strip().upper()
+    if op_pf in ("PASS", "FAIL"):
+        # Provisional operator outcome applied to both runs until reviewer approval
+        stroke_run["operatorPassFail"] = op_pf
+        temp_run["operatorPassFail"] = op_pf
 
     op = operator or {}
     op_name = (
@@ -778,6 +928,8 @@ def build_combined_validation_report(
         "testStartTime": stroke_run.get("testStartTime"),
         "testEndTime": temp_run.get("testEndTime") or stroke_run.get("testEndTime"),
     }
+    if op_pf in ("PASS", "FAIL"):
+        report["operatorValidationPassFail"] = op_pf
     return report
 
 
@@ -803,11 +955,8 @@ def build_aborted_combined_validation_report(
         temp_src = consume_report("temp", basket) or {}
 
     phase_l = str(phase or "").strip().lower()
-    stroke_done = bool(stroke_src) and str(stroke_src.get("status") or "").upper() in (
-        "PASSED",
-        "FAILED",
-        "ABORTED",
-    )
+    _finished = ("PASSED", "FAILED", "ABORTED", "COMPLETE")
+    stroke_done = bool(stroke_src) and str(stroke_src.get("status") or "").upper() in _finished
     # Mid-stroke abort: force aborted stroke run even if session snapshot is partial
     if not stroke_src or phase_l == "stroke" or (
         phase_l in ("", "stroke") and not stroke_done
@@ -818,14 +967,14 @@ def build_aborted_combined_validation_report(
         stroke_src["status"] = "ABORTED"
         stroke_src["aborted"] = True
         stroke_src.setdefault("error", "aborted by operator")
-    elif str(stroke_src.get("status") or "").upper() not in ("PASSED", "FAILED", "ABORTED"):
+    elif str(stroke_src.get("status") or "").upper() not in _finished:
         stroke_src = dict(stroke_src)
         stroke_src["status"] = "ABORTED"
         stroke_src["aborted"] = True
         stroke_src.setdefault("error", "aborted by operator")
 
     # Temp not started or in progress → aborted run
-    temp_finished = str(temp_src.get("status") or "").upper() in ("PASSED", "FAILED")
+    temp_finished = str(temp_src.get("status") or "").upper() in ("PASSED", "FAILED", "COMPLETE")
     if not temp_src or not temp_finished:
         temp_src = dict(temp_src or {})
         temp_src["status"] = "ABORTED"
@@ -853,7 +1002,7 @@ def build_aborted_combined_validation_report(
     runs = []
     for run in report.get("validationRuns") or []:
         r = dict(run or {})
-        if str(r.get("status") or "").upper() not in ("PASSED", "FAILED"):
+        if str(r.get("status") or "").upper() not in ("PASSED", "FAILED", "COMPLETE"):
             r["status"] = "ABORTED"
         runs.append(r)
     report["validationRuns"] = runs
