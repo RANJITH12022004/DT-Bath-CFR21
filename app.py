@@ -2706,6 +2706,14 @@ def login():
                     after={"username": user.get("username"), "role": user.get("role")},
                 )
                 return jsonify({"success": True, "user": data_service.sanitize_member_for_client(user) or user}), 200
+            _audit_event(
+                action="Login",
+                outcome="denied",
+                entity_type="session",
+                entity_name="password",
+                details="Invalid username or password for user: {}".format(username or "--"),
+                target_user=username,
+            )
             return jsonify({"error": "Invalid username or password"}), 401
 
         # Normal member: check status first
@@ -2782,6 +2790,15 @@ def login():
             except (TypeError, ValueError):
                 fa = 0
             remaining = max(0, 3 - fa)
+            _audit_event(
+                action="Login",
+                outcome="denied",
+                entity_type="session",
+                entity_name="password",
+                details="Invalid username or password for user: {} | remaining attempts: {}".format(username or "--", remaining),
+                target_user=username,
+                extra={"remainingAttempts": remaining, "failedAttempts": fa},
+            )
             # If this attempt caused the account to become locked, show lockout immediately
             if status == "locked":
                 _audit_event(action="Login", outcome="denied", entity_type="session", entity_name="password", details="Account locked after failed attempts", target_user=username)
@@ -2793,6 +2810,14 @@ def login():
                 "error": "Invalid username or password.",
                 "remainingAttempts": remaining
             }), 401
+        _audit_event(
+            action="Login",
+            outcome="denied",
+            entity_type="session",
+            entity_name="password",
+            details="Invalid username or password for user: {}".format(username or "--"),
+            target_user=username,
+        )
         return jsonify({"error": "Invalid username or password"}), 401
     except Exception as e:
         app.logger.exception("Error during login")
@@ -4302,14 +4327,17 @@ def get_report_preview(report_id):
         report = data_service.get_report(report_id)
         if not report:
             return jsonify({"error": "Report not found"}), 404
-        rtype = (report.get("type") or "").strip().lower() or "report"
-        detail = _format_report_audit_details(report_id, report)
-        _audit(
-            None,
-            None,
-            "Report opened",
-            detail if detail else "Report id {} | type {}".format(report_id, rtype),
-        )
+        # Only log intentional user opens (UI openReportPreview passes log_open=1).
+        # Approval polls, silent PDF, and export preview fetches must not spam "Report opened".
+        if str(request.args.get("log_open") or "").strip() == "1":
+            rtype = (report.get("type") or "").strip().lower() or "report"
+            detail = _format_report_audit_details(report_id, report)
+            _audit(
+                None,
+                None,
+                "Report opened",
+                detail if detail else "Report id {} | type {}".format(report_id, rtype),
+            )
         preview_data = report_service.get_report_preview_data(report)
         return jsonify({"preview": preview_data}), 200
     except Exception as e:
@@ -5372,6 +5400,8 @@ def dt_run_preheat(basket):
         batch_number=data.get("batchNumber") or data.get("batch") or "",
         recipe_id=data.get("recipeId"),
         recipe_name=data.get("recipeName") or data.get("productName") or "",
+        media=data.get("media"),
+        mesh=data.get("mesh"),
         operator_name=op["name"],
         operator_id=op["employeeId"],
         operator_username=op["username"],

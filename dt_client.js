@@ -757,8 +757,8 @@
     if (titleEl) titleEl.textContent = DT._qtFromReady ? 'Quick Test' : 'Quick Test';
     if (subEl) {
       subEl.textContent = DT._qtFromReady
-        ? 'Basket ' + basket + ' is ready. Enter product, batch, mode, media and mesh, then start the test.'
-        : 'Enter product, batch, mode, media and mesh to begin.';
+        ? 'Basket ' + basket + ' is ready. Enter product, batch and mode (media and mesh optional), then start the test.'
+        : 'Enter product, batch and mode to begin. Media and mesh are optional.';
     }
     var hint = document.getElementById('dt-qt-basket-hint');
     if (hint) {
@@ -805,7 +805,7 @@
     if (page) page.classList.toggle('is-timer-mode', mode === 'timer');
     var paramsHint = document.getElementById('dt-qt-params-hint');
     if (paramsHint) {
-      paramsHint.textContent = mode === 'timer' ? 'Batch · duration · media · mesh' : 'Batch · media · mesh';
+      paramsHint.textContent = mode === 'timer' ? 'Batch · duration · media/mesh optional' : 'Batch · media/mesh optional';
     }
   };
 
@@ -839,14 +839,8 @@
       toast('Enter a batch number', 'error');
       return;
     }
-    if (!media) {
-      toast('Enter media', 'error');
-      return;
-    }
-    if (!mesh) {
-      toast('Enter mesh', 'error');
-      return;
-    }
+    media = media || null;
+    mesh = mesh || null;
     var duration = null;
     if (mode === 'timer') {
       duration = parseHHMMSS(durStr);
@@ -861,8 +855,8 @@
     DT.fromRecipe[basket] = false;
     DT.modes[basket] = mode;
     DT.durations[basket] = duration;
-    DT.media[basket] = media;
-    DT.mesh[basket] = mesh;
+    DT.media[basket] = media || null;
+    DT.mesh[basket] = mesh || null;
     DT.configured[basket] = true;
     updateModeButtonsUI(basket);
     updateProductNames();

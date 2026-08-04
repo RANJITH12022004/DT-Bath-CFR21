@@ -1347,21 +1347,23 @@ def _resolve_print_set_temp(td: Dict[str, Any], report_data: Dict[str, Any]):
 
 
 def _disintegration_stat_pairs(stats: Any) -> list:
-    """Normalize statistics to First / Last tube-completion rows."""
+    """Normalize statistics to First / Last / Mean tube-completion rows."""
     if not isinstance(stats, dict) or not stats:
-        return [("First", "N/A"), ("Last", "N/A")]
+        return [("First", "N/A"), ("Last", "N/A"), ("Mean", "N/A")]
     def _val(row):
         if isinstance(row, dict):
             return row.get("value", "N/A")
         return row if row is not None else "N/A"
-    if "First" in stats or "Last" in stats:
+    if "First" in stats or "Last" in stats or "Mean" in stats:
         return [
             ("First", _val(stats.get("First"))),
             ("Last", _val(stats.get("Last"))),
+            ("Mean", _val(stats.get("Mean"))),
         ]
     return [
         ("First", _val(stats.get("First Tap"))),
         ("Last", _val(stats.get("Last") or stats.get("Completion"))),
+        ("Mean", _val(stats.get("Mean"))),
     ]
 
 
@@ -1400,10 +1402,26 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
     min_temp = td.get("minTemp") if td.get("minTemp") is not None else report_data.get("minTemp")
     max_temp = td.get("maxTemp") if td.get("maxTemp") is not None else report_data.get("maxTemp")
     mode_l = str(mode).lower()
-    if mode_l == "manual":
-        duration = "N/A"
-    else:
-        duration = td.get("duration") or report_data.get("duration") or "--"
+    derived = report_data.get("reportDerived") if isinstance(report_data.get("reportDerived"), dict) else {}
+    duration = (
+        td.get("duration")
+        or report_data.get("duration")
+        or derived.get("durationFormatted")
+        or "--"
+    )
+    if duration in (None, "", "--", "N/A"):
+        dur_sec = td.get("durationSeconds")
+        if dur_sec in (None, ""):
+            dur_sec = report_data.get("durationSeconds")
+        if dur_sec in (None, ""):
+            dur_sec = derived.get("durationSeconds")
+        if dur_sec not in (None, ""):
+            try:
+                from report_service import format_duration_hhmmss
+
+                duration = format_duration_hhmmss(dur_sec)
+            except Exception:
+                duration = str(dur_sec)
     status = td.get("status") or report_data.get("status") or "--"
 
     detail_pairs = [
@@ -1593,34 +1611,66 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
         )
         start_date, start_time = _split_ts_date_and_time(ts_start)
         end_date, end_time = _split_ts_date_and_time(ts_end)
-        batch_no = recipe.get("batchNumber") or td.get("batchNumber") or "N/A"
+        batch_no = (
+            derived.get("batchNumber")
+            or report_data.get("batchNumber")
+            or recipe.get("batchNumber")
+            or (td.get("batchNumber") if isinstance(td, dict) else None)
+            or report_data.get("batch1")
+            or report_data.get("batch2")
+            or (td.get("batch1") if isinstance(td, dict) else None)
+            or (td.get("batch2") if isinstance(td, dict) else None)
+            or "N/A"
+        )
         if batch_no in (None, "", "N/A"):
-            b1 = td.get("batchNumber1") or recipe.get("batchNumber1")
-            b2 = td.get("batchNumber2") or recipe.get("batchNumber2")
+            b1 = (td.get("batchNumber1") if isinstance(td, dict) else None) or recipe.get("batchNumber1")
+            b2 = (td.get("batchNumber2") if isinstance(td, dict) else None) or recipe.get("batchNumber2")
             if b1 or b2:
                 batch_no = f"D1: {b1 or '--'}" + (f" | D2: {b2}" if b2 else "")
+        product_name = (
+            derived.get("productName")
+            or report_data.get("productName")
+            or report_data.get("name")
+            or recipe.get("productName")
+            or recipe.get("name")
+            or (td.get("productName") if isinstance(td, dict) else None)
+            or (td.get("name") if isinstance(td, dict) else None)
+            or "N/A"
+        )
+        media_val = (
+            derived.get("media")
+            or report_data.get("media")
+            or recipe.get("media")
+            or (td.get("media") if isinstance(td, dict) else None)
+            or "--"
+        )
+        mesh_val = (
+            derived.get("mesh")
+            or report_data.get("mesh")
+            or recipe.get("mesh")
+            or (td.get("mesh") if isinstance(td, dict) else None)
+            or "--"
+        )
         info_basket = derived.get("basket")
         if info_basket in (None, "", "--"):
             info_basket = _resolve_print_basket(td if isinstance(td, dict) else {}, report_data if isinstance(report_data, dict) else {})
         info_set_temp = derived.get("setTemperature")
         if info_set_temp in (None, "", "--"):
             info_set_temp = _resolve_print_set_temp(td if isinstance(td, dict) else {}, report_data if isinstance(report_data, dict) else {})
-        info_duration = derived.get("durationFormatted", "--")
-        if str(derived.get("mode") or td.get("mode") or "").strip().lower() == "manual":
-            info_duration = "N/A"
         if thermal:
             info_lines = [
                 sep,
                 "TEST INFORMATION",
-                f"Product: {recipe.get('productName', td.get('productName', td.get('name', 'N/A')))}",
+                f"Product: {product_name}",
                 f"Batch No: {batch_no}",
+                f"Media: {media_val}",
+                f"Mesh: {mesh_val}",
                 f"Basket: {info_basket}",
                 f"Mode: {derived.get('mode', td.get('mode', '--'))}",
                 f"Set Temp: {info_set_temp} C",
                 f"Min Temp: {td.get('minTemp', report_data.get('minTemp', '--'))} C",
                 f"Max Temp: {td.get('maxTemp', report_data.get('maxTemp', '--'))} C",
                 f"Tubes: {derived.get('basketConfig', td.get('basketConfig', '--'))}",
-                f"Duration: {info_duration}",
                 f"Test Start Date: {start_date}",
                 f"Test Start Time: {start_time}",
                 f"Completed Date: {end_date}",
@@ -1632,15 +1682,16 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
             _append_two_column_pairs(
                 lines,
                 [
-                    ("Product", recipe.get("productName", td.get("productName", td.get("name", "N/A")))),
+                    ("Product", product_name),
                     ("Batch No", batch_no),
+                    ("Media", media_val),
+                    ("Mesh", mesh_val),
                     ("Basket", info_basket),
                     ("Mode", derived.get("mode", td.get("mode", "--"))),
                     ("Set Temp (°C)", info_set_temp),
                     ("Min Temp (°C)", td.get("minTemp", report_data.get("minTemp", "--"))),
                     ("Max Temp (°C)", td.get("maxTemp", report_data.get("maxTemp", "--"))),
                     ("Tube Count", derived.get("basketConfig", td.get("basketConfig", "--"))),
-                    ("Duration", info_duration),
                     ("Test Start Date", start_date),
                     ("Test Start Time", start_time),
                     ("Completed Date", end_date),

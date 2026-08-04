@@ -1131,28 +1131,39 @@ function unlockReportPreviewAfterServerStatus(preview, reportId, options) {
     preview = preview || {};
     var st = String(preview.reportApprovalStatus || '').trim().toLowerCase();
     if (st !== 'approved' && st !== 'aborted') return false;
-    try {
-        populateReportPreview(preview);
-    } catch (e) {}
     clearReportApprovalGate();
-    applyReportPreviewLockUi(preview);
     if (typeof _trClearTestRunCheckpoint === 'function') _trClearTestRunCheckpoint();
     if (st === 'approved') {
-        if (reportId != null) _saveReportPdfSilent(reportId);
+        // openNext owns PDF + next pending open; do not populate approved report first
+        // (that races with opening the sibling pending report).
         if (openNextDtPendingReportAfterApproval(reportId)) {
             return true;
         }
+        try {
+            populateReportPreview(preview);
+        } catch (e) {}
+        applyReportPreviewLockUi(preview);
+        if (reportId != null) _saveReportPdfSilent(reportId);
         if (options.showModal !== false) {
             showAppModal('Report has been approved. You may now print or leave this screen.', 'Report');
         }
-    } else if (options.showModal !== false) {
-        var closedMsg = isPowerInterruptionAbortPreview(preview)
-            ? 'This report was closed as Aborted (power interruption) and can no longer be approved. You may leave this screen.'
-            : 'This report was closed as Aborted and can no longer be approved. You may leave this screen.';
-        showAppModal(closedMsg, 'Report');
+    } else {
+        try {
+            populateReportPreview(preview);
+        } catch (e) {}
+        applyReportPreviewLockUi(preview);
+        if (options.showModal !== false) {
+            var closedMsg = isPowerInterruptionAbortPreview(preview)
+                ? 'This report was closed as Aborted (power interruption) and can no longer be approved. You may leave this screen.'
+                : 'This report was closed as Aborted and can no longer be approved. You may leave this screen.';
+            showAppModal(closedMsg, 'Report');
+        }
     }
     return true;
 }
+
+/** Dedupe so submit-approve and poll-unlock do not both open-next / PDF the same id. */
+var _dtPostApprovalHandledIds = {};
 
 /** After approving one dual-basket report, open the next pending approval immediately. */
 function openNextDtPendingReportAfterApproval(approvedId) {
@@ -1160,12 +1171,21 @@ function openNextDtPendingReportAfterApproval(approvedId) {
         if (typeof dtOpenNextPendingReport !== 'function') return false;
         try { return !!dtOpenNextPendingReport(); } catch (e) { return false; }
     }
-    try {
-        if (approvedId != null) _saveReportPdfSilent(approvedId);
-    } catch (e0) {}
+    if (approvedId != null) {
+        var handleKey = String(approvedId);
+        if (_dtPostApprovalHandledIds[handleKey]) return true;
+        _dtPostApprovalHandledIds[handleKey] = Date.now();
+    }
+
+    function saveApprovedPdf() {
+        if (approvedId != null) {
+            try { _saveReportPdfSilent(approvedId); } catch (e0) {}
+        }
+    }
 
     if (typeof dtHasPendingReports === 'function' && dtHasPendingReports() && tryOpen()) {
         showAppModal('Report approved. Opening the next report for approval.', 'Report');
+        saveApprovedPdf();
         return true;
     }
 
@@ -1174,15 +1194,18 @@ function openNextDtPendingReportAfterApproval(approvedId) {
         dtSyncPendingReportsFromServer(approvedId).then(function () {
             if (tryOpen()) {
                 showAppModal('Report approved. Opening the next report for approval.', 'Report');
+                saveApprovedPdf();
                 return;
             }
             showAppModal('Report approved.', 'Report');
             if (approvedId != null && typeof openReportPreview === 'function') {
                 openReportPreview(approvedId, { setGate: true });
             }
+            saveApprovedPdf();
         });
         return true;
     }
+    saveApprovedPdf();
     return false;
 }
 
@@ -3711,20 +3734,31 @@ function buildReportPreviewHtmlById(reportId) {
         var data = results[0];
         var css = results[1];
         if (!data || !data.preview) throw new Error('No preview for report ' + id);
-        // Render into the existing hidden page-report-preview DOM (not navigated to).
-        try {
-            populateReportPreview(data.preview);
-        } catch (e) {
-            // populate must not throw; we continue with whatever DOM state.
+        var preview = data.preview;
+        var a4Text = preview.a4Text;
+        // Build PDF HTML off-DOM so silent PDF never clobbers the live report preview
+        // (critical for dual-beaker: approving A must not overwrite open preview of B).
+        if (a4Text && String(a4Text).trim()) {
+            var escaped = String(a4Text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            var inner =
+                '<div id="page-report-preview" class="page active">' +
+                '<div class="report-preview-container report-print-template report-a4-preview-mode" id="report-content">' +
+                '<pre id="report-a4-text-preview" class="report-a4-text-preview" style="display:block;">' +
+                escaped +
+                '</pre></div></div>';
+            return _wrapPreviewHtmlAsDocument(inner, css);
         }
+        // Fallback (legacy / non-A4): clone live page without mutating shared preview state
         var pageEl = document.getElementById('page-report-preview');
-        var containerEl = pageEl ? pageEl.querySelector('.report-preview-container') : null;
-        var useA4Pdf = containerEl && containerEl.classList.contains('report-a4-preview-mode');
-        if (containerEl && !useA4Pdf) containerEl.classList.add('report-pdf-compact');
-        var inner = pageEl ? pageEl.outerHTML : '';
-        var doc = _wrapPreviewHtmlAsDocument(inner, css);
-        if (containerEl && !useA4Pdf) containerEl.classList.remove('report-pdf-compact');
-        return doc;
+        if (!pageEl) throw new Error('No preview DOM for report ' + id);
+        var clone = pageEl.cloneNode(true);
+        clone.id = 'page-report-preview-pdf-clone';
+        var containerEl = clone.querySelector('.report-preview-container');
+        if (containerEl) containerEl.classList.add('report-pdf-compact');
+        return _wrapPreviewHtmlAsDocument(clone.outerHTML, css);
     });
 }
 
@@ -6067,7 +6101,8 @@ function openReportPreview(reportId, options) {
         return;
     }
     options = options || {};
-    apiRequest(API_BASE + '/api/reports/' + reportId + '/preview').then(function (data) {
+    var previewUrl = API_BASE + '/api/reports/' + reportId + '/preview?log_open=1';
+    apiRequest(previewUrl).then(function (data) {
         if (data.preview) {
             currentReportId = reportId;
             currentReportData = null;
@@ -6195,8 +6230,15 @@ function _populateLegacyReportPreview(preview) {
         renderValidationDetailsInPreview(preview);
     }
 
-    setReportEl('report-product-name', recipe.productName || td.productName);
-    setReportEl('report-batch-number', recipe.batchNumber || td.batchNumber || '--');
+    var derived = preview.reportDerived || {};
+    setReportEl('report-product-name',
+        derived.productName || preview.productName || preview.name || recipe.productName || recipe.name || td.productName || td.name || '--');
+    setReportEl('report-batch-number',
+        derived.batchNumber || preview.batchNumber || recipe.batchNumber || td.batchNumber || '--');
+    setReportEl('report-media',
+        derived.media || preview.media || recipe.media || td.media || '--');
+    setReportEl('report-mesh',
+        derived.mesh || preview.mesh || recipe.mesh || td.mesh || '--');
 
     var startStr = formatReportDate(td.testStartTime || preview.createdAt);
     var endStr = formatReportDate(td.testEndTime || preview.completedAt || preview.createdAt);
@@ -6207,14 +6249,17 @@ function _populateLegacyReportPreview(preview) {
     setReportEl('report-completed-date', completedParts.date);
     setReportEl('report-completed-time', completedParts.time);
 
-    var modeL = String(preview.mode || td.mode || (preview.reportDerived && preview.reportDerived.mode) || '').trim().toLowerCase();
-    var durationSec = td.durationSeconds != null ? td.durationSeconds : preview.durationSeconds;
-    if (modeL === 'manual') {
-        setReportEl('report-test-duration', 'N/A');
-    } else {
-        setReportEl('report-test-duration', (durationSec != null && durationSec >= 0) ? (durationSec + ' s') : '--');
-    }
     setReportEl('report-test-status', td.status === 'aborted' ? 'Aborted' : 'Completed');
+    // Duration lives in TEST DETAILS (A4); keep legacy duration cell filled if present
+    var durationSec = td.durationSeconds != null ? td.durationSeconds : preview.durationSeconds;
+    var durationFmt = derived.durationFormatted || td.duration || preview.duration;
+    if (!durationFmt && durationSec != null && durationSec >= 0) {
+        var hh = Math.floor(durationSec / 3600);
+        var mm = Math.floor((durationSec % 3600) / 60);
+        var ss = durationSec % 60;
+        durationFmt = (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+    }
+    setReportEl('report-test-duration', durationFmt || '--');
 
     var tbody = document.getElementById('report-test-data-body');
     if (tbody) {
@@ -6329,24 +6374,34 @@ function _populateReportStatisticsSection(preview, td) {
         secs.sort(function (a, b) { return a - b; });
         return secs;
     }
-    var hasNew = !!(stats['First'] || stats['Last']);
+    var hasNew = !!(stats['First'] || stats['Last'] || stats['Mean']);
     var hasLegacy = !!(stats['First Tap'] || stats['Second Tap'] || stats['Completion']);
+    function meanFromSecs(secs) {
+        if (!secs.length) return 'N/A';
+        var sum = 0;
+        for (var i = 0; i < secs.length; i++) sum += secs[i];
+        return fmtSec(Math.round(sum / secs.length));
+    }
     if (hasNew) {
         bodyEl.innerHTML =
             '<tr><th>First</th><td>' + statVal('First') + '</td></tr>' +
-            '<tr><th>Last</th><td>' + statVal('Last') + '</td></tr>';
+            '<tr><th>Last</th><td>' + statVal('Last') + '</td></tr>' +
+            '<tr><th>Mean</th><td>' + (statVal('Mean') !== 'N/A' ? statVal('Mean') : meanFromSecs(tubeSecs())) + '</td></tr>';
         return;
     }
     if (hasLegacy) {
+        var secsL = tubeSecs();
         bodyEl.innerHTML =
             '<tr><th>First</th><td>' + (statVal('First Tap') !== 'N/A' ? statVal('First Tap') : statVal('First')) + '</td></tr>' +
-            '<tr><th>Last</th><td>' + (statVal('Last') !== 'N/A' ? statVal('Last') : (statVal('Completion') !== 'N/A' ? statVal('Completion') : 'N/A')) + '</td></tr>';
+            '<tr><th>Last</th><td>' + (statVal('Last') !== 'N/A' ? statVal('Last') : (statVal('Completion') !== 'N/A' ? statVal('Completion') : 'N/A')) + '</td></tr>' +
+            '<tr><th>Mean</th><td>' + (statVal('Mean') !== 'N/A' ? statVal('Mean') : meanFromSecs(secsL)) + '</td></tr>';
         return;
     }
     var secs = tubeSecs();
     bodyEl.innerHTML =
         '<tr><th>First</th><td>' + (secs.length >= 1 ? fmtSec(secs[0]) : 'N/A') + '</td></tr>' +
-        '<tr><th>Last</th><td>' + (secs.length ? fmtSec(secs[secs.length - 1]) : 'N/A') + '</td></tr>';
+        '<tr><th>Last</th><td>' + (secs.length ? fmtSec(secs[secs.length - 1]) : 'N/A') + '</td></tr>' +
+        '<tr><th>Mean</th><td>' + meanFromSecs(secs) + '</td></tr>';
 }
 
 function populateReportPreview(preview) {

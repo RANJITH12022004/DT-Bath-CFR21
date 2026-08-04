@@ -33,11 +33,14 @@ def generate_report(
     if recipe:
         # Keep speed/USP/drums on the stub — print/preview derived RPM reads these.
         # Full recipe also remains under testData.recipe from the client payload.
+        # Prefer non-null recipe fields; fall back to test_data so stubs never blank prints.
         report["recipe"] = {
             "id": recipe.get("id"),
-            "name": recipe.get("name") or recipe.get("productName"),
-            "productName": recipe.get("productName"),
-            "batchNumber": recipe.get("batchNumber"),
+            "name": recipe.get("name") or recipe.get("productName") or test_data.get("name") or test_data.get("productName"),
+            "productName": recipe.get("productName") or test_data.get("productName") or test_data.get("name"),
+            "batchNumber": recipe.get("batchNumber") or test_data.get("batchNumber"),
+            "media": recipe.get("media") if recipe.get("media") is not None else test_data.get("media"),
+            "mesh": recipe.get("mesh") if recipe.get("mesh") is not None else test_data.get("mesh"),
             "unit": recipe.get("unit"),
             "speed": recipe.get("speed"),
             "usp": recipe.get("usp"),
@@ -450,11 +453,18 @@ def build_test_report_derived(
         except (TypeError, ValueError):
             test_no = str(report_id)
 
-    mode_l = str(mode or "").strip().lower()
-    if mode_l == "manual":
-        duration_formatted = "N/A"
-    else:
-        duration_formatted = td.get("duration") or report.get("duration") or format_duration_hhmmss(duration_sec)
+    duration_formatted = td.get("duration") or report.get("duration") or format_duration_hhmmss(duration_sec)
+
+    media = (
+        report.get("media")
+        or td.get("media")
+        or recipe.get("media")
+    )
+    mesh = (
+        report.get("mesh")
+        or td.get("mesh")
+        or recipe.get("mesh")
+    )
 
     ts = _report_print_timestamp()
     return {
@@ -475,8 +485,25 @@ def build_test_report_derived(
         "durationFormatted": duration_formatted,
         "vesselTimes": td.get("vesselTimes") or report.get("vesselTimes") or {},
         "holeCompletionTimes": td.get("holeCompletionTimes") or report.get("holeCompletionTimes") or {},
-        "batchNumber": td.get("batchNumber") or report.get("batchNumber") or recipe.get("batchNumber") or td.get("batch1") or td.get("batch2"),
-        "productName": recipe.get("productName") or recipe.get("name") or td.get("productName") or report.get("productName") or td.get("name"),
+        "batchNumber": (
+            report.get("batchNumber")
+            or td.get("batchNumber")
+            or recipe.get("batchNumber")
+            or td.get("batch1")
+            or td.get("batch2")
+            or report.get("batch1")
+            or report.get("batch2")
+        ),
+        "productName": (
+            report.get("productName")
+            or report.get("name")
+            or td.get("productName")
+            or recipe.get("productName")
+            or recipe.get("name")
+            or td.get("name")
+        ),
+        "media": media,
+        "mesh": mesh,
     }
 
 
@@ -524,7 +551,7 @@ def _tap_times_seconds(test_data: Dict[str, Any]) -> list:
 def compute_test_report_statistics(test_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
     Manual-mode tube-completion statistics for disintegration reports.
-    Timer mode → no statistics. First = earliest tube time, Last = latest (test completion).
+    Timer mode → no statistics. First = earliest, Last = latest, Mean = average of tube times.
     """
     if not isinstance(test_data, dict):
         return None
@@ -545,9 +572,15 @@ def compute_test_report_statistics(test_data: Optional[Dict[str, Any]]) -> Optio
 
     first = _format_elapsed_hhmmss(times[0]) if len(times) >= 1 else "N/A"
     last = _format_elapsed_hhmmss(times[-1]) if times else "N/A"
+    if times:
+        mean_sec = int(round(sum(times) / float(len(times))))
+        mean = _format_elapsed_hhmmss(mean_sec)
+    else:
+        mean = "N/A"
     return {
         "First": {"value": first},
         "Last": {"value": last},
+        "Mean": {"value": mean},
     }
 
 
@@ -590,7 +623,13 @@ def enrich_report_context(report_data: Dict[str, Any]) -> Dict[str, Any]:
             td_remarks = td.get("remarks")
             if td_remarks not in (None, "") and not report_data.get("remarks"):
                 report_data["remarks"] = td_remarks
-        computed = compute_test_report_statistics(td if isinstance(td, dict) else None)
+        # Prefer nested testData but merge top-level tube/elapsed fields when sparse
+        stats_src = dict(td) if isinstance(td, dict) else {}
+        if stats_src is not report_data:
+            for k in ("mode", "basketConfig", "holeCompletionTimes", "vesselTimes", "durationSeconds"):
+                if not stats_src.get(k) and report_data.get(k) not in (None, ""):
+                    stats_src[k] = report_data.get(k)
+        computed = compute_test_report_statistics(stats_src if stats_src else None)
         if computed:
             report_data["statistics"] = computed
             if isinstance(report_data.get("testData"), dict):
@@ -916,6 +955,33 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
         preview["basket"] = preview["reportDerived"].get("basket")
         preview["beaker"] = preview["reportDerived"].get("beaker")
         preview["mode"] = preview["reportDerived"].get("mode") or preview.get("mode")
+        preview["productName"] = preview["reportDerived"].get("productName") or report.get("productName") or report.get("name")
+        preview["batchNumber"] = preview["reportDerived"].get("batchNumber") or report.get("batchNumber")
+        preview["media"] = preview["reportDerived"].get("media") if preview["reportDerived"].get("media") is not None else report.get("media")
+        preview["mesh"] = preview["reportDerived"].get("mesh") if preview["reportDerived"].get("mesh") is not None else report.get("mesh")
+        preview["durationSeconds"] = preview["reportDerived"].get("durationSeconds")
+        if preview["durationSeconds"] in (None, ""):
+            preview["durationSeconds"] = report.get("durationSeconds")
+            if preview["durationSeconds"] in (None, "") and isinstance(td, dict):
+                preview["durationSeconds"] = td.get("durationSeconds")
+        preview["duration"] = preview["reportDerived"].get("durationFormatted") or report.get("duration")
+        # Ensure statistics reflect top-level tube times when nested testData is sparse
+        def _stat_blank(st):
+            if not isinstance(st, dict) or not st:
+                return True
+            first = st.get("First")
+            val = first.get("value") if isinstance(first, dict) else first
+            return val in (None, "", "N/A", "--")
+        if str(preview.get("mode") or "").strip().lower() != "timer" and _stat_blank(preview.get("statistics")):
+            stats_src = dict(td) if isinstance(td, dict) else {}
+            for k in ("mode", "basketConfig", "holeCompletionTimes", "vesselTimes", "durationSeconds"):
+                if not stats_src.get(k) and report.get(k) not in (None, ""):
+                    stats_src[k] = report.get(k)
+            if preview.get("mode") and not stats_src.get("mode"):
+                stats_src["mode"] = preview.get("mode")
+            recomputed = compute_test_report_statistics(stats_src)
+            if recomputed:
+                preview["statistics"] = recomputed
     if report.get("type") == "validation":
         preview["validationSubtype"] = report.get("validationSubtype")
         preview["usp"] = report.get("usp")

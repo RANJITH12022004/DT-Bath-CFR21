@@ -67,6 +67,8 @@ def _empty_run(basket: int) -> Dict[str, Any]:
         "basketConfig": 6,
         "productName": "",
         "batchNumber": "",
+        "media": None,
+        "mesh": None,
         "recipeId": None,
         "recipeName": "",
         "preheatStartedAt": None,
@@ -175,6 +177,8 @@ def start_preheat(
     batch_number: str = "",
     recipe_id=None,
     recipe_name: str = "",
+    media: Optional[str] = None,
+    mesh: Optional[str] = None,
     operator_name: str = "",
     operator_id: str = "",
     operator_username: str = "",
@@ -221,6 +225,13 @@ def start_preheat(
     if not hw_result.get("ok"):
         return {"ok": False, "error": hw_result.get("error") or "preheat failed", "hardware": hw_result}
 
+    media_val = str(media).strip() if media is not None else None
+    if media_val == "":
+        media_val = None
+    mesh_val = str(mesh).strip() if mesh is not None else None
+    if mesh_val == "":
+        mesh_val = None
+
     run = _set_state(
         basket,
         "PREHEAT",
@@ -230,6 +241,8 @@ def start_preheat(
         basketConfig=cfg,
         productName=str(product_name or ""),
         batchNumber=str(batch_number or ""),
+        media=media_val,
+        mesh=mesh_val,
         recipeId=recipe_id,
         recipeName=str(recipe_name or product_name or ""),
         preheatStartedAt=_now_iso(),
@@ -614,6 +627,10 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
     hh, mm, ss = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
     duration_str = f"{hh:02d}:{mm:02d}:{ss:02d}"
     name = run.get("recipeName") or run.get("productName") or f"Basket {basket} Test"
+    product = run.get("productName") or name
+    batch = run.get("batchNumber") or ""
+    media_val = run.get("media")
+    mesh_val = run.get("mesh")
     mean_temp = run.get("meanTemp")
     if mean_temp is None:
         temps = []
@@ -632,12 +649,23 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
         "type": "test",
         "validationSubtype": None,
         "name": name,
-        "productName": run.get("productName") or name,
+        "productName": product,
         "productName1": run.get("productName") if basket == 1 else None,
         "productName2": run.get("productName") if basket == 2 else None,
         "batch1": run.get("batchNumber") if basket == 1 else None,
         "batch2": run.get("batchNumber") if basket == 2 else None,
-        "batchNumber": run.get("batchNumber") or "",
+        "batchNumber": batch,
+        "media": media_val,
+        "mesh": mesh_val,
+        "recipe": {
+            "id": run.get("recipeId"),
+            "name": name,
+            "productName": product,
+            "batchNumber": batch,
+            "media": media_val,
+            "mesh": mesh_val,
+            "quickTest": not bool(run.get("recipeId")),
+        },
         "mode": mode,
         "setTemperature": run.get("setTemperature"),
         "setDuration": set_dur_sec,

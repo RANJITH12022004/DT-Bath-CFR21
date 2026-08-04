@@ -8,6 +8,7 @@ import json
 import pathlib
 import sqlite3
 import secrets
+import threading
 import time
 from datetime import datetime
 from typing import Optional, Dict, List, Any
@@ -20,6 +21,48 @@ _legacy_audit_log_path = None
 AUDIT_LOG_CAP = 5000
 FACTORY_USERNAME = "RLERLT"
 FACTORY_ROLE = "Factory"
+
+# Suppress identical (user, action, details) rows within this window (ms).
+# Prevents poll/PDF/double-submit spam that looks like the same timestamped event.
+_AUDIT_DEDUPE_WINDOW_MS = 2500
+_dedupe_lock = threading.Lock()
+_recent_dedupe: Dict[tuple, int] = {}
+_ts_lock = threading.Lock()
+_last_insert_timestamp_ms = 0
+
+
+def _normalize_dedupe_key(user: Optional[str], action: str, details: str) -> tuple:
+    return (
+        str(user or "").strip().lower(),
+        str(action or "").strip().lower(),
+        str(details or "").strip(),
+    )
+
+
+def _should_skip_duplicate(user: Optional[str], action: str, details: str, ts: int) -> bool:
+    key = _normalize_dedupe_key(user, action, details)
+    with _dedupe_lock:
+        prev = _recent_dedupe.get(key)
+        if prev is not None and abs(int(ts) - int(prev)) <= _AUDIT_DEDUPE_WINDOW_MS:
+            return True
+        _recent_dedupe[key] = int(ts)
+        if len(_recent_dedupe) > 800:
+            cutoff = int(ts) - 60000
+            for k in list(_recent_dedupe.keys()):
+                if _recent_dedupe[k] < cutoff:
+                    del _recent_dedupe[k]
+        return False
+
+
+def _unique_timestamp_ms(ts: int) -> int:
+    """Ensure insert timestamps are strictly increasing (RTC is often second-resolution)."""
+    global _last_insert_timestamp_ms
+    ts = int(ts)
+    with _ts_lock:
+        if ts <= _last_insert_timestamp_ms:
+            ts = _last_insert_timestamp_ms + 1
+        _last_insert_timestamp_ms = ts
+    return ts
 
 
 def _is_suppressed_actor(user: Optional[str], role: Optional[str]) -> bool:
@@ -397,6 +440,9 @@ def log_structured_event(
     if _is_suppressed_actor(user, role):
         return
     ts = int(timestamp_ms if timestamp_ms is not None else (time.time() * 1000))
+    if _should_skip_duplicate(user, action, details, ts):
+        return
+    ts = _unique_timestamp_ms(ts)
     dt_str = (date_time or "").strip() or datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     entry = {
         "id": "audit-{}-{}".format(ts, str(ts % 10000)),
