@@ -357,11 +357,10 @@
           }
           // Shared bath TR — ready every preheating basket
           if (data.type === 'TR') {
-            if (DT.running[1] && DT.btnPhase[1] === 'preheating') markBasketReady(1, 'tr');
-            if (DT.running[2] && DT.btnPhase[2] === 'preheating') markBasketReady(2, 'tr');
+            applySharedBathReadyUi('tr');
           }
           if (data.type === 'TR1' || data.type === 'TR2') {
-            markBasketReady(data.type === 'TR1' ? 1 : 2, 'tr');
+            applySharedBathReadyUi('tr');
           }
           if (data.type === 'stroke_count' && data.count != null) {
             var sc = document.getElementById('stroke-counter');
@@ -438,6 +437,73 @@
       DT.preheatInProgress[basket] = false;
     }
     syncDtNavLock();
+  }
+
+  /**
+   * Shared bath: when any beaker starts preheating, both configured beakers
+   * show Preheating (heater icons + start buttons). Does not downgrade a
+   * beaker that is already motor-running.
+   */
+  function applySharedBathPreheatUi() {
+    DT.bathHeaterOn = true;
+    DT.heaterOn[1] = true;
+    DT.heaterOn[2] = true;
+    updateHeaterIndicators();
+    [1, 2].forEach(function (b) {
+      if (!DT.configured[b]) return;
+      if (DT.btnPhase[b] === 'running') return;
+      setStartBtnPhase(b, 'preheating');
+    });
+  }
+
+  /** Shared bath TR — every preheating beaker becomes Start-ready. */
+  function applySharedBathReadyUi(reason) {
+    [1, 2].forEach(function (b) {
+      if (!DT.configured[b]) return;
+      if (DT.btnPhase[b] !== 'preheating' && !DT.preheatInProgress[b]) return;
+      if (DT.btnPhase[b] === 'running') return;
+      if (DT.running[b]) {
+        markBasketReady(b, reason || 'tr');
+      } else {
+        // UI-only mirror (no formal run yet) — still show Start
+        setStartBtnPhase(b, 'ready');
+      }
+    });
+  }
+
+  /**
+   * Stop shared-bath preheat from either beaker: abort formal PREHEAT/READY
+   * sessions on both sides and turn the bath heater off (unless a motor test
+   * is already running).
+   */
+  function stopSharedBathPreheatSessions() {
+    var tasks = [];
+    [1, 2].forEach(function (b) {
+      if (DT.btnPhase[b] === 'running') return;
+      if (DT.running[b]) {
+        tasks.push(
+          api('/api/data/dt/runs/' + b + '/stop', {
+            method: 'POST',
+            body: { aborted: true, reason: 'preheat_abort' },
+          }).then(
+            function () { finishBasketUi(b); },
+            function () { finishBasketUi(b); }
+          )
+        );
+      } else if (DT.btnPhase[b] === 'preheating' || DT.btnPhase[b] === 'ready' || DT.preheatInProgress[b]) {
+        setStartBtnPhase(b, 'idle');
+        DT.preheatInProgress[b] = false;
+        DT.heaterManual[b] = false;
+      }
+    });
+    return Promise.all(tasks).then(function () {
+      var motorRunning = DT.btnPhase[1] === 'running' || DT.btnPhase[2] === 'running';
+      if (motorRunning) {
+        updateHeaterIndicators();
+        return null;
+      }
+      return stopManualHeater(1);
+    });
   }
 
   function markBasketReady(basket, reason) {
@@ -765,31 +831,19 @@
 
     var phase = DT.btnPhase[basket] || 'idle';
 
-    // Preheat in progress → confirm stop (settings heater or formal preheat)
-    if (phase === 'preheating' || DT.preheatInProgress[basket]) {
+    // Preheat in progress → confirm stop shared bath (both beakers)
+    if (phase === 'preheating' || DT.preheatInProgress[basket] || DT.heaterManual[basket]) {
       var doAbortPreheat = function () {
-        // Settings-only heater (no formal test run) — stop via hardware PHW
-        if (DT.heaterManual[basket] && !DT.running[basket]) {
-          stopManualHeater(basket).then(function () {
-            var tEl = document.getElementById('timer' + basket);
-            if (tEl) tEl.textContent = '00:00:00';
-            toast('Preheating stopped for basket ' + basket, 'info');
-            go('home');
-          }).catch(function (e) { toast(e.message || 'Failed to stop preheating', 'error'); });
-          return;
-        }
-        api('/api/data/dt/runs/' + basket + '/stop', {
-          method: 'POST',
-          body: { aborted: true, reason: 'preheat_abort' },
-        }).then(function () {
-          finishBasketUi(basket);
+        stopSharedBathPreheatSessions().then(function () {
           var tEl = document.getElementById('timer' + basket);
           if (tEl) tEl.textContent = '00:00:00';
-          toast('Preheating stopped for basket ' + basket, 'info');
+          toast('Bath preheating stopped', 'info');
           go('home');
-        }).catch(function (e) { toast(e.message || 'Failed to stop preheating', 'error'); });
+        }).catch(function (e) {
+          toast(e.message || 'Failed to stop preheating', 'error');
+        });
       };
-      var preheatMsg = 'Do you want to stop preheating?';
+      var preheatMsg = 'Do you want to stop bath preheating? (both beakers)';
       if (typeof showYesNoModal === 'function') {
         showYesNoModal(preheatMsg, 'Stop Preheat', 'Yes', 'No').then(function (ok) {
           if (ok) doAbortPreheat();
@@ -1077,6 +1131,7 @@
     var mode = (document.getElementById('dt-recipe-mode') || {}).value || 'manual';
     var media = ((document.getElementById('dt-recipe-media') || {}).value || '').trim();
     var mesh = ((document.getElementById('dt-recipe-mesh') || {}).value || '').trim();
+    var editId = window.currentEditingRecipeId != null ? window.currentEditingRecipeId : null;
     var body = {
       name: name,
       productName: name,
@@ -1086,21 +1141,28 @@
       media: media || null,
       mesh: mesh || null,
     };
+    if (editId != null) body.id = editId;
     if (mode === 'timer') {
       var durStr = ((document.getElementById('dt-recipe-duration') || {}).value || '').trim();
       body.setDuration = durStr;
       body.duration = parseHHMMSS(durStr);
+      if (!(body.duration > 0) && !durStr) {
+        toast('Duration required (HH:MM:SS)', 'error');
+        return;
+      }
     }
     if (!name) { toast('Recipe name required', 'error'); return; }
     if (isNaN(temp) || temp < 20 || temp > 55) { toast('Temperature must be 20–55°C', 'error'); return; }
-    if (mode === 'timer' && !(body.duration > 0)) { toast('Duration required (HH:MM:SS)', 'error'); return; }
 
     function doSave(token) {
       var headers = {};
       if (token) headers['X-Approval-Verify-Token'] = token;
       _dtSaveRecipeInFlight = true;
-      return api('/api/data/recipes', { method: 'POST', body: body, headers: headers }).then(function () {
-        toast('Recipe saved', 'success');
+      var url = editId != null ? ('/api/data/recipes/' + editId) : '/api/data/recipes';
+      var method = editId != null ? 'PUT' : 'POST';
+      return api(url, { method: method, body: body, headers: headers }).then(function () {
+        toast(editId != null ? 'Recipe updated' : 'Recipe saved', 'success');
+        window.currentEditingRecipeId = null;
         // goToPage already schedules loadManageRecipes — calling it again raced and showed duplicates.
         go('manage-recipes');
       }).then(function () {
@@ -1115,7 +1177,6 @@
       ? _approvalVerifyModalOptionsForRecipe()
       : { purpose: 'recipe', titleText: 'Recipe approval required', subtitleText: 'Enter credentials for a user with Recipe approval permission.' };
     if (typeof openApprovalVerifyModal === 'function') {
-      _dtSaveRecipeInFlight = true;
       openApprovalVerifyModal(opts).then(function (token) {
         if (!token) {
           _dtSaveRecipeInFlight = false;
@@ -1357,7 +1418,8 @@
     syncDtNavLock();
     DT._runParams = DT._runParams || {};
     DT._runParams[basket] = params;
-    setStartBtnPhase(basket, 'preheating');
+    // Shared bath — both configured beakers look preheating immediately
+    applySharedBathPreheatUi();
     // Stay on dashboard test screen (Dt_Dr_Reddy behavior)
     go('home');
     updateProductNames();
@@ -1376,17 +1438,26 @@
         mesh: params.mesh,
       },
     }).then(function (res) {
-      toast('Preheating basket ' + basket + '…', 'info');
-      DT.heaterOn[basket] = true;
+      toast('Bath preheating (both beakers)…', 'info');
+      DT.heaterOn[1] = true;
+      DT.heaterOn[2] = true;
       DT.bathHeaterOn = true;
       DT.heaterManual[basket] = false;
-      updateHeaterIndicators();
+      applySharedBathPreheatUi();
       startRunPoll(basket);
     }).catch(function (e) {
       DT.running[basket] = false;
-      DT.heaterOn[basket] = false;
       DT.heaterManual[basket] = false;
-      setStartBtnPhase(basket, 'idle');
+      // Clear shared preheat look if nothing else owns heat
+      if (!DT.running[1] && !DT.running[2]) {
+        DT.bathHeaterOn = false;
+        DT.heaterOn[1] = false;
+        DT.heaterOn[2] = false;
+        if (DT.btnPhase[1] !== 'running') setStartBtnPhase(1, 'idle');
+        if (DT.btnPhase[2] !== 'running') setStartBtnPhase(2, 'idle');
+      } else {
+        setStartBtnPhase(basket, 'idle');
+      }
       updateHeaterIndicators();
       if (handleBathError(e)) return;
       toast(e.message || 'Preheat failed', 'error');
@@ -2982,12 +3053,7 @@
         if (turningOn) {
           DT.heaterManual[1] = true;
           DT.heaterManual[2] = true;
-          [1, 2].forEach(function (b) {
-            if (DT.configured[b] && !DT.running[b] &&
-                DT.btnPhase[b] !== 'running' && DT.btnPhase[b] !== 'ready') {
-              setStartBtnPhase(b, 'preheating');
-            }
-          });
+          applySharedBathPreheatUi();
         } else {
           DT.heaterManual[1] = false;
           DT.heaterManual[2] = false;

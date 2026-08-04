@@ -4551,14 +4551,79 @@ function saveEditedMember() {
     var roleHidden = document.getElementById('selected-role');
     var role = roleHidden && roleHidden.value ? roleHidden.value : 'User';
     var isSelf = typeof _isEditingOwnMemberProfile === 'function' && _isEditingOwnMemberProfile(memberId);
+    var pwdEl = document.getElementById('add-password');
+    var confirmPwdEl = document.getElementById('add-confirm-password');
+    var currentPwdEl = document.getElementById('add-current-password');
+    var newPassword = pwdEl && pwdEl.value ? String(pwdEl.value) : '';
+    var confirmPassword = confirmPwdEl && confirmPwdEl.value ? String(confirmPwdEl.value) : '';
+    var currentPassword = currentPwdEl && currentPwdEl.value ? String(currentPwdEl.value) : '';
+    var wantsPasswordChange = !!(newPassword || confirmPassword);
+
+    if (wantsPasswordChange) {
+        if (!newPassword || !confirmPassword) {
+            showAppModal('Enter the new password and confirmation, or leave both blank to keep the current password.', modalTitle);
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            showAppModal('New Password and Confirm New Password do not match.', modalTitle);
+            return;
+        }
+        var passwordError = getStrongPasswordError(newPassword);
+        if (passwordError) {
+            showAppModal(passwordError, modalTitle);
+            return;
+        }
+        if (isSelf && !currentPassword) {
+            showAppModal('Enter your current password to set a new password.', modalTitle);
+            return;
+        }
+        if (isSelf && currentPassword === newPassword) {
+            showAppModal('New password must be different from your current password.', modalTitle);
+            return;
+        }
+    }
+
+    // Self-edit: name/role/permissions are locked — only password can change here.
+    if (isSelf && !wantsPasswordChange) {
+        showAppModal('No changes to save. Enter a new password (and your current password) to update it.', modalTitle);
+        return;
+    }
+
+    var finishOk = function () {
+        editingMemberId = null;
+        if (typeof _clearAddMemberForm === 'function') _clearAddMemberForm();
+        loadMembersAndRender();
+        showAppModal(
+            wantsPasswordChange
+                ? (isSelf ? 'Password updated successfully.' : 'Profile and password updated successfully.')
+                : 'Profile updated successfully.',
+            modalTitle
+        );
+        goToPage('manage-members');
+    };
+
+    // Self: password only via change-password API (requires current password).
+    if (isSelf && wantsPasswordChange) {
+        apiRequest(API_BASE + '/api/data/auth/change-password', {
+            method: 'POST',
+            body: { oldPassword: currentPassword, newPassword: newPassword },
+        }).then(function (res) {
+            if (res && res.ok === false) {
+                throw new Error((res && res.error) ? String(res.error) : 'Password change failed');
+            }
+            finishOk();
+        }).catch(function (err) {
+            showAppModal('Failed to update password: ' + (err && err.message ? err.message : 'Unknown error'), modalTitle);
+        });
+        return;
+    }
+
     apiRequest(API_BASE + '/api/data/members/' + memberId, { method: 'GET' })
         .then(function (data) {
             var member = (data && data.member) ? data.member : null;
             if (!member) throw new Error('Member not found');
-            // Identity (name / username) is immutable after create — Hardness-Cfr.
-            // Password only via Change Password / password reset page.
-            if (!isSelf) member.role = role;
-            if (!isSelf && _addMemberPermissionsPanelShouldShow()) {
+            member.role = role;
+            if (_addMemberPermissionsPanelShouldShow()) {
                 var overrides = _addMemberFeatureOverrides || { allow: [], deny: [] };
                 var allowList = (overrides.allow || []).slice();
                 if (allowList.length < 1) {
@@ -4571,15 +4636,14 @@ function saveEditedMember() {
                 }
                 member.featureOverrides = { allow: allowList, deny: [] };
             }
+            if (wantsPasswordChange) {
+                member.password = newPassword;
+            } else {
+                delete member.password;
+            }
             return apiRequest(API_BASE + '/api/data/members/' + memberId, { method: 'PUT', body: member });
         })
-        .then(function () {
-            editingMemberId = null;
-            if (typeof _clearAddMemberForm === 'function') _clearAddMemberForm();
-            loadMembersAndRender();
-            showAppModal('Profile updated successfully.', modalTitle);
-            goToPage('manage-members');
-        })
+        .then(finishOk)
         .catch(function (err) {
             if (err && err.message === 'permissions') return;
             showAppModal('Failed to update profile: ' + (err && err.message ? err.message : 'Unknown error'), modalTitle);
@@ -8030,34 +8094,42 @@ function loadRecipeForEdit() {
     apiRequest(API_BASE + '/api/data/recipes/' + id).then(function (data) {
         var r = data.recipe || data;
         if (!r) return;
-        var nameEl = document.getElementById('recipe-product-name');
-        if (nameEl) nameEl.value = r.productName || r.name || '';
-        var modeRaw = String(r.uspMode || r.usp || 'USP').toUpperCase();
-        var mode = modeRaw.indexOf('CUSTOM') >= 0 ? 'CUSTOM' : 'USP';
-        var modeRadio = document.querySelector('input[name="create-usp-mode"][value="' + mode + '"]');
-        if (modeRadio) modeRadio.checked = true;
-        var drumCount = parseInt(r.drumCount, 10) === 1 ? 1 : 2;
-        var drumRadio = document.querySelector('input[name="recipe-drum-count"][value="' + drumCount + '"]');
-        if (drumRadio) drumRadio.checked = true;
-        if (mode === 'CUSTOM') {
-            var comp = String(r.customCompletionMode || 'COUNT').toUpperCase();
-            var compRadio = document.querySelector('input[name="recipe-custom-completion"][value="' + comp + '"]');
-            if (compRadio) compRadio.checked = true;
+
+        // DT create-recipe form
+        var dtName = document.getElementById('dt-recipe-name');
+        var dtTemp = document.getElementById('dt-recipe-temp');
+        var dtMedia = document.getElementById('dt-recipe-media');
+        var dtMesh = document.getElementById('dt-recipe-mesh');
+        var dtDur = document.getElementById('dt-recipe-duration');
+        var dtMode = String(r.mode || 'manual').trim().toLowerCase() === 'timer' ? 'timer' : 'manual';
+        if (dtName) dtName.value = r.productName || r.name || '';
+        if (dtTemp) {
+            var t = r.temp != null ? r.temp : r.setTemperature;
+            dtTemp.value = t != null && t !== '' ? String(t) : '37.0';
         }
-        applyRecipeModeToFields();
-        var speedEl = document.getElementById('recipe-speed');
-        var timeEl = document.getElementById('recipe-time');
-        var countEl = document.getElementById('recipe-tablet-count');
-        if (speedEl && r.speed != null && r.speed !== '') speedEl.value = String(r.speed);
-        if (timeEl) {
-            if (r.timeSeconds != null && r.timeSeconds !== '') {
-                timeEl.value = formatSecondsToMmSs(parseInt(r.timeSeconds, 10));
-            } else if (r.timeMinutes) {
-                timeEl.value = r.timeMinutes;
+        if (dtMedia) dtMedia.value = r.media != null ? String(r.media) : '';
+        if (dtMesh) dtMesh.value = r.mesh != null ? String(r.mesh) : '';
+        if (dtDur) {
+            if (r.setDuration) dtDur.value = String(r.setDuration);
+            else if (r.duration != null && !isNaN(parseFloat(r.duration))) {
+                var mins = parseFloat(r.duration);
+                var totalSec = Math.max(0, Math.round(mins * 60));
+                var hh = Math.floor(totalSec / 3600);
+                var mm = Math.floor((totalSec % 3600) / 60);
+                var ss = totalSec % 60;
+                dtDur.value =
+                    (hh < 10 ? '0' : '') + hh + ':' +
+                    (mm < 10 ? '0' : '') + mm + ':' +
+                    (ss < 10 ? '0' : '') + ss;
+            } else {
+                dtDur.value = '00:30:00';
             }
         }
-        if (countEl && r.tabletCount != null && r.tabletCount !== '') countEl.value = String(r.tabletCount);
-        if (mode === 'CUSTOM') applyRecipeModeToFields();
+        if (typeof dtSelectRecipeMode === 'function') dtSelectRecipeMode(dtMode);
+        else {
+            var modeEl = document.getElementById('dt-recipe-mode');
+            if (modeEl) modeEl.value = dtMode;
+        }
     }).catch(function () {});
 }
 
@@ -9769,6 +9841,10 @@ function _setAddMemberPageMode(isEdit, isSelfEdit) {
     var confirmPwdLabel = document.getElementById('add-confirm-password-label');
     var pwdEl = document.getElementById('add-password');
     var confirmPwdEl = document.getElementById('add-confirm-password');
+    var currentPwdGroup = document.getElementById('add-current-password-group');
+    var currentPwdEl = document.getElementById('add-current-password');
+    var pwdGroup = document.getElementById('add-password-group');
+    var confirmPwdGroup = document.getElementById('add-confirm-password-group');
     var roleContainer = document.querySelector('#page-add-member .role-selection-container');
     var headerTitle = document.getElementById('header-title');
     if (titleEl) titleEl.textContent = isEdit ? 'Edit Profile' : 'Add New Member';
@@ -9792,15 +9868,25 @@ function _setAddMemberPageMode(isEdit, isSelfEdit) {
             el.setAttribute('onfocus', "if(typeof openOSKForInput === 'function') openOSKForInput(this)");
         }
     });
-    // Password only via Change Password page — hide on edit.
-    [pwdEl, confirmPwdEl].forEach(function (el) {
-        if (!el) return;
-        var group = el.closest ? el.closest('.form-group') : null;
-        if (group) group.style.display = isEdit ? 'none' : '';
-        el.value = '';
-    });
-    if (pwdLabel) pwdLabel.textContent = 'Password';
-    if (confirmPwdLabel) confirmPwdLabel.textContent = 'Confirm Password';
+    // Password: required on create; optional on edit (leave blank to keep current).
+    if (pwdGroup) pwdGroup.style.display = '';
+    if (confirmPwdGroup) confirmPwdGroup.style.display = '';
+    if (pwdEl) {
+        pwdEl.value = '';
+        pwdEl.placeholder = isEdit ? 'Leave blank to keep current password' : 'Enter password';
+    }
+    if (confirmPwdEl) {
+        confirmPwdEl.value = '';
+        confirmPwdEl.placeholder = isEdit ? 'Confirm new password' : 'Confirm password';
+    }
+    if (pwdLabel) pwdLabel.textContent = isEdit ? 'New Password (optional)' : 'Password';
+    if (confirmPwdLabel) confirmPwdLabel.textContent = isEdit ? 'Confirm New Password' : 'Confirm Password';
+    // Self-edit: current password required only when setting a new one.
+    if (currentPwdGroup) currentPwdGroup.style.display = (isEdit && isSelfEdit) ? '' : 'none';
+    if (currentPwdEl) {
+        currentPwdEl.value = '';
+        currentPwdEl.placeholder = 'Required only when changing password';
+    }
     if (roleContainer) roleContainer.style.display = isSelfEdit ? 'none' : '';
     if (isSelfEdit) {
         var panel = document.getElementById('add-member-permissions-panel');
@@ -9830,7 +9916,7 @@ function openEditMember(id) {
             }
             editingMemberId = member.id;
             var isSelf = _isEditingOwnMemberProfile(member.id);
-            ['add-password', 'add-confirm-password'].forEach(function (fid) {
+            ['add-password', 'add-confirm-password', 'add-current-password'].forEach(function (fid) {
                 var el = document.getElementById(fid);
                 if (el) el.value = '';
             });
@@ -9924,7 +10010,7 @@ function setAllPermissionOverrides() {
 
 function _clearAddMemberForm() {
     editingMemberId = null;
-    ['add-fullname', 'add-userid', 'add-password', 'add-confirm-password'].forEach(function (id) {
+    ['add-fullname', 'add-userid', 'add-password', 'add-confirm-password', 'add-current-password'].forEach(function (id) {
         var el = document.getElementById(id);
         if (el) el.value = '';
     });
@@ -9942,6 +10028,8 @@ function _clearAddMemberForm() {
         var group = el.closest ? el.closest('.form-group') : null;
         if (group) group.style.display = '';
     });
+    var currentPwdGroup = document.getElementById('add-current-password-group');
+    if (currentPwdGroup) currentPwdGroup.style.display = 'none';
     if (typeof selectRole === 'function') selectRole('User');
     _addMemberFeatureOverrides = { allow: [], deny: [] };
     _setAddMemberPageMode(false, false);

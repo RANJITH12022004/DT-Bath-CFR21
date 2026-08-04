@@ -68,12 +68,9 @@ def disable_recipe(recipe_id: int, disabled_by: str = "--", disabled_by_username
 
 
 def enable_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
-    fn = getattr(data_service, "enable_disabled_recipe", None) or getattr(data_service, "enable_recipe", None)
+    fn = getattr(data_service, "enable_recipe", None)
     if callable(fn):
-        try:
-            return fn(recipe_id)
-        except TypeError:
-            return fn(recipe_id)
+        return fn(recipe_id)
 
     try:
         recipe = data_service.get_recipe(recipe_id)

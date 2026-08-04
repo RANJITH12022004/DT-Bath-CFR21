@@ -2902,11 +2902,22 @@ def update_member(member_id):
         if not is_self and data_service.has_non_empty_feature_overrides(member_data) and not _can_assign_feature_overrides():
             return jsonify({"error": "Forbidden. You do not have permission to assign permission cards."}), 403
         member_data["id"] = member_id
+        # Empty password means "keep current" — never wipe credentials by accident.
+        if "password" in member_data and not str(member_data.get("password") or "").strip():
+            member_data.pop("password", None)
         cur = data_service.get_current_user() or {}
         acting_id = cur.get("id")
         old_password = str((before_member or {}).get("password") or "")
         new_password = str(member_data.get("password") or "")
         password_changed = "password" in member_data and new_password not in ("", old_password)
+        if password_changed:
+            if is_self:
+                return jsonify({
+                    "error": "Use Change Password (current password required) to update your password.",
+                }), 400
+            pwd_err = _password_strength_error(new_password)
+            if pwd_err:
+                return jsonify({"error": pwd_err}), 400
         data_service.save_member(member_data, acting_user_id=acting_id)
         updated = data_service.get_member(member_id) or dict(member_data)
         sig = {

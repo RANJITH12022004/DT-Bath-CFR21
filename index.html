@@ -2086,16 +2086,25 @@
                                     placeholder="Enter User ID / Employee ID"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="add-current-password-group" style="display:none;">
+                                <label id="add-current-password-label">Current Password</label>
+                                <input type="password" id="add-current-password" class="input-field add-member-input"
+                                    placeholder="Enter current password"
+                                    autocomplete="current-password"
+                                    onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
+                            </div>
+                            <div class="form-group" id="add-password-group">
                                 <label id="add-password-label">Password</label>
                                 <input type="password" id="add-password" class="input-field add-member-input"
                                     placeholder="Enter password"
+                                    autocomplete="new-password"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="add-confirm-password-group">
                                 <label id="add-confirm-password-label">Confirm Password</label>
                                 <input type="password" id="add-confirm-password" class="input-field add-member-input"
                                     placeholder="Confirm password"
+                                    autocomplete="new-password"
                                     onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                             </div>
                         </div>
@@ -2508,8 +2517,8 @@
     <script src="/keyboard.js?v=6"></script>
     <script src="/input-focus.js?v=2"></script>
     <script src="/rbac.js?v=12"></script>
-    <script src="/script.js?v=128"></script>
-    <script src="/dt_client.js?v=44"></script>
+    <script src="/script.js?v=130"></script>
+    <script src="/dt_client.js?v=46"></script>
 </body>
 
 </html>

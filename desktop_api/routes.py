@@ -197,7 +197,7 @@ def create_blueprint(kiosk):
     def desktop_auth_login():
         try:
             credentials = request.get_json(force=True, silent=True) or {}
-            username = str(credentials.get("username") or "").strip()
+            username = " ".join(str(credentials.get("username") or "").split())
             password = credentials.get("password") if isinstance(credentials.get("password"), str) else str(credentials.get("password") or "")
             if not username:
                 return jsonify({"error": "Username is required."}), 400
@@ -208,6 +208,15 @@ def create_blueprint(kiosk):
                     return jsonify({"error": "Account disabled by admin."}), 403
             user = data_service.authenticate_user(username, password)
             if not user:
+                try:
+                    members = data_service.list_members() or []
+                except Exception:
+                    members = []
+                if not members:
+                    return jsonify({
+                        "error": "No member accounts are configured on this machine (members list is empty). Factory login still works; restore members or create users on the kiosk.",
+                        "membersEmpty": True,
+                    }), 401
                 body = {"error": "Invalid username or password."}
                 return jsonify(body), 401
             if username.upper() != data_service.FACTORY_USERNAME.upper():
@@ -315,13 +324,6 @@ def create_blueprint(kiosk):
                     "error": "No PDF files could be added to the ZIP. Reports must be approved or aborted before download.",
                     "skipped": skipped,
                 }), 400
-            if audit_log:
-                audit_log(
-                    user.get("username") or user.get("name"),
-                    user.get("role"),
-                    "Reports downloaded",
-                    "{} report PDF(s) | skipped {}".format(added, skipped),
-                )
             return _send_temp(tmp, "reports-download.zip", "application/zip")
         except Exception:
             try:

@@ -18,12 +18,19 @@ def init():
 
 
 def _parse_duration_minutes(recipe_data: Dict[str, Any]) -> Optional[float]:
-    """Accept duration as minutes (number) or MM:SS string."""
-    if "duration" in recipe_data and recipe_data.get("duration") is not None:
-        d = recipe_data.get("duration")
-        if isinstance(d, (int, float)):
+    """Accept duration as minutes (number) or MM:SS / HH:MM:SS string.
+
+    Also accepts setDuration display strings used by the DT create-recipe UI.
+    """
+    for key in ("duration", "setDuration", "timeMinutes"):
+        if key not in recipe_data or recipe_data.get(key) is None:
+            continue
+        d = recipe_data.get(key)
+        if key == "duration" and isinstance(d, (int, float)):
             return float(d)
         s = str(d).strip()
+        if not s:
+            continue
         if ":" in s:
             parts = s.split(":")
             try:
@@ -32,22 +39,24 @@ def _parse_duration_minutes(recipe_data: Dict[str, Any]) -> Optional[float]:
                 if len(parts) == 3:
                     return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 60.0
             except (TypeError, ValueError):
-                return None
+                continue
         try:
             return float(s)
         except (TypeError, ValueError):
-            return None
-    if recipe_data.get("timeMinutes") is not None:
-        try:
-            return float(recipe_data.get("timeMinutes"))
-        except (TypeError, ValueError):
-            return None
+            continue
     if recipe_data.get("timeSeconds") is not None:
         try:
             return float(recipe_data.get("timeSeconds")) / 60.0
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _format_hhmmss_from_minutes(duration_min: float) -> str:
+    total_sec = max(0, int(round(float(duration_min) * 60)))
+    hh, rem = divmod(total_sec, 3600)
+    mm, ss = divmod(rem, 60)
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
 def validate_recipe(recipe_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,13 +123,11 @@ def process_recipe_form_data(form_data: Dict[str, Any]) -> Dict[str, Any]:
     if mode == "timer":
         duration = _parse_duration_minutes(recipe)
         recipe["duration"] = round(float(duration), 3) if duration is not None else None
-        # Prefer HH:MM:SS display string when provided
-        set_dur = recipe.get("setDuration")
-        if not set_dur and duration is not None:
-            total_sec = int(round(float(duration) * 60))
-            hh, rem = divmod(total_sec, 3600)
-            mm, ss = divmod(rem, 60)
-            recipe["setDuration"] = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        # Always normalize display string from parsed minutes (fixes "00:0:30")
+        if duration is not None:
+            recipe["setDuration"] = _format_hhmmss_from_minutes(duration)
+        else:
+            recipe["setDuration"] = None
     else:
         recipe["duration"] = None
         recipe["setDuration"] = None
