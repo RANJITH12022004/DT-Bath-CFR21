@@ -913,6 +913,7 @@
           media: media,
           mesh: mesh,
           recipeName: name,
+          setTemperature: temp,
         },
       }).then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Failed to apply setup');
@@ -1401,6 +1402,20 @@
     return (DT.btnPhase[other] || 'idle') === 'running';
   }
 
+  /** True when the UI is already locked on a pending approval preview. */
+  function isViewingPendingApproval() {
+    try {
+      if (typeof isReportPreviewNavigationLocked === 'function' &&
+          isReportPreviewNavigationLocked(window._lastReportPreview)) {
+        return true;
+      }
+    } catch (e) {}
+    try {
+      if (window._reportApprovalGate && window._reportApprovalGate.reportId != null) return true;
+    } catch (e2) {}
+    return false;
+  }
+
   function enqueuePendingReport(reportId) {
     if (reportId == null) return;
     DT.pendingReportQueue = DT.pendingReportQueue || [];
@@ -1431,41 +1446,72 @@
     return !!(DT.pendingReportQueue && DT.pendingReportQueue.length);
   };
 
+  /** Enqueue other pending test reports from the server (exclude currently open id). */
+  window.dtSyncPendingReportsFromServer = function (excludeId) {
+    var apiFn = typeof apiRequest === 'function' ? apiRequest : null;
+    var base = (typeof API_BASE !== 'undefined' ? API_BASE : '') || '';
+    if (!apiFn) return Promise.resolve(false);
+    return apiFn(base + '/api/data/reports?filter=test&includePending=1')
+      .then(function (data) {
+        var list = (data && data.reports) || [];
+        var added = false;
+        list.forEach(function (r) {
+          if (!r || r.id == null) return;
+          if (excludeId != null && String(r.id) === String(excludeId)) return;
+          var st = String(r.reportApprovalStatus || '').trim().toLowerCase();
+          if (st !== 'pending') return;
+          enqueuePendingReport(r.id);
+          added = true;
+        });
+        return added;
+      })
+      .catch(function () { return false; });
+  };
+
   function openPendingTestReport(res, opts) {
     opts = opts || {};
     var basket = basketFromResponse(res, opts.basket);
     var siblingActive = siblingBasketStillActive(basket);
+    var viewingPending = isViewingPendingApproval();
+
+    var rid = reportIdFromResponse(res);
+    // Always queue so the second beaker is not lost when the first approval is already open.
+    if (rid != null) {
+      enqueuePendingReport(rid);
+    }
 
     if (opts.aborted) {
-      // Aborted reports stay closed, but if the sibling just finished waiting, open its queue.
-      if (!siblingActive && DT.pendingReportQueue && DT.pendingReportQueue.length) {
+      // Do not auto-open aborted while a sibling is running or another pending is open
+      if (!siblingActive && !viewingPending && DT.pendingReportQueue && DT.pendingReportQueue.length) {
         if (window.dtOpenNextPendingReport()) return;
       }
-      go('home');
+      if (!viewingPending) go('home');
       return;
     }
 
-    var rid = reportIdFromResponse(res);
     if (rid == null) {
-      if (!siblingActive && DT.pendingReportQueue && DT.pendingReportQueue.length) {
+      if (!siblingActive && !viewingPending && DT.pendingReportQueue && DT.pendingReportQueue.length) {
         if (window.dtOpenNextPendingReport()) return;
       }
-      go('home');
+      if (!viewingPending) go('home');
       if (typeof loadReports === 'function') {
         try { loadReports(); } catch (e2) {}
       }
       return;
     }
 
-    enqueuePendingReport(rid);
-
-    if (siblingActive) {
-      toast('Basket ' + basket + ' complete — report opens when the other running test finishes', 'info');
-      go('home');
+    if (siblingActive || viewingPending) {
+      toast(
+        siblingActive
+          ? ('Basket ' + basket + ' complete — report opens when the other running test finishes')
+          : ('Basket ' + basket + ' complete — report queued for approval after the current one'),
+        'info'
+      );
+      if (!viewingPending) go('home');
       return;
     }
 
-    // Both idle: open oldest queued report (leave any remaining for after approval).
+    // Both idle and nothing on screen: open oldest queued report
     if (window.dtOpenNextPendingReport()) return;
     go('home');
     if (typeof loadReports === 'function') {

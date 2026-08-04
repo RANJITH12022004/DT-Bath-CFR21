@@ -333,6 +333,79 @@ def _audit_event(
     )
 
 
+def _heater_setpoint_on(temp) -> bool:
+    try:
+        return float(temp or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _audit_heater_preheat_changes(*, before_heater, t1, t2, source="settings", ok=True, error=None):
+    """Emit Heater on/off audit rows for each beaker whose state or setpoint changed."""
+    before = before_heater if isinstance(before_heater, dict) else {}
+    try:
+        old_t1 = float(before.get("t1") or 0)
+    except (TypeError, ValueError):
+        old_t1 = 0.0
+    try:
+        old_t2 = float(before.get("t2") or 0)
+    except (TypeError, ValueError):
+        old_t2 = 0.0
+    try:
+        new_t1 = float(t1 or 0)
+    except (TypeError, ValueError):
+        new_t1 = 0.0
+    try:
+        new_t2 = float(t2 or 0)
+    except (TypeError, ValueError):
+        new_t2 = 0.0
+
+    source = str(source or "settings").strip() or "settings"
+    outcome = "success" if ok else "failed"
+    pairs = ((1, old_t1, new_t1), (2, old_t2, new_t2))
+    emitted = 0
+    for beaker, old_t, new_t in pairs:
+        old_on = _heater_setpoint_on(old_t)
+        new_on = _heater_setpoint_on(new_t)
+        setpoint_changed = abs(old_t - new_t) > 0.05
+        if old_on == new_on and not (new_on and setpoint_changed):
+            continue
+        if new_on:
+            action = "Heater on"
+            details = "Beaker {} | setpoint {:.1f}°C | source {}".format(beaker, new_t, source)
+        else:
+            action = "Heater off"
+            details = "Beaker {} | source {}".format(beaker, source)
+        if error:
+            details = "{} | error {}".format(details, error)
+        try:
+            _audit_event(
+                action=action,
+                outcome=outcome,
+                entity_type="heater",
+                entity_id=str(beaker),
+                entity_name="Beaker {}".format(beaker),
+                details=details,
+                event_type="lifecycle",
+                before={"t{}".format(beaker): old_t},
+                after={"t{}".format(beaker): new_t},
+                extra={"source": source, "basket": beaker},
+            )
+            emitted += 1
+        except Exception:
+            app.logger.exception("heater audit failed for beaker %s", beaker)
+    if not ok and emitted == 0:
+        try:
+            _audit_event(
+                action="Heater on",
+                outcome="failed",
+                entity_type="heater",
+                details="Preheat failed | source {} | error {}".format(source, error or "unknown"),
+                event_type="lifecycle",
+                extra={"source": source, "t1": new_t1, "t2": new_t2},
+            )
+        except Exception:
+            app.logger.exception("heater failure audit failed")
 
 
 POWER_INTERRUPTION_REMARKS = "power interruption"
@@ -1857,7 +1930,10 @@ def get_reports():
         if gate:
             return gate
         filter_type = request.args.get("filter", "all")
-        reports = data_service.list_reports(filter_type)
+        include_pending = str(request.args.get("includePending") or request.args.get("include_pending") or "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        reports = data_service.list_reports(filter_type, include_pending=include_pending)
         return jsonify({"reports": reports}), 200
     except Exception as e:
         app.logger.exception("Error listing reports")
@@ -2060,10 +2136,17 @@ def approve_report(report_id):
         appr_detail = "{} | {} | verified by {}".format(ctx, pf, verified_name)
         v_audit_user = verified.get("username") or verified_username or verified_name
         v_audit_role = (verified.get("role") or "").strip() or "--"
+        rtype = str(report.get("type") or "test").strip().lower() or "test"
+        if rtype == "validation":
+            approve_action = "Validation report approved"
+        elif rtype == "calibration":
+            approve_action = "Calibration report approved"
+        else:
+            approve_action = "Test report approved"
         _audit(
             v_audit_user,
             v_audit_role,
-            "Report approved",
+            approve_action,
             appr_detail,
         )
         return jsonify({"ok": True, "report": report, "preview": report_service.get_report_preview_data(report)}), 200
@@ -3502,7 +3585,7 @@ def get_audit_log():
                 cur.get("username") or cur.get("name"),
                 cur.get("role"),
                 "Audit log viewed",
-                "",
+                "Audit trails opened",
             )
 
         user = request.args.get("user")
@@ -4220,11 +4303,12 @@ def get_report_preview(report_id):
         if not report:
             return jsonify({"error": "Report not found"}), 404
         rtype = (report.get("type") or "").strip().lower() or "report"
+        detail = _format_report_audit_details(report_id, report)
         _audit(
             None,
             None,
-            "Report preview viewed",
-            "Report id {} | type {}".format(report_id, rtype),
+            "Report opened",
+            detail if detail else "Report id {} | type {}".format(report_id, rtype),
         )
         preview_data = report_service.get_report_preview_data(report)
         return jsonify({"preview": preview_data}), 200
@@ -5006,8 +5090,19 @@ def dt_preheat():
         t1 = float(data.get("temp") or data.get("setTemperature") or t1)
     elif data.get("basket") in (2, "2"):
         t2 = float(data.get("temp") or data.get("setTemperature") or t2)
+    source = str(data.get("source") or "settings").strip() or "settings"
+    before = hardware_service.get_heater_state() or {}
     result = hardware_service.cmd_preheat(t1=t1, t2=t2)
-    return jsonify(result), (200 if result.get("ok") else 400)
+    ok = bool(result.get("ok"))
+    _audit_heater_preheat_changes(
+        before_heater=before,
+        t1=t1,
+        t2=t2,
+        source=source,
+        ok=ok,
+        error=(result.get("error") if not ok else None),
+    )
+    return jsonify(result), (200 if ok else 400)
 
 
 @app.route("/api/hardware/dt/start", methods=["POST"])
@@ -5142,11 +5237,96 @@ def dt_instrument_settings_save():
         data = request.get_json(force=True, silent=True) or {}
         # Accept either nested {settings:{...}} or flat body.
         payload = data.get("settings") if isinstance(data.get("settings"), dict) else data
+        before = data_service.get_dt_instrument_settings() or {}
         saved = data_service.save_dt_instrument_settings(payload or {})
+        _audit_dt_instrument_settings_changes(before, saved)
         return jsonify({"ok": True, "settings": saved}), 200
     except Exception as e:
         app.logger.exception("save dt instrument settings failed")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _audit_dt_instrument_settings_changes(before, after):
+    """Audit beaker / basket / set-temp instrument setting changes."""
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+
+    conf_b = before.get("configuredBeakers") or {}
+    conf_a = after.get("configuredBeakers") or {}
+    b1_before = bool(conf_b.get("1") if conf_b.get("1") is not None else conf_b.get(1, True))
+    b2_before = bool(conf_b.get("2") if conf_b.get("2") is not None else conf_b.get(2, True))
+    b1_after = bool(conf_a.get("1") if conf_a.get("1") is not None else conf_a.get(1, True))
+    b2_after = bool(conf_a.get("2") if conf_a.get("2") is not None else conf_a.get(2, True))
+    if (b1_before, b2_before) != (b1_after, b2_after):
+        details = "Beaker 1: {} | Beaker 2: {}".format(
+            "on" if b1_after else "off",
+            "on" if b2_after else "off",
+        )
+        try:
+            _audit_event(
+                action="Beaker configuration changed",
+                outcome="success",
+                entity_type="instrument_settings",
+                entity_name="configuredBeakers",
+                details=details,
+                event_type="lifecycle",
+                before={"1": b1_before, "2": b2_before},
+                after={"1": b1_after, "2": b2_after},
+            )
+        except Exception:
+            app.logger.exception("beaker configuration audit failed")
+
+    try:
+        cfg_before = int(before.get("basketConfig") or 6)
+    except (TypeError, ValueError):
+        cfg_before = 6
+    try:
+        cfg_after = int(after.get("basketConfig") or 6)
+    except (TypeError, ValueError):
+        cfg_after = 6
+    if cfg_before != cfg_after:
+        try:
+            _audit_event(
+                action="Basket configuration changed",
+                outcome="success",
+                entity_type="instrument_settings",
+                entity_name="basketConfig",
+                details="Tube count: {}".format(cfg_after),
+                event_type="lifecycle",
+                before={"basketConfig": cfg_before},
+                after={"basketConfig": cfg_after},
+            )
+        except Exception:
+            app.logger.exception("basket configuration audit failed")
+
+    temps_b = before.get("setTemp") or {}
+    temps_a = after.get("setTemp") or {}
+    for key in ("1", "2"):
+        try:
+            old_t = float(temps_b.get(key) if temps_b.get(key) is not None else temps_b.get(int(key), 37.0))
+        except (TypeError, ValueError):
+            old_t = 37.0
+        try:
+            new_t = float(temps_a.get(key) if temps_a.get(key) is not None else temps_a.get(int(key), 37.0))
+        except (TypeError, ValueError):
+            new_t = 37.0
+        if abs(old_t - new_t) <= 0.05:
+            continue
+        try:
+            _audit_event(
+                action="Set temperature changed",
+                outcome="success",
+                entity_type="instrument_settings",
+                entity_id=key,
+                entity_name="Beaker {}".format(key),
+                details="Beaker {} | {:.1f}°C".format(key, new_t),
+                event_type="lifecycle",
+                before={"setTemp": old_t},
+                after={"setTemp": new_t},
+                extra={"basket": int(key)},
+            )
+        except Exception:
+            app.logger.exception("set temperature audit failed for beaker %s", key)
 
 
 @app.route("/api/data/dt/runs", methods=["GET"])
@@ -5168,7 +5348,8 @@ def dt_run_get(basket):
     )
     if gate:
         return gate
-    return jsonify({"ok": True, "run": dt_test_service.get_run(basket)})
+    # consume_saved: one-shot handoff of auto-saved report id to the kiosk poller
+    return jsonify({"ok": True, "run": dt_test_service.get_run(basket, consume_saved=True)})
 
 
 @app.route("/api/data/dt/runs/<int:basket>/preheat", methods=["POST"])
@@ -5217,6 +5398,7 @@ def dt_run_setup(basket):
         media=data.get("media"),
         mesh=data.get("mesh"),
         recipe_name=data.get("recipeName") or data.get("productName") or "",
+        set_temperature=data.get("setTemperature") or data.get("temp"),
     )
     return jsonify(result), (200 if result.get("ok") else 400)
 
@@ -5283,7 +5465,8 @@ def dt_run_stop(basket):
     aborted = bool(data.get("aborted"))
     reason = str(data.get("reason") or ("operator_abort" if aborted else "completed"))
     result = dt_test_service.stop_test(basket, aborted=aborted, reason=reason)
-    if result.get("ok") and result.get("report"):
+    # stop_test already persists via _dt_save_report — do not create a duplicate
+    if result.get("ok") and result.get("report") and not result.get("savedReport"):
         try:
             report = dict(result["report"])
             report["reportApprovalStatus"] = "pending"

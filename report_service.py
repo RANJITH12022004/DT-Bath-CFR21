@@ -384,24 +384,59 @@ def _resolve_report_rpm(recipe: Dict[str, Any], td: Dict[str, Any]) -> Any:
     return speed
 
 
+def _resolve_basket_number(*sources: Any) -> Optional[int]:
+    """First valid beaker/basket (1 or 2) found across report / testData dicts."""
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in ("beaker", "basket"):
+            try:
+                b = int(src.get(key))
+                if b in (1, 2):
+                    return b
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _resolve_set_temperature(*sources: Any) -> Any:
+    """First non-empty set temperature from report / testData / recipe dicts."""
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in ("setTemperature", "temp", "temperature"):
+            val = src.get(key)
+            if val in (None, "", "--"):
+                continue
+            return val
+    return None
+
+
 def build_test_report_derived(
     td: Optional[Dict[str, Any]],
     recipe: Optional[Dict[str, Any]] = None,
     report_id: Any = None,
+    report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Disintegration test report fields (basket, temp, mode, vessel times)."""
     td = td if isinstance(td, dict) else {}
+    report = report if isinstance(report, dict) else {}
     recipe = _merge_recipe_for_derived(td, recipe)
 
-    basket = td.get("basket") or td.get("beaker") or 1
-    mode = td.get("mode") or recipe.get("mode") or "manual"
-    set_temp = td.get("setTemperature")
-    if set_temp in (None, ""):
-        set_temp = recipe.get("temp") or recipe.get("setTemperature")
+    basket = _resolve_basket_number(report, td) or 1
+    mode = (
+        report.get("mode")
+        or td.get("mode")
+        or recipe.get("mode")
+        or "manual"
+    )
+    set_temp = _resolve_set_temperature(report, td, recipe)
     duration_sec = td.get("durationSeconds")
     if duration_sec in (None, ""):
+        duration_sec = report.get("durationSeconds")
+    if duration_sec in (None, ""):
         duration_sec = test_duration_seconds(td)
-    set_dur = td.get("setDuration") or td.get("setDurationMinutes")
+    set_dur = td.get("setDuration") or td.get("setDurationMinutes") or report.get("setDuration") or report.get("setDurationMinutes")
     if set_dur in (None, "") and recipe.get("duration") not in (None, ""):
         try:
             set_dur = float(recipe.get("duration")) * 60
@@ -415,6 +450,12 @@ def build_test_report_derived(
         except (TypeError, ValueError):
             test_no = str(report_id)
 
+    mode_l = str(mode or "").strip().lower()
+    if mode_l == "manual":
+        duration_formatted = "N/A"
+    else:
+        duration_formatted = td.get("duration") or report.get("duration") or format_duration_hhmmss(duration_sec)
+
     ts = _report_print_timestamp()
     return {
         **ts,
@@ -424,18 +465,18 @@ def build_test_report_derived(
         "mode": mode,
         "basket": basket,
         "beaker": basket,
-        "basketConfig": td.get("basketConfig") or 6,
+        "basketConfig": td.get("basketConfig") or report.get("basketConfig") or 6,
         "setTemperature": set_temp if set_temp not in (None, "") else "--",
-        "minTemp": td.get("minTemp"),
-        "maxTemp": td.get("maxTemp"),
-        "meanTemp": td.get("meanTemp"),
+        "minTemp": td.get("minTemp") if td.get("minTemp") is not None else report.get("minTemp"),
+        "maxTemp": td.get("maxTemp") if td.get("maxTemp") is not None else report.get("maxTemp"),
+        "meanTemp": td.get("meanTemp") if td.get("meanTemp") is not None else report.get("meanTemp"),
         "setDuration": set_dur,
         "durationSeconds": duration_sec,
-        "durationFormatted": td.get("duration") or format_duration_hhmmss(duration_sec),
-        "vesselTimes": td.get("vesselTimes") or {},
-        "holeCompletionTimes": td.get("holeCompletionTimes") or {},
-        "batchNumber": td.get("batchNumber") or recipe.get("batchNumber") or td.get("batch1") or td.get("batch2"),
-        "productName": recipe.get("productName") or recipe.get("name") or td.get("productName") or td.get("name"),
+        "durationFormatted": duration_formatted,
+        "vesselTimes": td.get("vesselTimes") or report.get("vesselTimes") or {},
+        "holeCompletionTimes": td.get("holeCompletionTimes") or report.get("holeCompletionTimes") or {},
+        "batchNumber": td.get("batchNumber") or report.get("batchNumber") or recipe.get("batchNumber") or td.get("batch1") or td.get("batch2"),
+        "productName": recipe.get("productName") or recipe.get("name") or td.get("productName") or report.get("productName") or td.get("name"),
     }
 
 
@@ -482,8 +523,8 @@ def _tap_times_seconds(test_data: Dict[str, Any]) -> list:
 
 def compute_test_report_statistics(test_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
-    Manual-mode tap-time statistics for disintegration reports.
-    Timer mode → no statistics. 1-tube basket → N/A. 3/6 tubes → First / Second / Completion.
+    Manual-mode tube-completion statistics for disintegration reports.
+    Timer mode → no statistics. First = earliest tube time, Last = latest (test completion).
     """
     if not isinstance(test_data, dict):
         return None
@@ -492,27 +533,21 @@ def compute_test_report_statistics(test_data: Optional[Dict[str, Any]]) -> Optio
     if mode == "timer":
         return None
 
-    try:
-        cfg = int(test_data.get("basketConfig") or 6)
-    except (TypeError, ValueError):
-        cfg = 6
-
-    na = {"value": "N/A"}
-    if cfg <= 1:
-        return {
-            "First Tap": dict(na),
-            "Second Tap": dict(na),
-            "Completion": dict(na),
-        }
-
     times = _tap_times_seconds(test_data)
+    # Also consider overall elapsed if no tube taps were recorded
+    if not times:
+        try:
+            elapsed = int(test_data.get("durationSeconds"))
+            if elapsed >= 0:
+                times = [elapsed]
+        except (TypeError, ValueError):
+            pass
+
     first = _format_elapsed_hhmmss(times[0]) if len(times) >= 1 else "N/A"
-    second = _format_elapsed_hhmmss(times[1]) if len(times) >= 2 else "N/A"
-    completion = _format_elapsed_hhmmss(times[-1]) if times else "N/A"
+    last = _format_elapsed_hhmmss(times[-1]) if times else "N/A"
     return {
-        "First Tap": {"value": first},
-        "Second Tap": {"value": second},
-        "Completion": {"value": completion},
+        "First": {"value": first},
+        "Last": {"value": last},
     }
 
 
@@ -570,6 +605,7 @@ def enrich_report_context(report_data: Dict[str, Any]) -> Dict[str, Any]:
             td if isinstance(td, dict) else {},
             recipe,
             report_data.get("id"),
+            report=report_data,
         )
     return report_data
 
@@ -792,24 +828,8 @@ def _compute_validation_dates_from_reports() -> Dict[str, str]:
 
 def _report_beaker_number(report_data: Dict[str, Any]) -> Optional[int]:
     td = report_data.get("testData") if isinstance(report_data.get("testData"), dict) else {}
-    for src in (report_data, td):
-        if not isinstance(src, dict):
-            continue
-        for key in ("beaker", "basket"):
-            try:
-                b = int(src.get(key))
-                if b in (1, 2):
-                    return b
-            except (TypeError, ValueError):
-                continue
     derived = report_data.get("reportDerived") if isinstance(report_data.get("reportDerived"), dict) else {}
-    try:
-        b = int(derived.get("basket") or derived.get("beaker"))
-        if b in (1, 2):
-            return b
-    except (TypeError, ValueError):
-        pass
-    return None
+    return _resolve_basket_number(report_data, td, derived)
 
 
 def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -881,8 +901,21 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
             td if isinstance(td, dict) else {},
             report.get("recipe") if isinstance(report.get("recipe"), dict) else {},
             report.get("id"),
+            report=report,
         ),
     }
+    # Always rebuild derived for test reports so basket / set temp stay consistent
+    if str(report.get("type") or "").strip().lower() == "test":
+        preview["reportDerived"] = build_test_report_derived(
+            td if isinstance(td, dict) else {},
+            report.get("recipe") if isinstance(report.get("recipe"), dict) else {},
+            report.get("id"),
+            report=report,
+        )
+        preview["setTemperature"] = preview["reportDerived"].get("setTemperature")
+        preview["basket"] = preview["reportDerived"].get("basket")
+        preview["beaker"] = preview["reportDerived"].get("beaker")
+        preview["mode"] = preview["reportDerived"].get("mode") or preview.get("mode")
     if report.get("type") == "validation":
         preview["validationSubtype"] = report.get("validationSubtype")
         preview["usp"] = report.get("usp")

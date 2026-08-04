@@ -45,6 +45,9 @@ EXPECTED_ACTIONS = [
     "Power interruption",
     "Test performed",
     "Adapter check error",
+    "Heater on",
+    "Heater off",
+    "Test preheat started",
 ]
 
 
@@ -303,6 +306,85 @@ def verify_power_interruption(res: RunResult, since_ms: int) -> None:
         res.fail("Power interruption not logged after simulated unclean startup")
 
 
+def verify_heater_audit(c: Client, res: RunResult) -> None:
+    """POST hardware preheat on/off and assert Heater on / Heater off audit rows."""
+    c.login(TEST_USER, TEST_PASS)
+    since = ts_ms() - 1000
+
+    # Ensure known-off baseline for beaker 1
+    c._request("POST", "/api/hardware/dt/preheat", {"t1": 0, "t2": 0, "source": "settings"})
+    time.sleep(0.2)
+    since = ts_ms() - 500
+
+    r_on = c._request(
+        "POST",
+        "/api/hardware/dt/preheat",
+        {"t1": 37.0, "t2": 0, "source": "settings"},
+    )
+    if r_on.status_code >= 400:
+        res.fail(f"Heater on preheat HTTP {r_on.status_code}: {r_on.json()}")
+        return
+    res.ok("Hardware preheat on (beaker 1) accepted")
+
+    time.sleep(0.3)
+    entries = entries_since(c.audit_log(), since, TEST_USER)
+    heater_on = [e for e in entries if e.get("action") == "Heater on"]
+    if heater_on and any("Beaker 1" in str(e.get("details") or "") for e in heater_on):
+        res.ok("Heater on audited for Beaker 1")
+    else:
+        res.fail("Missing Heater on audit row for Beaker 1")
+
+    since_off = ts_ms() - 500
+    r_off = c._request(
+        "POST",
+        "/api/hardware/dt/preheat",
+        {"t1": 0, "t2": 0, "source": "settings"},
+    )
+    if r_off.status_code >= 400:
+        res.fail(f"Heater off preheat HTTP {r_off.status_code}: {r_off.json()}")
+        return
+    res.ok("Hardware preheat off accepted")
+
+    time.sleep(0.3)
+    entries_off = entries_since(c.audit_log(), since_off, TEST_USER)
+    heater_off = [e for e in entries_off if e.get("action") == "Heater off"]
+    if heater_off and any("Beaker 1" in str(e.get("details") or "") for e in heater_off):
+        res.ok("Heater off audited for Beaker 1")
+    else:
+        res.fail("Missing Heater off audit row for Beaker 1")
+
+
+def verify_formal_preheat_audit(c: Client, res: RunResult) -> None:
+    """Optional smoke: formal run preheat still emits Test preheat started."""
+    c.login(TEST_USER, TEST_PASS)
+    since = ts_ms() - 500
+    r = c._request(
+        "POST",
+        "/api/data/dt/runs/1/preheat",
+        {
+            "setTemperature": 37.0,
+            "mode": "manual",
+            "basketConfig": 6,
+            "productName": "Audit Preheat Smoke",
+            "batchNumber": "AUDIT-PH",
+        },
+    )
+    body = r.json() if r.content else {}
+    if r.status_code >= 400:
+        # Basket may already be active from a prior test — warn, do not fail the suite
+        res.note_warn(f"Formal preheat smoke skipped HTTP {r.status_code}: {body.get('error')}")
+        return
+    res.ok("Formal run preheat accepted")
+    time.sleep(0.3)
+    entries = entries_since(c.audit_log(), since, TEST_USER)
+    if any(e.get("action") == "Test preheat started" for e in entries):
+        res.ok("Test preheat started audited on formal preheat")
+    else:
+        res.fail("Missing Test preheat started after formal preheat")
+    # Best-effort cleanup
+    c._request("POST", "/api/data/dt/runs/1/stop", {"aborted": True, "reason": "preheat_abort"})
+
+
 def verify_hardware_routes(c: Client, res: RunResult, since_ms: int) -> None:
     c.login(TEST_USER, TEST_PASS)
     check = c.adapter_check()
@@ -451,6 +533,8 @@ def main() -> int:
     verify_report_audit(c, res, since_ms)
     verify_logout_variants(c, res, since_ms)
     verify_hardware_routes(c, res, since_ms)
+    verify_heater_audit(c, res)
+    verify_formal_preheat_audit(c, res)
 
     factory_since = ts_ms() - 1000
     verify_factory_suppression(c, res, factory_since)
@@ -468,7 +552,20 @@ def main() -> int:
     for a in sorted(found):
         print(" ", a)
 
-    missing = [a for a in EXPECTED_ACTIONS if a not in found and a not in ("Login", "Power interruption", "Adapter check error")]
+    missing = [
+        a
+        for a in EXPECTED_ACTIONS
+        if a not in found
+        and a
+        not in (
+            "Login",
+            "Power interruption",
+            "Adapter check error",
+            "Heater on",
+            "Heater off",
+            "Test preheat started",
+        )
+    ]
     if missing:
         res.note_warn(f"Simulated actions not all visible for {TEST_USER}: {missing}")
 

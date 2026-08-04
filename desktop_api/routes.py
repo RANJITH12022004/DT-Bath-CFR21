@@ -315,6 +315,13 @@ def create_blueprint(kiosk):
                     "error": "No PDF files could be added to the ZIP. Reports must be approved or aborted before download.",
                     "skipped": skipped,
                 }), 400
+            if audit_log:
+                audit_log(
+                    user.get("username") or user.get("name"),
+                    user.get("role"),
+                    "Reports downloaded",
+                    "{} report PDF(s) | skipped {}".format(added, skipped),
+                )
             return _send_temp(tmp, "reports-download.zip", "application/zip")
         except Exception:
             try:

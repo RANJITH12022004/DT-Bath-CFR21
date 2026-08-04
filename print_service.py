@@ -1320,6 +1320,51 @@ def _format_thermal_run_detail_lines(td: Dict[str, Any], run_details: Any, width
     return lines
 
 
+def _resolve_print_basket(td: Dict[str, Any], report_data: Dict[str, Any]):
+    for src in (report_data, td, report_data.get("reportDerived") if isinstance(report_data.get("reportDerived"), dict) else {}):
+        if not isinstance(src, dict):
+            continue
+        for key in ("beaker", "basket"):
+            try:
+                b = int(src.get(key))
+                if b in (1, 2):
+                    return b
+            except (TypeError, ValueError):
+                continue
+    return "--"
+
+
+def _resolve_print_set_temp(td: Dict[str, Any], report_data: Dict[str, Any]):
+    derived = report_data.get("reportDerived") if isinstance(report_data.get("reportDerived"), dict) else {}
+    for src in (td, report_data, derived):
+        if not isinstance(src, dict):
+            continue
+        for key in ("setTemperature", "temp", "temperature"):
+            val = src.get(key)
+            if val not in (None, "", "--"):
+                return val
+    return "--"
+
+
+def _disintegration_stat_pairs(stats: Any) -> list:
+    """Normalize statistics to First / Last tube-completion rows."""
+    if not isinstance(stats, dict) or not stats:
+        return [("First", "N/A"), ("Last", "N/A")]
+    def _val(row):
+        if isinstance(row, dict):
+            return row.get("value", "N/A")
+        return row if row is not None else "N/A"
+    if "First" in stats or "Last" in stats:
+        return [
+            ("First", _val(stats.get("First"))),
+            ("Last", _val(stats.get("Last"))),
+        ]
+    return [
+        ("First", _val(stats.get("First Tap"))),
+        ("Last", _val(stats.get("Last") or stats.get("Completion"))),
+    ]
+
+
 def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Dict[str, Any], width: int, thermal: bool) -> None:
     """Append DT run details, vessel times, then remarks."""
     dash = "" if thermal else ("-" * width)
@@ -1348,13 +1393,17 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
     if not isinstance(td, dict):
         td = {}
 
-    basket = td.get("basket") or td.get("beaker") or report_data.get("basket") or "--"
+    basket = _resolve_print_basket(td, report_data)
     mode = td.get("mode") or report_data.get("mode") or "--"
     cfg = td.get("basketConfig") or report_data.get("basketConfig") or "--"
-    set_temp = td.get("setTemperature") if td.get("setTemperature") is not None else report_data.get("setTemperature")
+    set_temp = _resolve_print_set_temp(td, report_data)
     min_temp = td.get("minTemp") if td.get("minTemp") is not None else report_data.get("minTemp")
     max_temp = td.get("maxTemp") if td.get("maxTemp") is not None else report_data.get("maxTemp")
-    duration = td.get("duration") or report_data.get("duration") or "--"
+    mode_l = str(mode).lower()
+    if mode_l == "manual":
+        duration = "N/A"
+    else:
+        duration = td.get("duration") or report_data.get("duration") or "--"
     status = td.get("status") or report_data.get("status") or "--"
 
     detail_pairs = [
@@ -1367,12 +1416,12 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
         ("Test Duration", duration),
         ("Test Status", status),
     ]
-    if str(mode).lower() == "timer":
+    if mode_l == "timer":
         set_dur = td.get("setDuration") or td.get("setDurationMinutes")
         if set_dur is not None:
             detail_pairs.insert(4, ("Set Duration", set_dur))
 
-    # STATISTICS: tap times (manual 3/6); N/A for 1-tube; omitted for timer
+    # STATISTICS: first / last tube completion (manual); omitted for timer
     stats = report_data.get("statistics") if isinstance(report_data.get("statistics"), dict) else None
     if not stats and isinstance(td.get("statistics"), dict):
         stats = td.get("statistics")
@@ -1380,33 +1429,15 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
         try:
             from report_service import compute_test_report_statistics
 
-            stats = compute_test_report_statistics(td if isinstance(td, dict) else {}) or {}
+            stats_src = dict(td) if isinstance(td, dict) else {}
+            for k in ("mode", "basketConfig", "holeCompletionTimes", "vesselTimes", "durationSeconds"):
+                if not stats_src.get(k) and report_data.get(k) not in (None, ""):
+                    stats_src[k] = report_data.get(k)
+            stats = compute_test_report_statistics(stats_src) or {}
         except Exception:
             stats = {}
-    mode_l = str(mode).lower()
     show_stats = mode_l != "timer"
-    stats_pairs = []
-    if show_stats:
-        if isinstance(stats, dict) and stats:
-            for key in ("First Tap", "Second Tap", "Completion"):
-                if key in stats and isinstance(stats[key], dict):
-                    stats_pairs.append((key, stats[key].get("value", "N/A")))
-                elif key in stats:
-                    stats_pairs.append((key, stats[key]))
-            if not stats_pairs:
-                for key, val in stats.items():
-                    if key.startswith("Mean temperature") or key.startswith("Min temperature") or key.startswith("Max temperature"):
-                        continue
-                    if isinstance(val, dict):
-                        stats_pairs.append((key, val.get("value", "--")))
-                    else:
-                        stats_pairs.append((key, val))
-        if not stats_pairs:
-            stats_pairs = [
-                ("First Tap", "N/A"),
-                ("Second Tap", "N/A"),
-                ("Completion", "N/A"),
-            ]
+    stats_pairs = _disintegration_stat_pairs(stats) if show_stats else []
 
     if thermal:
         lines.extend(["", "TEST DETAILS"])
@@ -1534,8 +1565,25 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
         derived = report_data.get("reportDerived")
         if not isinstance(derived, dict) or not derived:
             derived = build_test_report_derived(
-                td if isinstance(td, dict) else {}, recipe, report_data.get("id")
+                td if isinstance(td, dict) else {},
+                recipe,
+                report_data.get("id"),
+                report=report_data if isinstance(report_data, dict) else None,
             )
+        else:
+            # Refresh basket / set temp from top-level fields when stale derived defaults to 1 / --
+            try:
+                derived = dict(derived)
+                derived.update(
+                    build_test_report_derived(
+                        td if isinstance(td, dict) else {},
+                        recipe,
+                        report_data.get("id"),
+                        report=report_data if isinstance(report_data, dict) else None,
+                    )
+                )
+            except TypeError:
+                pass
         ts_start = td.get("testStartTime") or report_data.get("createdAt")
         ts_end = (
             td.get("testEndTime")
@@ -1551,19 +1599,28 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
             b2 = td.get("batchNumber2") or recipe.get("batchNumber2")
             if b1 or b2:
                 batch_no = f"D1: {b1 or '--'}" + (f" | D2: {b2}" if b2 else "")
+        info_basket = derived.get("basket")
+        if info_basket in (None, "", "--"):
+            info_basket = _resolve_print_basket(td if isinstance(td, dict) else {}, report_data if isinstance(report_data, dict) else {})
+        info_set_temp = derived.get("setTemperature")
+        if info_set_temp in (None, "", "--"):
+            info_set_temp = _resolve_print_set_temp(td if isinstance(td, dict) else {}, report_data if isinstance(report_data, dict) else {})
+        info_duration = derived.get("durationFormatted", "--")
+        if str(derived.get("mode") or td.get("mode") or "").strip().lower() == "manual":
+            info_duration = "N/A"
         if thermal:
             info_lines = [
                 sep,
                 "TEST INFORMATION",
                 f"Product: {recipe.get('productName', td.get('productName', td.get('name', 'N/A')))}",
                 f"Batch No: {batch_no}",
-                f"Basket: {derived.get('basket', td.get('basket', '--'))}",
+                f"Basket: {info_basket}",
                 f"Mode: {derived.get('mode', td.get('mode', '--'))}",
-                f"Set Temp: {derived.get('setTemperature', '--')} C",
+                f"Set Temp: {info_set_temp} C",
                 f"Min Temp: {td.get('minTemp', report_data.get('minTemp', '--'))} C",
                 f"Max Temp: {td.get('maxTemp', report_data.get('maxTemp', '--'))} C",
                 f"Tubes: {derived.get('basketConfig', td.get('basketConfig', '--'))}",
-                f"Duration: {derived.get('durationFormatted', '--')}",
+                f"Duration: {info_duration}",
                 f"Test Start Date: {start_date}",
                 f"Test Start Time: {start_time}",
                 f"Completed Date: {end_date}",
@@ -1577,13 +1634,13 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
                 [
                     ("Product", recipe.get("productName", td.get("productName", td.get("name", "N/A")))),
                     ("Batch No", batch_no),
-                    ("Basket", derived.get("basket", td.get("basket", "--"))),
+                    ("Basket", info_basket),
                     ("Mode", derived.get("mode", td.get("mode", "--"))),
-                    ("Set Temp (°C)", derived.get("setTemperature", "--")),
+                    ("Set Temp (°C)", info_set_temp),
                     ("Min Temp (°C)", td.get("minTemp", report_data.get("minTemp", "--"))),
                     ("Max Temp (°C)", td.get("maxTemp", report_data.get("maxTemp", "--"))),
                     ("Tube Count", derived.get("basketConfig", td.get("basketConfig", "--"))),
-                    ("Duration", derived.get("durationFormatted", "--")),
+                    ("Duration", info_duration),
                     ("Test Start Date", start_date),
                     ("Test Start Time", start_time),
                     ("Completed Date", end_date),

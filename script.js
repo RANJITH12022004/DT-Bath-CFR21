@@ -1156,15 +1156,31 @@ function unlockReportPreviewAfterServerStatus(preview, reportId, options) {
 
 /** After approving one dual-basket report, open the next pending approval immediately. */
 function openNextDtPendingReportAfterApproval(approvedId) {
-    if (typeof dtHasPendingReports !== 'function' || !dtHasPendingReports()) return false;
-    if (typeof dtOpenNextPendingReport !== 'function') return false;
+    function tryOpen() {
+        if (typeof dtOpenNextPendingReport !== 'function') return false;
+        try { return !!dtOpenNextPendingReport(); } catch (e) { return false; }
+    }
     try {
         if (approvedId != null) _saveReportPdfSilent(approvedId);
-    } catch (e) {}
-    var opened = false;
-    try { opened = !!dtOpenNextPendingReport(); } catch (e2) { opened = false; }
-    if (opened) {
+    } catch (e0) {}
+
+    if (typeof dtHasPendingReports === 'function' && dtHasPendingReports() && tryOpen()) {
         showAppModal('Report approved. Opening the next report for approval.', 'Report');
+        return true;
+    }
+
+    // Client queue empty — recover any other pending test reports from the server
+    if (typeof dtSyncPendingReportsFromServer === 'function') {
+        dtSyncPendingReportsFromServer(approvedId).then(function () {
+            if (tryOpen()) {
+                showAppModal('Report approved. Opening the next report for approval.', 'Report');
+                return;
+            }
+            showAppModal('Report approved.', 'Report');
+            if (approvedId != null && typeof openReportPreview === 'function') {
+                openReportPreview(approvedId, { setGate: true });
+            }
+        });
         return true;
     }
     return false;
@@ -1692,23 +1708,12 @@ function auditPageLabel(pageName) {
 }
 
 function auditNavPageChange(newPage) {
+    // Major-events-only policy: do not log Entered/Exited screen navigation noise.
     if (_auditSkipPages[newPage]) {
         _auditActivePage = null;
         return;
     }
-    if (newPage === _auditActivePage) return;
-    var prev = _auditActivePage;
     _auditActivePage = newPage;
-    if (prev && !_auditSkipPages[prev]) {
-        logAuditEvent('Exited screen', auditPageLabel(prev), { eventType: 'navigation' });
-    }
-    if (newPage === 'usp1-detail') {
-        logAuditEvent('Entered USP 1 validation', 'USP 1 validation screen', { eventType: 'navigation' });
-    } else if (newPage === 'usp2-detail') {
-        logAuditEvent('Entered USP 2 validation', 'USP 2 validation screen', { eventType: 'navigation' });
-    } else {
-        logAuditEvent('Entered screen', auditPageLabel(newPage), { eventType: 'navigation' });
-    }
 }
 
 function auditTestUspAdapterAction(recipe) {
@@ -2230,7 +2235,6 @@ function goToPage(pageName) {
         }, 50);
     }
     if (pageName === 'disable-recipes') {
-        logAuditEvent('Opened disabled recipes', 'Disabled recipes list opened', { eventType: 'navigation' });
         setTimeout(function () {
             if (typeof loadDisableRecipes === 'function') loadDisableRecipes();
         }, 50);
@@ -2789,6 +2793,7 @@ function logout() {
             }
             apiRequest(API_BASE + '/api/data/auth/logout', { method: 'POST', body: { reason: 'user' } }).catch(function () {});
             window.currentUser = null;
+            _auditLogViewLoggedForSession = false;
             try { localStorage.removeItem('currentUser'); } catch (e) {}
             if (typeof currentUser !== 'undefined') currentUser = null;
             clearReportApprovalGate();
@@ -2984,6 +2989,7 @@ function performAutoLogoutDueToInactivity() {
         }
         apiRequest(API_BASE + '/api/data/auth/logout', { method: 'POST', body: { reason: 'inactivity' } }).catch(function () {});
         window.currentUser = null;
+        _auditLogViewLoggedForSession = false;
         try { localStorage.removeItem('currentUser'); } catch (e) {}
         if (typeof currentUser !== 'undefined') currentUser = null;
         clearReportApprovalGate();
@@ -3494,26 +3500,30 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
         if (a && actions.indexOf(a) === -1) actions.push(a);
     });
     var coreActions = [
-        'Login', 'Logout', 'Logout (inactivity timeout)', 'User logged in',
-        'Entered screen', 'Exited screen',
-        'Opened Quick Test', 'Opened Load Recipe', 'Opened Manage Recipe', 'Loaded recipe',
-        'Opened disabled recipes',
-        'Test preheat started', 'Test preheat stopped', 'Test ready', 'Test started', 'Quick test started',
-        'Test finished', 'Test aborted', 'Test auto-aborted',
-        'Test performed', 'Quick test performed',
-        'Entered USP 1 validation', 'Entered USP 2 validation',
-        'Validation started', 'Validation finished', 'Validation aborted',
+        'Login', 'Logout', 'Logout (inactivity timeout)', 'Biometric login',
+        'Heater on', 'Heater off', 'Set temperature changed',
+        'Beaker configuration changed', 'Basket configuration changed',
+        'System date change', 'RTC date set',
+        'Loaded recipe',
+        'Recipe created', 'Recipe edited', 'Recipe approved',
+        'Recipe disabled', 'Recipe enabled', 'Disable Recipe', 'Enable Recipe',
+        'Recipe disable approved', 'Recipe enable approved',
+        'Test performed', 'Quick test performed', 'Test aborted', 'Test auto-aborted',
+        'Test preheat started', 'Test finished',
+        'Validation started', 'Validation performed', 'Validation aborted',
         'Calibration performed', 'Calibration failed',
-        'USP 1 adapter error', 'USP 2 adapter error', 'Adapter check error',
-        'Validation performed', 'Report saved', 'Report generated', 'Report approved',
-        'Report aborted', 'Report aborted (power loss)', 'Report PDF generated',
-        'Report preview viewed', 'Pending report discarded',
-        'Recipe created', 'Recipe edited', 'Recipe approved', 'Power interruption',
-        'Approval verification', 'Disable Recipe', 'Recipe disabled', 'Enable Recipe',
-        'Factory settings changed', 'System date change', 'RTC date set',
-        'Added new user', 'Password changed', 'User create', 'User update',
-        'User disabled', 'User disable approved', 'User unlock', 'User enable',
-        'Print A4', 'Print thermal', 'Reports exported', 'Audit trail exported', 'Export approved'
+        'Report opened', 'Report approved',
+        'Test report approved', 'Validation report approved', 'Calibration report approved',
+        'Report aborted', 'Report aborted (power loss)',
+        'Report deleted', 'Pending report discarded',
+        'Audit log viewed', 'Audit trail exported', 'Desktop audit downloaded',
+        'Print A4', 'Print thermal',
+        'Reports exported', 'Reports downloaded', 'Export approved',
+        'Factory settings changed', 'Power interruption', 'Power interruption logout',
+        'Added new user', 'Password changed', 'Password reset',
+        'User update', 'Profile updated',
+        'User disable', 'User disabled', 'User unlock', 'User enable',
+        'Biometric enroll', 'Biometric template delete'
     ];
     coreActions.forEach(function (a) {
         if (actions.indexOf(a) === -1) actions.push(a);
@@ -4128,7 +4138,6 @@ function _saveReportPdfSilent(reportId) {
 
 function startQuickTest() {
     if (typeof guardReportPreviewNavigation === 'function' && guardReportPreviewNavigation('quick-test')) return;
-    logAuditEvent('Opened Quick Test', 'Quick Test screen opened', { eventType: 'navigation' });
     goToPage('quick-test');
 }
 
@@ -4815,14 +4824,12 @@ function onCreateRecipeContinueClick() {
 function startRecipeTest() {
     if (typeof guardReportPreviewNavigation === 'function' && guardReportPreviewNavigation('manage-recipes')) return;
     recipeListMode = 'load';
-    logAuditEvent('Opened Load Recipe', 'Load Recipe list opened', { eventType: 'navigation' });
     goToPage('manage-recipes');
 }
 
 function manageRecipes() {
     if (typeof guardReportPreviewNavigation === 'function' && guardReportPreviewNavigation('manage-recipes')) return;
     recipeListMode = 'manage';
-    logAuditEvent('Opened Manage Recipe', 'Manage Recipe list opened', { eventType: 'navigation' });
     goToPage('manage-recipes');
 }
 
@@ -5349,6 +5356,8 @@ function enableMember(id) {
 }
 
 // ----- Reports and audit from API -----
+var _auditLogViewLoggedForSession = false;
+
 function loadReports(filterType) {
     currentReportFilter = filterType || null;
     var tbody = document.getElementById('reports-table-body');
@@ -5387,6 +5396,10 @@ function loadReports(filterType) {
             toTs = new Date(parseInt(parts2[0], 10), parseInt(parts2[1], 10) - 1, parseInt(parts2[2], 10), h2, m2, 59, 999).getTime();
         }
         var q = [];
+        if (!_auditLogViewLoggedForSession) {
+            q.push('log_view=1');
+            _auditLogViewLoggedForSession = true;
+        }
         if (userEl && userEl.value) q.push('user=' + encodeURIComponent(userEl.value));
         if (roleEl && roleEl.value) q.push('role=' + encodeURIComponent(roleEl.value));
         if (actionEl && actionEl.value) q.push('action=' + encodeURIComponent(actionEl.value));
@@ -6183,7 +6196,7 @@ function _populateLegacyReportPreview(preview) {
     }
 
     setReportEl('report-product-name', recipe.productName || td.productName);
-    setReportEl('report-batch-no', recipe.batchNumber || td.batchNumber || '--');
+    setReportEl('report-batch-number', recipe.batchNumber || td.batchNumber || '--');
 
     var startStr = formatReportDate(td.testStartTime || preview.createdAt);
     var endStr = formatReportDate(td.testEndTime || preview.completedAt || preview.createdAt);
@@ -6194,8 +6207,13 @@ function _populateLegacyReportPreview(preview) {
     setReportEl('report-completed-date', completedParts.date);
     setReportEl('report-completed-time', completedParts.time);
 
-    var durationSec = td.durationSeconds;
-    setReportEl('report-test-duration', (durationSec != null && durationSec >= 0) ? (durationSec + ' s') : '--');
+    var modeL = String(preview.mode || td.mode || (preview.reportDerived && preview.reportDerived.mode) || '').trim().toLowerCase();
+    var durationSec = td.durationSeconds != null ? td.durationSeconds : preview.durationSeconds;
+    if (modeL === 'manual') {
+        setReportEl('report-test-duration', 'N/A');
+    } else {
+        setReportEl('report-test-duration', (durationSec != null && durationSec >= 0) ? (durationSec + ' s') : '--');
+    }
     setReportEl('report-test-status', td.status === 'aborted' ? 'Aborted' : 'Completed');
 
     var tbody = document.getElementById('report-test-data-body');
@@ -6279,17 +6297,14 @@ function _populateReportStatisticsSection(preview, td) {
         if (row != null && typeof row !== 'object') return String(row);
         return 'N/A';
     }
-    // Prefer server tap-time stats; fall back to local compute from hole/vessel times
-    var hasTapStats = !!(stats['First Tap'] || stats['Second Tap'] || stats['Completion']);
-    if (!hasTapStats) {
-        var cfg = parseInt(p.basketConfig != null ? p.basketConfig : (t.basketConfig != null ? t.basketConfig : 6), 10);
-        if (!(cfg > 1)) {
-            bodyEl.innerHTML =
-                '<tr><th>First Tap</th><td>N/A</td></tr>' +
-                '<tr><th>Second Tap</th><td>N/A</td></tr>' +
-                '<tr><th>Completion</th><td>N/A</td></tr>';
-            return;
-        }
+    function fmtSec(sec) {
+        if (sec == null || isNaN(sec)) return 'N/A';
+        var hh = Math.floor(sec / 3600);
+        var mm = Math.floor((sec % 3600) / 60);
+        var ss = sec % 60;
+        return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+    }
+    function tubeSecs() {
         var hct = t.holeCompletionTimes || p.holeCompletionTimes || {};
         var secs = [];
         Object.keys(hct).forEach(function (k) {
@@ -6307,24 +6322,31 @@ function _populateReportStatisticsSection(preview, td) {
                 secs.push(s);
             });
         }
-        secs.sort(function (a, b) { return a - b; });
-        function fmtSec(sec) {
-            if (sec == null || isNaN(sec)) return 'N/A';
-            var hh = Math.floor(sec / 3600);
-            var mm = Math.floor((sec % 3600) / 60);
-            var ss = sec % 60;
-            return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+        if (!secs.length) {
+            var dur = parseInt(t.durationSeconds != null ? t.durationSeconds : p.durationSeconds, 10);
+            if (!isNaN(dur) && dur >= 0) secs.push(dur);
         }
+        secs.sort(function (a, b) { return a - b; });
+        return secs;
+    }
+    var hasNew = !!(stats['First'] || stats['Last']);
+    var hasLegacy = !!(stats['First Tap'] || stats['Second Tap'] || stats['Completion']);
+    if (hasNew) {
         bodyEl.innerHTML =
-            '<tr><th>First Tap</th><td>' + (secs.length >= 1 ? fmtSec(secs[0]) : 'N/A') + '</td></tr>' +
-            '<tr><th>Second Tap</th><td>' + (secs.length >= 2 ? fmtSec(secs[1]) : 'N/A') + '</td></tr>' +
-            '<tr><th>Completion</th><td>' + (secs.length ? fmtSec(secs[secs.length - 1]) : 'N/A') + '</td></tr>';
+            '<tr><th>First</th><td>' + statVal('First') + '</td></tr>' +
+            '<tr><th>Last</th><td>' + statVal('Last') + '</td></tr>';
         return;
     }
+    if (hasLegacy) {
+        bodyEl.innerHTML =
+            '<tr><th>First</th><td>' + (statVal('First Tap') !== 'N/A' ? statVal('First Tap') : statVal('First')) + '</td></tr>' +
+            '<tr><th>Last</th><td>' + (statVal('Last') !== 'N/A' ? statVal('Last') : (statVal('Completion') !== 'N/A' ? statVal('Completion') : 'N/A')) + '</td></tr>';
+        return;
+    }
+    var secs = tubeSecs();
     bodyEl.innerHTML =
-        '<tr><th>First Tap</th><td>' + statVal('First Tap') + '</td></tr>' +
-        '<tr><th>Second Tap</th><td>' + statVal('Second Tap') + '</td></tr>' +
-        '<tr><th>Completion</th><td>' + statVal('Completion') + '</td></tr>';
+        '<tr><th>First</th><td>' + (secs.length >= 1 ? fmtSec(secs[0]) : 'N/A') + '</td></tr>' +
+        '<tr><th>Last</th><td>' + (secs.length ? fmtSec(secs[secs.length - 1]) : 'N/A') + '</td></tr>';
 }
 
 function populateReportPreview(preview) {

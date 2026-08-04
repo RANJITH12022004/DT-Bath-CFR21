@@ -113,17 +113,32 @@ def _persist() -> None:
             _logger.debug("test_run persist: %s", e)
 
 
-def get_run(basket: int) -> Dict[str, Any]:
+def get_run(basket: int, *, consume_saved: bool = False) -> Dict[str, Any]:
+    """Return run snapshot.
+
+    lastSavedReport is attached when present. Pass consume_saved=True only from the
+    client-facing GET so a one-shot handoff still works; internal callers (watchdog)
+    must not consume it or the UI never sees the report id.
+    """
     basket = int(basket)
     with _lock:
         if basket not in _runs:
             _runs[basket] = _empty_run(basket)
         out = dict(_runs[basket])
-        saved = _last_saved_reports.pop(basket, None)
+        if consume_saved:
+            saved = _last_saved_reports.pop(basket, None)
+        else:
+            saved = _last_saved_reports.get(basket)
     if saved:
         out["savedReport"] = dict(saved) if isinstance(saved, dict) else saved
         out["lastSavedReport"] = out["savedReport"]
     return out
+
+
+def clear_last_saved_report(basket: int) -> None:
+    basket = int(basket)
+    with _lock:
+        _last_saved_reports.pop(basket, None)
 
 
 def get_all_runs() -> Dict[str, Any]:
@@ -186,6 +201,8 @@ def start_preheat(
     current = get_run(basket)
     if current.get("state") in ("PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING"):
         return {"ok": False, "error": f"basket {basket} already in state {current.get('state')}"}
+
+    clear_last_saved_report(basket)
 
     dur = None
     if mode == "timer":
@@ -280,8 +297,9 @@ def apply_run_setup(
     media: Optional[str] = None,
     mesh: Optional[str] = None,
     recipe_name: Optional[str] = None,
+    set_temperature: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Update product/batch/mode on an in-progress preheat/ready run (quick test)."""
+    """Update product/batch/mode/setpoint on an in-progress preheat/ready run (quick test)."""
     basket = int(basket)
     current = get_run(basket)
     if current.get("state") not in ("PREHEAT", "READY", "AWAIT_CONFIRM"):
@@ -295,6 +313,13 @@ def apply_run_setup(
     batch = str(batch_number or "").strip()
     if batch:
         fields["batchNumber"] = batch
+    if set_temperature is not None and str(set_temperature).strip() != "":
+        try:
+            temp = float(set_temperature)
+            if 20 <= temp <= 55:
+                fields["setTemperature"] = temp
+        except (TypeError, ValueError):
+            pass
     if mode is not None:
         mode_l = str(mode or "manual").strip().lower()
         if mode_l not in ("manual", "timer"):
