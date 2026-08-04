@@ -317,24 +317,16 @@
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
                                 <span>Recipe</span>
                             </button>
-                            <div id="dashboard-temp-btn" class="recipe-button-main" style="padding:4px 0 0 0;background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%);border:3px solid #fbbf24;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translate(33px, 90px);min-width:200px;overflow:hidden;pointer-events:none;cursor:default;box-shadow:0 4px 15px rgba(245,158,11,0.4), inset 0 1px 0 rgba(255,255,255,0.2);">
-                                <div style="font-size:11px;opacity:0.95;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600;">Set Temp</div>
-                                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:0 12px;">
-                                    <div style="flex:1;text-align:center;padding:2px 8px;border-right:2px solid rgba(255,255,255,0.3);display:flex;flex-direction:column;align-items:center;gap:2px;">
-                                        <div style="font-size:9px;opacity:0.85;text-transform:uppercase;letter-spacing:0.5px;">Basket 1</div>
-                                        <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:3px;">
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path></svg>
-                                            <span id="dashboard-temp-1">--</span>
-                                        </div>
-                                    </div>
-                                    <div style="flex:1;text-align:center;padding:2px 8px;display:flex;flex-direction:column;align-items:center;gap:2px;">
-                                        <div style="font-size:9px;opacity:0.85;text-transform:uppercase;letter-spacing:0.5px;">Basket 2</div>
-                                        <div style="font-size:16px;font-weight:700;display:flex;align-items:center;gap:3px;">
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path></svg>
-                                            <span id="dashboard-temp-2">--</span>
-                                        </div>
-                                    </div>
+                            <div id="dashboard-temp-btn" class="recipe-button-main" style="padding:8px 16px;background:linear-gradient(135deg, #f59e0b 0%, #d97706 100%);border:3px solid #fbbf24;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translate(33px, 90px);min-width:200px;overflow:hidden;pointer-events:none;cursor:default;box-shadow:0 4px 15px rgba(245,158,11,0.4), inset 0 1px 0 rgba(255,255,255,0.2);">
+                                <div style="font-size:11px;opacity:0.95;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;font-weight:600;">Bath Temp</div>
+                                <div style="font-size:22px;font-weight:700;display:flex;align-items:center;gap:6px;">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path></svg>
+                                    <span id="dashboard-temp-bath">--</span>
+                                    <span style="font-size:14px;opacity:0.9;">°C</span>
                                 </div>
+                                <!-- mirrors: both baskets share the same bath setpoint -->
+                                <span id="dashboard-temp-1" style="display:none;">--</span>
+                                <span id="dashboard-temp-2" style="display:none;">--</span>
                             </div>
                         </div>
 
@@ -1098,7 +1090,7 @@
                 <!-- Report Preview Page -->
                 <div class="page" id="page-report-preview">
                     <div class="reports-container">
-                        <div id="report-pending-lock-banner" class="report-pending-lock-banner" style="display: none;"><strong>Awaiting approval.</strong> Complete Pass/Fail and sign on this screen to approve the report. You cannot leave or log out until approved. If power is interrupted during a completed test awaiting approval, the report will be saved as Aborted (power interruption). Operator aborts stay Aborted.</div>
+                        <div id="report-pending-lock-banner" class="report-pending-lock-banner" style="display: none;"><strong>Awaiting approval.</strong> Complete Pass/Fail and sign on this screen to approve the report. You cannot leave or log out until approved. If power is interrupted while a report awaits approval, the system auto-approves it with remarks “power interruption”.</div>
                         <div class="report-preview-container report-print-template" id="report-content">
                             <pre id="report-a4-text-preview" class="report-a4-text-preview" style="display: none;"></pre>
                             <div id="report-legacy-preview">
@@ -1455,35 +1447,22 @@
                     </div>
                 </div>
 
-                <!-- Calibrate: select beaker (same flow style as validate-beaker) -->
+                <!-- Calibrate: shared bath (no beaker choice) -->
                 <div class="page" id="page-calibrate-beaker">
                     <div class="validation-main-container">
                         <div class="text-center" style="margin-bottom:18px;">
-                            <h2 class="section-title" style="margin-bottom:6px;">Select Beaker to Calibrate</h2>
-                            <p class="section-subtitle">Choose basket 1 or 2 for temperature calibration</p>
+                            <h2 class="section-title" style="margin-bottom:6px;">Shared Bath Calibration</h2>
+                            <p class="section-subtitle">Calibrates the bath IR probe and both external probes together</p>
                         </div>
-                        <div class="validation-settings-grid dt-validate-beaker-grid">
-                            <button type="button" class="settings-card settings-validate" onclick="selectBeakerForCalibration(1)">
+                        <div class="validation-settings-grid dt-validate-beaker-grid" style="grid-template-columns:1fr;max-width:360px;margin:0 auto;">
+                            <button type="button" class="settings-card settings-calibrate" onclick="selectBeakerForCalibration(1)">
                                 <div class="settings-icon">
                                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <path d="M4.5 3h15"></path>
-                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
-                                        <path d="M6 14h12"></path>
+                                        <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path>
                                     </svg>
                                 </div>
-                                <h3>Beaker 1</h3>
-                                <p>Basket 1</p>
-                            </button>
-                            <button type="button" class="settings-card settings-calibrate" onclick="selectBeakerForCalibration(2)">
-                                <div class="settings-icon">
-                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <path d="M4.5 3h15"></path>
-                                        <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3"></path>
-                                        <path d="M6 14h12"></path>
-                                    </svg>
-                                </div>
-                                <h3>Beaker 2</h3>
-                                <p>Basket 2</p>
+                                <h3>Calibrate Bath</h3>
+                                <p>IR + EXT1 + EXT2</p>
                             </button>
                         </div>
                         <div style="text-align:center;margin-top:20px;">
@@ -1704,20 +1683,25 @@
                     </div>
                 </div>
 
-                                <!-- Calibration type select (Dt_Dr_Reddy temperature calibration) -->
+                                <!-- Calibration — shared bath (IR + EXT1 + EXT2) -->
                 <div class="page" id="page-calibration-type-select">
                     <div class="validation-type-page dt-calibration-page">
                         <div class="dt-calibration-panel">
-                            <h2 class="section-title">Temperature Calibration</h2>
-                            <p class="section-subtitle">Beaker <span id="calibration-beaker-num">1</span> – Enter reference thermometer value</p>
+                            <h2 class="section-title">Shared Bath Calibration</h2>
+                            <p class="section-subtitle">Enter reference thermometer value — calibrates IR, EXT1 and EXT2</p>
+                            <span id="calibration-beaker-num" style="display:none;">1</span>
                             <div class="dt-cal-grid">
                                 <div class="form-group dt-cal-field">
-                                    <label for="calibration-internal-temp-input">Internal (IR)</label>
+                                    <label for="calibration-internal-temp-input">Bath IR</label>
                                     <input type="text" id="calibration-internal-temp-input" class="input-field" readonly placeholder="Reading...">
                                 </div>
                                 <div class="form-group dt-cal-field">
-                                    <label for="calibration-external-temp-input">External (EXT)</label>
+                                    <label for="calibration-external-temp-input">External 1 (EXT1)</label>
                                     <input type="text" id="calibration-external-temp-input" class="input-field" readonly placeholder="Reading...">
+                                </div>
+                                <div class="form-group dt-cal-field">
+                                    <label for="calibration-ext2-temp-input">External 2 (EXT2)</label>
+                                    <input type="text" id="calibration-ext2-temp-input" class="input-field" readonly placeholder="Reading...">
                                 </div>
                                 <div class="form-group dt-cal-field dt-cal-field-measured">
                                     <label for="calibration-measured-temp-input">Measured (Reference)</label>
@@ -1726,19 +1710,17 @@
                                         onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                 </div>
                             </div>
-                            <!-- legacy ids used by dtCalibrate -->
                             <select id="dt-cal-sensor" style="display:none;" aria-hidden="true">
-                                <option value="IR1">IR1</option>
-                                <option value="IR2">IR2</option>
+                                <option value="IR" selected>IR</option>
                             </select>
                             <input type="hidden" id="dt-cal-temp" value="37">
-                            <button type="button" class="btn btn-primary dt-cal-submit-btn" onclick="dtCalibrateFromPage()">Calibrate</button>
+                            <button type="button" class="btn btn-primary dt-cal-submit-btn" onclick="dtCalibrateFromPage()">Calibrate Bath</button>
                             <div class="dt-cal-info">
-                                Place reference thermometer and external probe in the beaker, wait for readings to stabilize, then enter the reference thermometer value. Sends <strong>CAL IR</strong> then <strong>CAL EXT</strong> to the ESP. E-signature required.
+                                Place the reference thermometer and both external probes in the bath, wait for readings to stabilize, then enter the reference value. Sends <strong>CAL,IR</strong>, <strong>CAL,EXT1</strong> and <strong>CAL,EXT2</strong>. E-signature required. Turn off any active preheating first.
                             </div>
                             <div class="dt-cal-live-strip">
-                                <span>IR1: <strong id="dt-ir1">--</strong></span>
-                                <span>IR2: <strong id="dt-ir2">--</strong></span>
+                                <span>IR: <strong id="dt-ir1">--</strong></span>
+                                <span id="dt-ir2" style="display:none;">--</span>
                                 <span>EXT1: <strong id="dt-ext1">--</strong></span>
                                 <span>EXT2: <strong id="dt-ext2">--</strong></span>
                             </div>
@@ -2308,16 +2290,16 @@
                     </div>
                 </div>
 
-                <!-- Heater Control -->
+                <!-- Heater Control — single shared bath -->
                 <div class="page" id="page-heater-control">
                     <div class="validation-type-page">
                         <h2 class="section-title">Heater Control</h2>
-                        <div class="dt-heater-grid">
+                        <div class="dt-heater-grid" style="grid-template-columns:1fr;max-width:420px;margin:0 auto;">
                             <div class="dt-heater-card" id="heater-control-basket-1">
-                                <h3>Basket 1 Temperature</h3>
+                                <h3>Bath Temperature (shared)</h3>
                                 <div class="dt-heater-temp-row">
                                     <input type="text" id="set-temp-1" class="input-field decimal-input" value="37.0"
-                                        inputmode="decimal" data-decimal-input="true" data-osk-prompt="Basket 1 temperature"
+                                        inputmode="decimal" data-decimal-input="true" data-osk-prompt="Bath temperature"
                                         autocomplete="off"
                                         onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
                                     <span>°C</span>
@@ -2326,18 +2308,10 @@
                                     <span id="control-text-1">Start</span>
                                 </button>
                             </div>
-                            <div class="dt-heater-card" id="heater-control-basket-2">
-                                <h3>Basket 2 Temperature</h3>
-                                <div class="dt-heater-temp-row">
-                                    <input type="text" id="set-temp-2" class="input-field decimal-input" value="37.0"
-                                        inputmode="decimal" data-decimal-input="true" data-osk-prompt="Basket 2 temperature"
-                                        autocomplete="off"
-                                        onfocus="if(typeof openOSKForInput === 'function') openOSKForInput(this)">
-                                    <span>°C</span>
-                                </div>
-                                <button type="button" id="heater-control-btn-2" class="btn btn-primary" onclick="dtToggleHeater(2)">
-                                    <span id="control-text-2">Start</span>
-                                </button>
+                            <div id="heater-control-basket-2" class="dt-heater-card" style="display:none;" aria-hidden="true">
+                                <input type="hidden" id="set-temp-2" value="37.0">
+                                <button type="button" id="heater-control-btn-2" style="display:none;"></button>
+                                <span id="control-text-2" style="display:none;"></span>
                             </div>
                         </div>
                         <div style="text-align:center;margin-top:20px;">
@@ -2533,9 +2507,9 @@
     <div id="keyboard-root"></div>
     <script src="/keyboard.js?v=6"></script>
     <script src="/input-focus.js?v=2"></script>
-    <script src="/rbac.js?v=11"></script>
-    <script src="/script.js?v=127"></script>
-    <script src="/dt_client.js?v=42"></script>
+    <script src="/rbac.js?v=12"></script>
+    <script src="/script.js?v=128"></script>
+    <script src="/dt_client.js?v=44"></script>
 </body>
 
 </html>

@@ -480,9 +480,16 @@ def abort_stroke_validation(basket: int) -> Dict[str, Any]:
 # -------------------- Temperature validation --------------------
 
 def _temp_is_ready(basket: int, set_t: Optional[float] = None) -> bool:
-    """Temp validation Start arms only on ESP TR (same as dashboard / Dr Reddy)."""
+    """Temp validation Start arms only on shared-bath TR."""
     live = hw.get_live_state()
-    return bool(live.get(f"TR{basket}"))
+    return bool(live.get("TR") or live.get(f"TR{basket}"))
+
+
+def _release_validation_bath() -> None:
+    try:
+        hw.release_bath("validation")
+    except Exception:
+        pass
 
 
 def arm_temp_validation(
@@ -490,7 +497,7 @@ def arm_temp_validation(
     set_temperature: float,
     operator: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Apply setpoint and arm preheat. Does not start the 2-minute hold."""
+    """Apply setpoint and arm preheat on the shared bath. Does not start the 2-minute hold."""
     basket = int(basket)
     if basket not in (1, 2):
         return {"ok": False, "error": "basket must be 1 or 2"}
@@ -507,15 +514,19 @@ def arm_temp_validation(
         if existing and existing.get("state") in ("PREHEAT", "ARMED", "READY", "HOLDING", "RUNNING"):
             return {"ok": False, "error": "temp validation already running"}
 
-    t1 = temp if basket == 1 else 0.0
-    t2 = temp if basket == 2 else 0.0
-    if basket == 1:
-        t2 = 0.0
-    else:
-        t1 = 0.0
-    hw_result = hw.cmd_preheat(t1=t1, t2=t2)
+    # Exclusive claim on the shared bath
+    hw_result = hw.request_bath("validation", temp, exclusive=True)
     if not hw_result.get("ok"):
-        return {"ok": False, "error": hw_result.get("error") or "preheat failed", "hardware": hw_result}
+        err = hw_result.get("error") or hw_result.get("code") or "preheat failed"
+        return {
+            "ok": False,
+            "error": err,
+            "code": hw_result.get("code") or err,
+            "message": hw_result.get("message") or err,
+            "currentTemp": hw_result.get("currentTemp"),
+            "owners": hw_result.get("owners"),
+            "hardware": hw_result,
+        }
 
     session = {
         "kind": "temp",
@@ -559,7 +570,7 @@ def arm_temp_validation(
     )
     _audit(
         "Validation armed",
-        f"Temperature validation | Beaker {basket} | setpoint {temp}°C | waiting for ready",
+        f"Temperature validation | Beaker {basket} | bath setpoint {temp}°C | waiting for ready",
         entity_type="validation",
         entity_id=f"temp-{basket}",
         extra={"basket": basket, "kind": "temp", "setTemperature": temp, "mock": hw.is_mock_mode()},
@@ -606,8 +617,10 @@ def _temp_preheat_worker(basket: int) -> None:
                     "endedAt": _now_iso(),
                 })
         hw.cmd_stop(basket)
+        _release_validation_bath()
     except Exception as e:
         hw.cmd_stop(basket)
+        _release_validation_bath()
         with _lock:
             if key in _sessions and _sessions[key].get("state") not in ("HOLDING", "COMPLETE", "ABORTED"):
                 _sessions[key].update({
@@ -698,7 +711,7 @@ def start_temp_validation(
 
 def _temp_hold_worker(basket: int) -> None:
     key = f"temp:{basket}"
-    ir_key = "IR1" if basket == 1 else "IR2"
+    # Shared bath IR (mirrored into IR1/IR2)
     try:
         with _lock:
             if key not in _sessions or _sessions[key].get("state") == "ABORTED":
@@ -716,8 +729,12 @@ def _temp_hold_worker(basket: int) -> None:
             with _lock:
                 if key not in _sessions or _sessions[key].get("state") == "ABORTED":
                     hw.cmd_stop(basket)
+                    _release_validation_bath()
                     return
-            ir = hw.get_latest_temps().get(ir_key)
+            temps = hw.get_latest_temps()
+            ir = temps.get("IR1")
+            if ir is None:
+                ir = temps.get("IR2")
             if ir is not None:
                 t = float(ir)
                 samples.append({"t": _now_iso(), "temp": t})
@@ -735,6 +752,7 @@ def _temp_hold_worker(basket: int) -> None:
             time.sleep(0.5)
 
         hw.cmd_stop(basket)
+        _release_validation_bath()
 
         if min_t is None or max_t is None:
             within_spec = False
@@ -820,6 +838,7 @@ def _temp_hold_worker(basket: int) -> None:
         )
     except Exception as e:
         hw.cmd_stop(basket)
+        _release_validation_bath()
         with _lock:
             if key in _sessions:
                 _sessions[key].update({
@@ -837,6 +856,7 @@ def abort_temp_validation(basket: int) -> Dict[str, Any]:
     basket = int(basket)
     key = f"temp:{basket}"
     hw.cmd_stop(basket)
+    _release_validation_bath()
     with _lock:
         if key in _sessions:
             _sessions[key].update({

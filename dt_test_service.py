@@ -274,13 +274,20 @@ def start_preheat(
         except (TypeError, ValueError):
             return {"ok": False, "error": "duration_minutes required for timer mode"}
 
-    # Send PHW for this basket only (preserve other basket heater)
-    heater = hw.get_heater_state()
-    t1 = temp if basket == 1 else float(heater.get("t1") or 0.0)
-    t2 = temp if basket == 2 else float(heater.get("t2") or 0.0)
-    hw_result = hw.cmd_preheat(t1=t1, t2=t2)
+    # Shared bath: claim ownership; reject if another basket holds a different setpoint
+    owner = f"basket{basket}"
+    hw_result = hw.request_bath(owner, temp)
     if not hw_result.get("ok"):
-        return {"ok": False, "error": hw_result.get("error") or "preheat failed", "hardware": hw_result}
+        err = hw_result.get("error") or hw_result.get("code") or "preheat failed"
+        return {
+            "ok": False,
+            "error": err,
+            "code": hw_result.get("code") or err,
+            "message": hw_result.get("message") or err,
+            "currentTemp": hw_result.get("currentTemp"),
+            "owners": hw_result.get("owners"),
+            "hardware": hw_result,
+        }
 
     media_val = str(media).strip() if media is not None else None
     if media_val == "":
@@ -387,6 +394,20 @@ def apply_run_setup(
         try:
             temp = float(set_temperature)
             if 20 <= temp <= 55:
+                # Shared bath: changing setpoint while another owner holds a different
+                # temperature is rejected; same setpoint is a no-op claim.
+                owner = f"basket{basket}"
+                bath = hw.request_bath(owner, temp)
+                if not bath.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": bath.get("error") or bath.get("code") or "bath_temp_conflict",
+                        "code": bath.get("code") or "bath_temp_conflict",
+                        "message": bath.get("message"),
+                        "currentTemp": bath.get("currentTemp"),
+                        "owners": bath.get("owners"),
+                        "hardware": bath,
+                    }
                 fields["setTemperature"] = temp
         except (TypeError, ValueError):
             pass
@@ -572,6 +593,11 @@ def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[s
         return {"ok": False, "error": f"basket {basket} not active", "run": current}
 
     hw.cmd_stop(basket)
+    # Release shared-bath ownership so stopping basket 1 never cools basket 2
+    try:
+        hw.release_bath(f"basket{basket}")
+    except Exception:
+        pass
 
     # Pure preheat / await-confirm stop (motor never started) — Hardness-style lifecycle audit
     preheat_phase = prior_state in ("PREHEAT", "READY", "AWAIT_CONFIRM")
@@ -750,6 +776,14 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
         "createdAt": _now_iso(),
         "completedAt": run.get("endedAt") or _now_iso(),
     }
+    if run.get("aborted"):
+        report["aborted"] = True
+        report["abortCause"] = "operator"
+        report["abortReason"] = run.get("abortReason") or "operator_abort"
+        report["remarks"] = "Aborted"
+        # Keep human-readable status from stop_test ("Test Aborted") when present
+        if not report.get("status") or str(report.get("status")).strip().lower() in ("completed",):
+            report["status"] = "Test Aborted"
     return report
 
 
@@ -771,15 +805,17 @@ def _watchdog_loop() -> None:
             for basket in (1, 2):
                 run = get_run(basket)
                 state = run.get("state")
-                # TR detection during preheat
-                if state == "PREHEAT" and live.get(f"TR{basket}"):
+                # Shared bath TR: one ready signal marks every preheating basket
+                bath_ready = bool(live.get("TR") or live.get(f"TR{basket}"))
+                if state == "PREHEAT" and bath_ready:
                     on_temp_ready(basket)
                     continue
                 if state != "RUNNING":
                     continue
-                # Temp sample from IR
-                ir_key = "IR1" if basket == 1 else "IR2"
-                ir = temps.get(ir_key)
+                # Temp sample from shared bath IR (mirrored into IR1/IR2)
+                ir = temps.get("IR1")
+                if ir is None:
+                    ir = temps.get("IR2")
                 if ir is not None:
                     record_temp_sample(basket, float(ir))
                 # Elapsed / countdown

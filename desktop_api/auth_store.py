@@ -144,8 +144,11 @@ def _verifier_payload_has_internal(payload: dict, internal_key: str) -> bool:
 
 
 def _report_approval_internal_key(report_type: str) -> str:
-    if str(report_type or "").strip().lower() == "validation":
+    rtype = str(report_type or "").strip().lower()
+    if rtype == "validation":
         return "validation-report-approve"
+    if rtype == "calibration":
+        return "calibration-report-approve"
     return "test-report-approve"
 
 
@@ -207,6 +210,8 @@ def consume_approval_verify_token(expected_purpose: str):
         if not _verifier_payload_has_internal(payload, perm_key):
             if perm_key == "validation-report-approve":
                 return None, "Verifier does not have validation report approval permission."
+            if perm_key == "calibration-report-approve":
+                return None, "Verifier does not have calibration report approval permission."
             return None, "Verifier does not have test report approval permission."
     if exp == "export" and not _verifier_payload_has_internal(payload, "export-approve"):
         return None, "Verifier does not have export approval permission."

@@ -146,22 +146,21 @@ def _dt_audit_bridge(action, details="", **kwargs):
 def _dt_save_report(report: dict):
     """Persist report from dt_test_service (watchdog auto-stop / stop_test).
 
-    Completed runs stay pending approval. Aborted runs are finalized immediately
-    (reportApprovalStatus=aborted) so they appear on the Reports page.
+    Completed and operator-aborted runs stay pending approval (Pass/Fail gate).
+    Power-interruption finals are handled by unclean-shutdown recovery, not here.
     """
     to_save = dict(report or {})
     try:
         to_save = _stamp_report_operator(to_save)
     except Exception:
         pass
-    # Content abort → finalize like power-loss abort (listed, no Pass/Fail gate)
+    # Human abort → pending approval (not finalized as aborted-without-gate)
     if _report_is_aborted_payload(to_save):
         try:
-            saved = _persist_unclean_shutdown_aborted_report(to_save)
-            _audit_unclean_shutdown_aborted_report(saved)
+            saved = _persist_operator_aborted_pending_report(to_save)
             return saved
         except Exception:
-            app.logger.exception("finalize aborted DT report failed; falling back to pending save")
+            app.logger.exception("save operator-aborted pending DT report failed; falling back to pending save")
     if to_save.get("reportApprovalStatus") is None:
         to_save["reportApprovalStatus"] = "pending"
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
@@ -402,72 +401,64 @@ def _heater_setpoint_on(temp) -> bool:
         return False
 
 
-def _audit_heater_preheat_changes(*, before_heater, t1, t2, source="settings", ok=True, error=None):
-    """Emit Heater on/off audit rows for each beaker whose state or setpoint changed."""
+def _audit_heater_preheat_changes(*, before_heater, t1=None, t2=None, temp=None, source="settings", ok=True, error=None):
+    """Emit a single Bath heater on/off audit row for the shared bath."""
     before = before_heater if isinstance(before_heater, dict) else {}
     try:
-        old_t1 = float(before.get("t1") or 0)
+        old_t = float(before.get("t") or before.get("t1") or before.get("t2") or 0)
     except (TypeError, ValueError):
-        old_t1 = 0.0
-    try:
-        old_t2 = float(before.get("t2") or 0)
-    except (TypeError, ValueError):
-        old_t2 = 0.0
-    try:
-        new_t1 = float(t1 or 0)
-    except (TypeError, ValueError):
-        new_t1 = 0.0
-    try:
-        new_t2 = float(t2 or 0)
-    except (TypeError, ValueError):
-        new_t2 = 0.0
+        old_t = 0.0
+    if temp is not None:
+        try:
+            new_t = float(temp or 0)
+        except (TypeError, ValueError):
+            new_t = 0.0
+    else:
+        try:
+            new_t = max(float(t1 or 0), float(t2 or 0))
+        except (TypeError, ValueError):
+            new_t = 0.0
 
     source = str(source or "settings").strip() or "settings"
     outcome = "success" if ok else "failed"
-    pairs = ((1, old_t1, new_t1), (2, old_t2, new_t2))
-    emitted = 0
-    for beaker, old_t, new_t in pairs:
-        old_on = _heater_setpoint_on(old_t)
-        new_on = _heater_setpoint_on(new_t)
-        setpoint_changed = abs(old_t - new_t) > 0.05
-        if old_on == new_on and not (new_on and setpoint_changed):
-            continue
-        if new_on:
-            action = "Heater on"
-            details = "Beaker {} | setpoint {:.1f}°C | source {}".format(beaker, new_t, source)
-        else:
-            action = "Heater off"
-            details = "Beaker {} | source {}".format(beaker, source)
-        if error:
-            details = "{} | error {}".format(details, error)
-        try:
-            _audit_event(
-                action=action,
-                outcome=outcome,
-                entity_type="heater",
-                entity_id=str(beaker),
-                entity_name="Beaker {}".format(beaker),
-                details=details,
-                event_type="lifecycle",
-                before={"t{}".format(beaker): old_t},
-                after={"t{}".format(beaker): new_t},
-                extra={"source": source, "basket": beaker},
-            )
-            emitted += 1
-        except Exception:
-            app.logger.exception("heater audit failed for beaker %s", beaker)
-    if not ok and emitted == 0:
-        try:
-            _audit_event(
-                action="Heater on",
-                outcome="failed",
-                entity_type="heater",
-                details="Preheat failed | source {} | error {}".format(source, error or "unknown"),
-                event_type="lifecycle",
-                extra={"source": source, "t1": new_t1, "t2": new_t2},
-            )
-        except Exception:
-            app.logger.exception("heater failure audit failed")
+    old_on = _heater_setpoint_on(old_t)
+    new_on = _heater_setpoint_on(new_t)
+    setpoint_changed = abs(old_t - new_t) > 0.05
+    if old_on == new_on and not (new_on and setpoint_changed) and ok:
+        return
+    if new_on:
+        action = "Heater on"
+        details = "Bath | setpoint {:.1f}°C | source {}".format(new_t, source)
+    else:
+        action = "Heater off"
+        details = "Bath | source {}".format(source)
+    if error:
+        details = "{} | error {}".format(details, error)
+    try:
+        _audit_event(
+            action=action,
+            outcome=outcome,
+            entity_type="heater",
+            entity_id="bath",
+            entity_name="Bath",
+            details=details,
+            event_type="lifecycle",
+            before={"t": old_t},
+            after={"t": new_t},
+            extra={"source": source},
+        )
+    except Exception:
+        app.logger.exception("heater audit failed for bath")
+
+
+def _bath_conflict_status(result) -> int:
+    """HTTP status for bath ownership conflicts."""
+    if not isinstance(result, dict) or result.get("ok"):
+        return 200
+    code = str(result.get("code") or result.get("error") or "").strip().lower()
+    if code in ("bath_temp_conflict", "bath_busy"):
+        return 409
+    return 400
 
 
 POWER_INTERRUPTION_REMARKS = "power interruption"
@@ -482,7 +473,11 @@ def _report_test_status(report: dict) -> str:
 
 
 def _report_abort_cause(report: dict) -> str:
-    """Return 'operator', 'power_interruption', or '' for a report/checkpoint payload."""
+    """Return 'operator', 'power_interruption', or '' for a report/checkpoint payload.
+
+    Explicit abortCause wins. Content already marked aborted (human Abort) is
+    treated as operator unless power interruption was already stamped.
+    """
     report = report or {}
     td = report.get("testData") if isinstance(report.get("testData"), dict) else {}
     cause = str(report.get("abortCause") or (td or {}).get("abortCause") or "").strip().lower()
@@ -490,6 +485,26 @@ def _report_abort_cause(report: dict) -> str:
         return ABORT_CAUSE_OPERATOR
     if cause in ("power_interruption", "power_loss", "power"):
         return ABORT_CAUSE_POWER
+
+    reason = str(
+        report.get("abortReason")
+        or (td or {}).get("abortReason")
+        or report.get("reason")
+        or ""
+    ).strip().lower()
+    if reason in (
+        "operator_abort",
+        "operator",
+        "user",
+        "nav_abort",
+        "preheat_abort",
+        "start_cancelled",
+        "logout",
+    ) or "operator" in reason:
+        return ABORT_CAUSE_OPERATOR
+    if reason in ("power_interruption", "power_loss", "power", "power_cut"):
+        return ABORT_CAUSE_POWER
+
     remarks = str(
         report.get("approvalRemarks")
         or report.get("remarks")
@@ -501,8 +516,12 @@ def _report_abort_cause(report: dict) -> str:
     approved_by = str(report.get("approvedBy") or "").strip().lower()
     if "power interruption" in approved_by:
         return ABORT_CAUSE_POWER
-    # Already aborted (operator pressed Abort) before unclean shutdown.
-    if _report_test_status(report) == "aborted":
+
+    # Human Abort already stamped on the payload (before unclean-shutdown finalize).
+    if report.get("aborted") is True:
+        return ABORT_CAUSE_OPERATOR
+    st = _report_test_status(report)
+    if st in ("aborted", "test aborted"):
         return ABORT_CAUSE_OPERATOR
     return ""
 
@@ -599,9 +618,10 @@ def _apply_power_loss_abort_to_report(report: dict) -> dict:
 
 
 def _apply_operator_abort_finalize_to_report(report: dict) -> dict:
-    """Finalize an operator-aborted pending report after unclean shutdown.
+    """Legacy finalize: operator abort without Pass/Fail (approval status aborted).
 
-    Keeps Test Status / remarks as Aborted — never relabels as power interruption.
+    Live operator aborts now stay pending via _persist_operator_aborted_pending_report.
+    Kept for rare explicit finalize / migration paths.
     """
     td = report.get("testData") if isinstance((report or {}).get("testData"), dict) else {}
     existing = str(
@@ -622,16 +642,134 @@ def _apply_operator_abort_finalize_to_report(report: dict) -> dict:
     )
 
 
-def _persist_unclean_shutdown_aborted_report(report: dict, *, force_power_interruption: bool = False) -> dict:
-    """Save unclean-shutdown aborted report and write print artifacts (no Pass/Fail).
-
-    Operator-aborted pending reports stay labeled Aborted.
-    Power interruption is only for mid-test loss or completed-report-before-approval.
-    """
-    if force_power_interruption or _report_abort_cause(report) != ABORT_CAUSE_OPERATOR:
-        report = _apply_power_loss_abort_to_report(report)
+def _prepare_operator_aborted_pending_report(report: dict) -> dict:
+    """Stamp operator-abort content but leave reportApprovalStatus=pending for Pass/Fail."""
+    report = dict(report or {})
+    td = report.get("testData")
+    if not isinstance(td, dict):
+        td = {}
     else:
+        td = dict(td)
+    existing = str(
+        report.get("remarks")
+        or td.get("remarks")
+        or ""
+    ).strip()
+    if existing and POWER_INTERRUPTION_REMARKS not in existing.lower():
+        remarks = existing
+    else:
+        remarks = OPERATOR_ABORT_REMARKS
+    td["status"] = "aborted"
+    td["remarks"] = remarks
+    td["abortCause"] = ABORT_CAUSE_OPERATOR
+    for k in ("approvalPassFail", "drumPassFail"):
+        td.pop(k, None)
+    results = td.get("stepResults")
+    if isinstance(results, list):
+        for idx, row in enumerate(results):
+            if not isinstance(row, dict):
+                continue
+            row = dict(row)
+            row["resultText"] = "Aborted"
+            row.pop("approvalPassFail", None)
+            if not row.get("drumLabel"):
+                row["drumLabel"] = "Drum {}".format(idx + 1)
+            results[idx] = row
+        td["stepResults"] = results
+    val_runs = td.get("validationRuns")
+    if isinstance(val_runs, list):
+        for idx, run in enumerate(val_runs):
+            if not isinstance(run, dict):
+                continue
+            run = dict(run)
+            run["status"] = "Aborted"
+            val_runs[idx] = run
+        td["validationRuns"] = val_runs
+    report["testData"] = td
+    report["remarks"] = remarks
+    report["aborted"] = True
+    report["abortCause"] = ABORT_CAUSE_OPERATOR
+    rtype = str(report.get("type") or "").strip().lower()
+    if rtype == "validation":
+        report["status"] = "ABORTED"
+    elif not str(report.get("status") or "").strip() or str(report.get("status") or "").strip().lower() in (
+        "running",
+        "completed",
+        "complete",
+    ):
+        report["status"] = "Test Aborted"
+    report["reportApprovalStatus"] = "pending"
+    for k in (
+        "approvalPassFail",
+        "approvalRemarks",
+        "approvedBy",
+        "approvedAt",
+        "approvedByUsername",
+        "drumPassFail",
+    ):
+        report.pop(k, None)
+    val_runs_top = report.get("validationRuns")
+    if isinstance(val_runs_top, list):
+        for idx, run in enumerate(val_runs_top):
+            if not isinstance(run, dict):
+                continue
+            run = dict(run)
+            run["status"] = "Aborted"
+            val_runs_top[idx] = run
+        report["validationRuns"] = val_runs_top
+    if not report.get("completedAt"):
+        report["completedAt"] = _utc_now_iso()
+    return report
+
+
+def _persist_operator_aborted_pending_report(report: dict) -> dict:
+    """Save human-aborted report as pending approval (Pass/Fail + e-sign)."""
+    report = _prepare_operator_aborted_pending_report(report)
+    report_id = report.get("id")
+    if report_id is None:
+        report_id = data_service.save_report(report)
+        report["id"] = report_id
+    else:
+        data_service.save_report(report)
+    try:
+        details = _format_report_audit_details(int(report_id), report)
+        _audit_event(
+            action="Report saved",
+            outcome="success",
+            details="{} | status: aborted | pending approval | remarks: {}".format(
+                details,
+                str(report.get("remarks") or OPERATOR_ABORT_REMARKS),
+            ),
+            entity_type="report",
+            entity_id=str(report_id or ""),
+            entity_name=(report or {}).get("name") or "",
+            extra={"abortCause": ABORT_CAUSE_OPERATOR, "pendingApproval": True},
+        )
+    except Exception:
+        app.logger.exception("audit operator-aborted pending report failed for id %s", report_id)
+    return report
+
+
+def _persist_unclean_shutdown_aborted_report(report: dict, *, force_power_interruption: bool = False) -> dict:
+    """Save aborted report and write print artifacts (no Pass/Fail).
+
+    Power interruption (auto) → remarks \"power interruption\", System auto-approved.
+    Live operator aborts use _persist_operator_aborted_pending_report instead.
+
+    When force_power_interruption is set (unclean restart recovery), always apply
+    power-interruption System auto-approve — including pending human-aborted reports.
+    """
+    cause = _report_abort_cause(report)
+    if force_power_interruption:
+        report = _apply_power_loss_abort_to_report(report)
+    elif cause == ABORT_CAUSE_OPERATOR:
         report = _apply_operator_abort_finalize_to_report(report)
+    elif cause == ABORT_CAUSE_POWER:
+        report = _apply_power_loss_abort_to_report(report)
+    elif _report_is_aborted_payload(report):
+        report = _apply_operator_abort_finalize_to_report(report)
+    else:
+        report = _apply_power_loss_abort_to_report(report)
     report_id = report.get("id")
     if report_id is None:
         report_id = data_service.save_report(report)
@@ -655,7 +793,7 @@ def _persist_power_loss_aborted_report(report: dict) -> dict:
 
 
 def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
-    """Audit row for a report finalized after unclean shutdown."""
+    """Audit row for a finalized aborted report (operator Abort or power loss)."""
     rid = report.get("id")
     if rid is None:
         return
@@ -663,7 +801,7 @@ def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
     cause = _report_abort_cause(report) or ABORT_CAUSE_POWER
     remarks = str(report.get("approvalRemarks") or report.get("remarks") or "").strip()
     if cause == ABORT_CAUSE_OPERATOR:
-        detail = "{} | unclean shutdown | status: aborted | remarks: {}".format(
+        detail = "{} | status: aborted | remarks: {}".format(
             ctx,
             remarks or OPERATOR_ABORT_REMARKS,
         )
@@ -682,45 +820,29 @@ def _audit_power_loss_aborted_report(report: dict) -> None:
 
 
 def _abort_pending_reports_after_power_loss(session_username=None):
-    """Finalize pending test/validation reports after unclean shutdown.
+    """Finalize pending reports after unclean shutdown via System auto-approve.
 
-    - Operator already aborted → keep Aborted (not power interruption).
-    - Completed test/validation awaiting approval → power interruption.
+    Any pending test/validation/calibration report (completed or human-aborted
+    awaiting approval) is System-approved with remarks \"power interruption\".
     """
     aborted = 0
     for report in data_service.list_reports("all", include_pending=True) or []:
         rtype = (report.get("type") or "").strip().lower()
-        if rtype not in ("test", "validation"):
+        if rtype not in ("test", "validation", "calibration"):
             continue
         if (report.get("reportApprovalStatus") or "").strip().lower() != "pending":
             continue
-        report = _persist_unclean_shutdown_aborted_report(report)
+        report = _persist_unclean_shutdown_aborted_report(
+            report, force_power_interruption=True
+        )
         _audit_unclean_shutdown_aborted_report(report)
         aborted += 1
     return aborted
 
 
 def _normalize_pending_aborted_reports():
-    """Repair stuck pending+content-aborted rows so they list on the Reports page.
-
-    Older operator/validation aborts were saved as reportApprovalStatus=pending and
-    stayed hidden. Finalize those only — leave completed pending reports alone.
-    """
-    fixed = 0
-    for report in data_service.list_reports("all", include_pending=True) or []:
-        rtype = (report.get("type") or "").strip().lower()
-        if rtype not in ("test", "validation"):
-            continue
-        if (report.get("reportApprovalStatus") or "").strip().lower() != "pending":
-            continue
-        if not _report_is_aborted_payload(report):
-            continue
-        report = _persist_unclean_shutdown_aborted_report(report)
-        _audit_unclean_shutdown_aborted_report(report)
-        fixed += 1
-    if fixed:
-        app.logger.info("Normalized %s pending aborted report(s) for Reports list", fixed)
-    return fixed
+    """No-op: human-aborted reports stay pending for Pass/Fail approval."""
+    return 0
 
 
 def _normalize_power_interruption_auto_approvals():
@@ -731,7 +853,7 @@ def _normalize_power_interruption_auto_approvals():
     fixed = 0
     for report in data_service.list_reports("all", include_pending=True) or []:
         rtype = (report.get("type") or "").strip().lower()
-        if rtype not in ("test", "validation"):
+        if rtype not in ("test", "validation", "calibration"):
             continue
         st = str(report.get("reportApprovalStatus") or "").strip().lower()
         if st != "aborted":
@@ -825,7 +947,7 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
         if session_username and not enriched.get("operatedByUsername") and not enriched.get("operatorUsername"):
             enriched["operatedByUsername"] = session_username
             enriched["operatorUsername"] = session_username
-        force_power = _report_abort_cause(enriched) != ABORT_CAUSE_OPERATOR
+        force_power = True
         enriched = _persist_unclean_shutdown_aborted_report(
             enriched,
             force_power_interruption=force_power,
@@ -890,10 +1012,9 @@ def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
                 factory_settings=report_data.get("factorySettings"),
             )
             enriched = _stamp_report_operator(enriched)
-            force_power = _report_abort_cause(enriched) != ABORT_CAUSE_OPERATOR
             enriched = _persist_unclean_shutdown_aborted_report(
                 enriched,
-                force_power_interruption=force_power,
+                force_power_interruption=True,
             )
             _audit_unclean_shutdown_aborted_report(enriched)
             data_service.clear_test_run_data()
@@ -1106,8 +1227,11 @@ def _approval_verifier_eligible_for_recipe_enable(verifier: dict) -> bool:
 
 def _report_approval_internal_key(report_type: str) -> str:
     """Internal RBAC key for approving a report by type."""
-    if str(report_type or "").strip().lower() == "validation":
+    rtype = str(report_type or "").strip().lower()
+    if rtype == "validation":
         return "validation-report-approve"
+    if rtype == "calibration":
+        return "calibration-report-approve"
     return "test-report-approve"
 
 
@@ -1238,7 +1362,7 @@ def _stamp_report_operator(enriched):
 
 def _report_requires_approval(report):
     rtype = (report.get("type") or "").strip().lower()
-    return rtype in ("test", "validation")
+    return rtype in ("test", "validation", "calibration")
 
 
 def _check_report_approved_for_print_export(report=None, report_id=None, report_data=None):
@@ -1280,6 +1404,8 @@ PERMISSION_CARD_LABELS = {
     "perm_profile_admin": "Profile management",
     "perm_validation_test": "Validation test access",
     "perm_validation_report_approve": "Validation report approval",
+    "perm_calibration": "Calibration access",
+    "perm_calibration_report_approve": "Calibration report approval",
     "perm_datetime": "Edit date and time",
     "perm_reports_view": "View and print reports",
     "perm_audit_view": "View audit trails only",
@@ -1760,6 +1886,8 @@ def _consume_approval_verify_token(expected_purpose):
         if not _verifier_payload_has_internal(payload, perm_key):
             if perm_key == "validation-report-approve":
                 return None, "Verifier does not have validation report approval permission."
+            if perm_key == "calibration-report-approve":
+                return None, "Verifier does not have calibration report approval permission."
             return None, "Verifier does not have test report approval permission."
     elif exp == "recipe":
         if not _verifier_payload_has_internal(payload, "recipe-approve"):
@@ -1839,6 +1967,71 @@ def _format_report_audit_details(report_id, enriched):
     return " | ".join(parts)
 
 
+def _format_recipe_audit_details(recipe, *, recipe_id=None, action_label=None):
+    """
+    Build audit details for recipe create/edit including parameters.
+
+    Example:
+      Recipe created: Paracetamol | temp 37.0°C | mode timer | duration 00:30:00 | media Water | mesh 10# | id 12
+    """
+    r = recipe if isinstance(recipe, dict) else {}
+    rid = recipe_id if recipe_id is not None else r.get("id")
+    name = (r.get("name") or r.get("productName") or "").strip()
+    parts = []
+    if action_label:
+        if name:
+            parts.append("{}: {}".format(action_label, name))
+        elif rid is not None:
+            parts.append("{}: id {}".format(action_label, rid))
+        else:
+            parts.append(str(action_label))
+    elif name:
+        parts.append(name)
+
+    temp = r.get("temp")
+    if temp is None:
+        temp = r.get("setTemperature")
+    try:
+        if temp is not None and str(temp).strip() != "":
+            parts.append("temp {:.1f}°C".format(float(temp)))
+    except (TypeError, ValueError):
+        pass
+
+    mode = str(r.get("mode") or "").strip().lower()
+    if mode:
+        parts.append("mode {}".format(mode))
+
+    if mode == "timer":
+        dur_disp = (r.get("setDuration") or "").strip()
+        if not dur_disp:
+            try:
+                minutes = float(r.get("duration"))
+                total_sec = int(round(minutes * 60))
+                hh, rem = divmod(max(0, total_sec), 3600)
+                mm, ss = divmod(rem, 60)
+                dur_disp = "{:02d}:{:02d}:{:02d}".format(hh, mm, ss)
+            except (TypeError, ValueError):
+                dur_disp = ""
+        if dur_disp:
+            parts.append("duration {}".format(dur_disp))
+
+    media = (r.get("media") or "").strip()
+    if media:
+        parts.append("media {}".format(media))
+
+    mesh = (r.get("mesh") or "").strip()
+    if mesh:
+        parts.append("mesh {}".format(mesh))
+
+    if rid is not None and str(rid).strip() != "":
+        # Avoid duplicating "id N" when that was already the only label
+        id_bit = "id {}".format(rid)
+        if not any(p == id_bit or p.endswith(": {}".format(id_bit)) for p in parts):
+            parts.append(id_bit)
+
+    return " | ".join(parts) if parts else (action_label or "recipe")
+
+
 # =================== STATIC ==========================
 
 
@@ -1896,10 +2089,9 @@ def create_recipe():
         if tok_err:
             return jsonify({"error": tok_err}), 401
         recipe_id = data_service.save_recipe(processed)
-        rlabel = processed.get("name") or processed.get("productName") or ""
-        rd = "Recipe created: {}".format(rlabel or ("id {}".format(recipe_id)))
-        if recipe_id:
-            rd = "{} (id {})".format(rd, recipe_id)
+        rd = _format_recipe_audit_details(
+            processed, recipe_id=recipe_id, action_label="Recipe created"
+        )
         _audit(None, None, "Recipe created", rd)
         if processed.get("recipeApprovalStatus") == "approved":
             if via_token:
@@ -2036,10 +2228,9 @@ def update_recipe(recipe_id):
         if tok_err:
             return jsonify({"error": tok_err}), 401
         data_service.save_recipe(processed)
-        rlabel = processed.get("name") or processed.get("productName") or ""
-        rd = "Recipe id {}".format(recipe_id)
-        if rlabel:
-            rd = "{}: {}".format(rd, rlabel)
+        rd = _format_recipe_audit_details(
+            processed, recipe_id=recipe_id, action_label="Recipe edited"
+        )
         _audit(None, None, "Recipe edited", rd)
         if processed.get("recipeApprovalStatus") == "approved":
             if via_token:
@@ -2283,14 +2474,13 @@ def create_report():
             recipe=recipe,
             factory_settings=report_data.get("factorySettings"),
         )
-        if (enriched.get("type") or "").strip().lower() in ("test", "validation"):
+        if (enriched.get("type") or "").strip().lower() in ("test", "validation", "calibration"):
             enriched = _stamp_report_operator(enriched)
             for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
                 enriched.pop(k, None)
-            # Content-aborted → finalize immediately (listed on Reports; no Pass/Fail gate).
+            # Human abort → pending Pass/Fail approval (same as completed runs).
             if _report_is_aborted_payload(enriched):
-                enriched = _persist_unclean_shutdown_aborted_report(enriched)
-                _audit_unclean_shutdown_aborted_report(enriched)
+                enriched = _persist_operator_aborted_pending_report(enriched)
                 report_id = enriched.get("id")
                 _audit_report_created(report_id, enriched)
                 return jsonify({"id": report_id, "report": enriched}), 201
@@ -3540,12 +3730,19 @@ def _halt_hardware_on_logout():
         except Exception:
             app.logger.exception("logout: abort temp validation basket %s failed", basket)
     try:
-        # Global STOP — heaters + motors for all baskets
+        # Global STOP — motors for all baskets
         result = hardware_service.cmd_stop(None)
         if not result.get("ok"):
             app.logger.warning("logout: global STOP returned not ok: %s", result)
     except Exception:
         app.logger.exception("logout: global STOP to ESP failed")
+    try:
+        # Force shared bath off
+        for owner in list(hardware_service.get_bath_owners() or []):
+            hardware_service.release_bath(owner, force_off=True)
+        hardware_service.release_bath("manual", force_off=True)
+    except Exception:
+        app.logger.exception("logout: release bath failed")
 
 
 @app.route("/api/data/auth/logout", methods=["POST"])
@@ -4867,24 +5064,41 @@ def _generate_report_pdf_file(
 
 
 def _friendly_export_error(exc_or_msg):
-    """Translate any internal export failure into a single short user-facing message.
+    """Translate export failures into short operator-facing messages.
 
-    The audit/reports export pipeline touches Chromium, udisks2, polkit, vfat/exFAT,
-    and the kernel block layer. Their raw messages (dbus warnings, polkit codes,
-    SCSI I/O errors, FAT short-name issues, ...) are useless to operators. Almost
-    every recoverable failure on this hardware is resolved by re-formatting the
-    pendrive cleanly, so we surface a single instruction.
+    Raw udisks/polkit/lsblk details are logged by the caller; this keeps the UI
+    actionable without dumping dbus noise.
     """
     text = (str(exc_or_msg) if exc_or_msg is not None else "").lower()
-    if "no external pendrive" in text or "not detected" in text:
-        return "No external pendrive detected. Please connect a USB pendrive and try again."
+    if "no external pendrive" in text or "not detected" in text or "no exportable" in text:
+        return (
+            "No exportable USB found. Connect a FAT32/exFAT pendrive and try again. "
+            "Whole-disk formatted sticks (no partition table) are supported."
+        )
     if "multiple pendrives" in text:
         return "Multiple pendrives detected. Please disconnect extras and try again."
+    if "udisks2" in text and ("inactive" in text or "not running" in text or "dead" in text):
+        return "USB disk service is not running. Restart the instrument and try again."
     if "could not mount" in text or "mount failed" in text or "not authorized" in text:
-        return "Could not access the pendrive. Reconnect it and try again."
+        return "Could not mount the pendrive. Reconnect it and try again."
     if "no space left" in text or "disk full" in text:
         return "Pendrive is full. Free space or use a different pendrive."
+    if "selected pendrive" in text and "no longer" in text:
+        return "Selected pendrive disconnected. Reconnect it and try again."
     return "Failed to export. Please format the pendrive (FAT32 or exFAT) and try again."
+
+
+def _udisks2_active() -> bool:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "udisks2.service"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
 
 
 @app.route("/api/reports/<int:report_id>/pdf", methods=["POST"])
@@ -4925,7 +5139,30 @@ def _resolve_export_destination(device_path, requested_export_path):
         return pathlib.Path(requested_export_path), None, [], None
     devices = usb_export.list_external_pendrives()
     if not devices:
-        return None, "No external pendrive detected. Please connect a USB pendrive and try again.", [], None
+        summary = ""
+        try:
+            summary = usb_export.summarize_block_devices_for_log()
+        except Exception:
+            summary = ""
+        udisks_ok = _udisks2_active()
+        app.logger.warning(
+            "USB export: no external pendrive listed (udisks2_active=%s). block devices: %s",
+            udisks_ok,
+            summary or "(unavailable)",
+        )
+        if not udisks_ok:
+            return (
+                None,
+                "USB disk service (udisks2) is not running. Restart the instrument and try again.",
+                [],
+                None,
+            )
+        return (
+            None,
+            "No exportable USB found. Connect a FAT32/exFAT pendrive and try again.",
+            [],
+            None,
+        )
     if device_path:
         match = next((d for d in devices if d.get("path") == device_path), None)
         if not match:
@@ -4937,9 +5174,28 @@ def _resolve_export_destination(device_path, requested_export_path):
         return None, "MULTIPLE_PENDRIVES", devices, None
     mounted_now = None
     if not chosen.get("mounted") or not chosen.get("mountpoint"):
+        if not _udisks2_active():
+            app.logger.warning("USB export: udisks2 inactive before mount of %s", chosen.get("path"))
+            return (
+                None,
+                "USB disk service (udisks2) is not running. Restart the instrument and try again.",
+                devices,
+                None,
+            )
         mount_res = usb_export.ensure_pendrive_mounted(chosen["path"])
         if not mount_res.get("ok"):
-            return None, "Could not mount {}: {}".format(chosen["path"], mount_res.get("error") or "unknown"), devices, None
+            raw = mount_res.get("error") or mount_res.get("raw") or "unknown"
+            app.logger.warning(
+                "USB export: mount failed for %s: %s",
+                chosen.get("path"),
+                raw,
+            )
+            return (
+                None,
+                "Could not mount {}: {}".format(chosen["path"], raw),
+                devices,
+                None,
+            )
         chosen["mountpoint"] = mount_res.get("mountpoint")
         if not mount_res.get("already_mounted"):
             mounted_now = chosen["path"]
@@ -5561,25 +5817,47 @@ def dt_preheat():
     if gate:
         return gate
     data = request.get_json(force=True, silent=True) or {}
-    t1 = float(data.get("t1") or data.get("temp1") or 0)
-    t2 = float(data.get("t2") or data.get("temp2") or 0)
-    if data.get("basket") in (1, "1"):
-        t1 = float(data.get("temp") or data.get("setTemperature") or t1)
-    elif data.get("basket") in (2, "2"):
-        t2 = float(data.get("temp") or data.get("setTemperature") or t2)
+    # Prefer single shared-bath temp; collapse legacy t1/t2
+    if data.get("temp") is not None or data.get("setTemperature") is not None:
+        temp = float(data.get("temp") or data.get("setTemperature") or 0)
+    else:
+        t1 = float(data.get("t1") or data.get("temp1") or 0)
+        t2 = float(data.get("t2") or data.get("temp2") or 0)
+        if data.get("basket") in (1, "1"):
+            t1 = float(data.get("temp") or data.get("setTemperature") or t1)
+            temp = t1
+        elif data.get("basket") in (2, "2"):
+            t2 = float(data.get("temp") or data.get("setTemperature") or t2)
+            temp = t2
+        else:
+            temp = max(t1, t2)
     source = str(data.get("source") or "settings").strip() or "settings"
     before = hardware_service.get_heater_state() or {}
-    result = hardware_service.cmd_preheat(t1=t1, t2=t2)
+    if temp <= 0:
+        result = hardware_service.release_bath("manual", force_off=True)
+        # Also clear any lingering basket owners when operator forces heater off from settings
+        for owner in list(hardware_service.get_bath_owners()):
+            hardware_service.release_bath(owner, force_off=True)
+        ok = bool(result.get("ok"))
+        _audit_heater_preheat_changes(
+            before_heater=before,
+            temp=0.0,
+            source=source,
+            ok=ok,
+            error=(result.get("error") if not ok else None),
+        )
+        return jsonify(result), (200 if ok else 400)
+
+    result = hardware_service.request_bath("manual", temp)
     ok = bool(result.get("ok"))
     _audit_heater_preheat_changes(
         before_heater=before,
-        t1=t1,
-        t2=t2,
+        temp=temp,
         source=source,
         ok=ok,
         error=(result.get("error") if not ok else None),
     )
-    return jsonify(result), (200 if ok else 400)
+    return jsonify(result), (_bath_conflict_status(result) if not ok else 200)
 
 
 @app.route("/api/hardware/dt/start", methods=["POST"])
@@ -5776,34 +6054,29 @@ def _audit_dt_instrument_settings_changes(before, after):
         except Exception:
             app.logger.exception("basket configuration audit failed")
 
-    temps_b = before.get("setTemp") or {}
-    temps_a = after.get("setTemp") or {}
-    for key in ("1", "2"):
-        try:
-            old_t = float(temps_b.get(key) if temps_b.get(key) is not None else temps_b.get(int(key), 37.0))
-        except (TypeError, ValueError):
-            old_t = 37.0
-        try:
-            new_t = float(temps_a.get(key) if temps_a.get(key) is not None else temps_a.get(int(key), 37.0))
-        except (TypeError, ValueError):
-            new_t = 37.0
-        if abs(old_t - new_t) <= 0.05:
-            continue
+    try:
+        old_bath = float(before.get("bathSetTemp") if before.get("bathSetTemp") is not None else (before.get("setTemp") or {}).get("1", 37.0))
+    except (TypeError, ValueError):
+        old_bath = 37.0
+    try:
+        new_bath = float(after.get("bathSetTemp") if after.get("bathSetTemp") is not None else (after.get("setTemp") or {}).get("1", 37.0))
+    except (TypeError, ValueError):
+        new_bath = 37.0
+    if abs(old_bath - new_bath) > 0.05:
         try:
             _audit_event(
                 action="Set temperature changed",
                 outcome="success",
                 entity_type="instrument_settings",
-                entity_id=key,
-                entity_name="Beaker {}".format(key),
-                details="Beaker {} | {:.1f}°C".format(key, new_t),
+                entity_id="bath",
+                entity_name="Bath",
+                details="Bath | {:.1f}°C".format(new_bath),
                 event_type="lifecycle",
-                before={"setTemp": old_t},
-                after={"setTemp": new_t},
-                extra={"basket": int(key)},
+                before={"bathSetTemp": old_bath},
+                after={"bathSetTemp": new_bath},
             )
         except Exception:
-            app.logger.exception("set temperature audit failed for beaker %s", key)
+            app.logger.exception("bath set temperature audit failed")
 
 
 @app.route("/api/data/dt/runs", methods=["GET"])
@@ -5855,7 +6128,7 @@ def dt_run_preheat(basket):
         operator_id=op["employeeId"],
         operator_username=op["username"],
     )
-    return jsonify(result), (200 if result.get("ok") else 400)
+    return jsonify(result), (_bath_conflict_status(result) if not result.get("ok") else 200)
 
 
 @app.route("/api/data/dt/runs/<int:basket>/setup", methods=["POST"])
@@ -5879,7 +6152,7 @@ def dt_run_setup(basket):
         recipe_name=data.get("recipeName") or data.get("productName") or "",
         set_temperature=data.get("setTemperature") or data.get("temp"),
     )
-    return jsonify(result), (200 if result.get("ok") else 400)
+    return jsonify(result), (_bath_conflict_status(result) if not result.get("ok") else 200)
 
 
 @app.route("/api/data/dt/runs/<int:basket>/confirm", methods=["POST"])
@@ -5950,8 +6223,7 @@ def dt_run_stop(basket):
             report = dict(result["report"])
             report = _stamp_report_operator(report)
             if aborted or _report_is_aborted_payload(report):
-                saved = _persist_unclean_shutdown_aborted_report(report)
-                _audit_unclean_shutdown_aborted_report(saved)
+                saved = _persist_operator_aborted_pending_report(report)
             else:
                 report["reportApprovalStatus"] = "pending"
                 for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
@@ -6032,16 +6304,7 @@ def dt_stroke_save(basket):
         report.pop(k, None)
     report = _stamp_report_operator(report)
     if _report_is_aborted_payload(report):
-        saved = _persist_unclean_shutdown_aborted_report(report)
-        _audit_unclean_shutdown_aborted_report(saved)
-        _audit_event(
-            action="Report saved",
-            outcome="success",
-            details=f"Aborted stroke validation basket {basket}",
-            entity_type="report",
-            entity_id=str(saved.get("id") or ""),
-            entity_name=(saved or {}).get("name") or "",
-        )
+        saved = _persist_operator_aborted_pending_report(report)
         return jsonify({"ok": True, "report": saved})
     report["reportApprovalStatus"] = "pending"
     saved_id = data_service.save_report(report)
@@ -6068,7 +6331,7 @@ def dt_temp_arm(basket):
         set_temperature=data.get("setTemperature") or data.get("temp") or 37.0,
         operator=_session_operator(),
     )
-    return jsonify(result), (200 if result.get("ok") else 400)
+    return jsonify(result), (_bath_conflict_status(result) if not result.get("ok") else 200)
 
 
 @app.route("/api/data/dt/validation/temp/<int:basket>/start", methods=["POST"])
@@ -6123,16 +6386,7 @@ def dt_temp_save(basket):
         report.pop(k, None)
     report = _stamp_report_operator(report)
     if _report_is_aborted_payload(report):
-        saved = _persist_unclean_shutdown_aborted_report(report)
-        _audit_unclean_shutdown_aborted_report(saved)
-        _audit_event(
-            action="Report saved",
-            outcome="success",
-            details=f"Aborted temp validation basket {basket}",
-            entity_type="report",
-            entity_id=str(saved.get("id") or ""),
-            entity_name=(saved or {}).get("name") or "",
-        )
+        saved = _persist_operator_aborted_pending_report(report)
         return jsonify({"ok": True, "report": saved})
     report["reportApprovalStatus"] = "pending"
     saved_id = data_service.save_report(report)
@@ -6150,7 +6404,7 @@ def dt_temp_save(basket):
 
 @app.route("/api/data/dt/validation/<int:basket>/combined/abort", methods=["POST"])
 def dt_combined_validation_abort(basket):
-    """Abort in-progress Stroke→Temp validation and finalize as aborted (listed, no Pass/Fail)."""
+    """Abort in-progress Stroke→Temp validation; save pending for Pass/Fail approval."""
     gate = _require_session_internal("validation-test", "Forbidden. You do not have permission to run validation.")
     if gate:
         return gate
@@ -6180,26 +6434,16 @@ def dt_combined_validation_abort(basket):
     for k in ("approvalPassFail", "approvalRemarks", "approvedBy", "approvedAt", "approvedByUsername"):
         report.pop(k, None)
     report = _stamp_report_operator(report)
-    # Finalize as aborted immediately so it appears on the Reports page (no Pass/Fail gate).
-    saved = _persist_unclean_shutdown_aborted_report(report)
+    saved = _persist_operator_aborted_pending_report(report)
     saved_id = saved.get("id")
     try:
         dt_validation_service.clear_validation_checkpoint(basket)
     except Exception:
         app.logger.exception("clear validation checkpoint after abort failed")
-    _audit_unclean_shutdown_aborted_report(saved)
     _audit_event(
         action="Validation aborted",
         outcome="aborted",
-        details=f"Aborted validation basket {basket}",
-        entity_type="report",
-        entity_id=str(saved_id or ""),
-        entity_name=(saved or {}).get("name") or "",
-    )
-    _audit_event(
-        action="Report saved",
-        outcome="success",
-        details=f"Aborted validation basket {basket}",
+        details=f"Aborted validation basket {basket} | pending approval",
         entity_type="report",
         entity_id=str(saved_id or ""),
         entity_name=(saved or {}).get("name") or "",
@@ -6268,7 +6512,7 @@ def dt_combined_validation_save(basket):
 
 @app.route("/api/data/calibration", methods=["POST"])
 def dt_calibration():
-    """Calibrate sensor — requires calibration-menu + X-Approval-Verify-Token (purpose=calibration)."""
+    """Calibrate shared bath — requires calibration-menu + X-Approval-Verify-Token."""
     gate = _require_session_internal("calibration-menu", "Forbidden. You do not have permission to calibrate.")
     if gate:
         return gate
@@ -6276,13 +6520,12 @@ def dt_calibration():
     if verify_err:
         return jsonify({"ok": False, "error": verify_err}), 403
     data = request.get_json(force=True, silent=True) or {}
-    probe = str(data.get("probe") or "IR").strip().upper()
+    probe = str(data.get("probe") or "BATH").strip().upper()
     temperature = data.get("temperature") or data.get("temp") or data.get("setTemperature")
-    beaker = data.get("beaker") or data.get("basket")
     operator = _session_operator()
-    if probe in ("BOTH", "ALL", "IR+EXT", "IR_EXT"):
-        result = dt_calibration_service.calibrate_both(
-            beaker=beaker or 1,
+    # Shared bath: BOTH / BATH / ALL / default → calibrate all three channels
+    if probe in ("BOTH", "ALL", "IR+EXT", "IR_EXT", "BATH", "SHARED", ""):
+        result = dt_calibration_service.calibrate_bath(
             temperature=temperature,
             operator=operator,
             verifier=verified,
@@ -6290,7 +6533,7 @@ def dt_calibration():
     else:
         result = dt_calibration_service.calibrate(
             sensor=data.get("sensor"),
-            beaker=beaker,
+            beaker=data.get("beaker") or data.get("basket"),
             probe=probe,
             temperature=temperature,
             operator=operator,
@@ -6299,18 +6542,32 @@ def dt_calibration():
     if result.get("ok") and result.get("report") and data.get("saveReport", True):
         try:
             report = dict(result["report"])
-            # Calibration reports are already signed; mark approved
-            report["reportApprovalStatus"] = "approved"
-            report["approvalPassFail"] = "PASS"
-            report["approvedBy"] = (verified or {}).get("name") or (verified or {}).get("username")
-            report["approvedByUsername"] = (verified or {}).get("username")
-            report["approvedAt"] = report.get("completedAt")
+            report["reportApprovalStatus"] = "pending"
+            for k in (
+                "approvalPassFail",
+                "approvalRemarks",
+                "approvedBy",
+                "approvedAt",
+                "approvedByUsername",
+            ):
+                report.pop(k, None)
+            report = _stamp_report_operator(report)
             saved_id = data_service.save_report(report)
-            result["savedReport"] = data_service.get_report(saved_id) or report
+            saved = data_service.get_report(saved_id) or report
+            result["savedReport"] = saved
+            result["report"] = saved
+            _audit_event(
+                action="Report saved",
+                outcome="success",
+                details="Pending calibration report",
+                entity_type="report",
+                entity_id=str(saved_id or ""),
+                entity_name=(saved or {}).get("name") or "",
+            )
         except Exception as e:
             app.logger.exception("save calibration report failed")
             result["saveError"] = str(e)
-    return jsonify(result), (200 if result.get("ok") else 400)
+    return jsonify(result), (_bath_conflict_status(result) if not result.get("ok") else 200)
 
 
 # =================== BIOMETRIC ==========================

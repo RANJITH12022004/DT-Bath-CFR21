@@ -210,7 +210,7 @@ def main() -> int:
         assert str(kept.get("reportApprovalStatus") or "").lower() == "pending", kept
         print("OK clean restart preserves pending")
 
-        # ---------- 6) Operator-abort pending stays Aborted (not power interruption) ----------
+        # ---------- 6) Operator-abort pending → power interruption System approve ----------
         op_abort = {
             "type": "test",
             "name": "Operator abort pending",
@@ -226,11 +226,11 @@ def main() -> int:
         rid3 = data_service.save_report(op_abort)
         app_mod._abort_pending_reports_after_power_loss("op1")
         saved3 = data_service.get_report(rid3)
-        assert str(saved3.get("reportApprovalStatus") or "").lower() == "aborted"
+        assert str(saved3.get("reportApprovalStatus") or "").lower() == "approved", saved3
         rem = str(saved3.get("remarks") or saved3.get("approvalRemarks") or "").lower()
-        assert "power interruption" not in rem, saved3
-        assert str(saved3.get("abortCause") or "").lower() in ("operator", ""), saved3
-        print("OK operator-abort preserve")
+        assert "power interruption" in rem, saved3
+        assert "system" in str(saved3.get("approvedBy") or "").lower(), saved3
+        print("OK operator-abort pending → power interruption")
 
         # ---------- DT persist shape ----------
         import dt_test_service

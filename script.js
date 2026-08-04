@@ -1020,6 +1020,22 @@ function userCanApproveValidationReport() {
     return false;
 }
 
+function userCanApproveCalibrationReport() {
+    var role = (typeof getCurrentRole === 'function' ? getCurrentRole() : '') || '';
+    role = String(role).toLowerCase();
+    if (role === 'factory') return true;
+    var u = window.currentUser;
+    if (u && typeof userHasInternalKey === 'function') {
+        return userHasInternalKey(u, 'calibration-report-approve');
+    }
+    return false;
+}
+
+function reportTypeRequiresApprovalGate(type) {
+    var t = String(type || '').trim().toLowerCase();
+    return t === 'test' || t === 'validation' || t === 'calibration';
+}
+
 
 window._reportApprovalGate = null;
 var _reportApprovalPollTimerId = null;
@@ -1058,8 +1074,7 @@ function isCurrentUserReportOperator(preview) {
 
 function isReportPreviewNavigationLocked(preview) {
     var p = preview || window._lastReportPreview || {};
-    var reportTypeNorm = String(p.type || 'test').trim().toLowerCase();
-    if (reportTypeNorm !== 'test' && reportTypeNorm !== 'validation') return false;
+    if (!reportTypeRequiresApprovalGate(p.type)) return false;
     return isReportPendingApproval(p);
 }
 
@@ -1076,7 +1091,7 @@ function guardReportPreviewNavigation(targetPage) {
     if (!isReportPreviewNavigationLocked(window._lastReportPreview)) return false;
     if (targetPage === 'report-preview') return false;
     showAppModal(
-        'This report is awaiting approval. Complete Pass/Fail and sign on this screen, or power off will save a completed test as Aborted (power interruption). Operator aborts stay Aborted.',
+        'This report is awaiting approval. Complete Pass/Fail and sign on this screen. If power is interrupted while awaiting approval, the system auto-approves with remarks “power interruption”.',
         'Report'
     );
     var active = document.querySelector('.page.active');
@@ -1111,8 +1126,7 @@ function setReportApprovalGateFromPreview(preview, reportId) {
         clearReportApprovalGate();
         return;
     }
-    var reportTypeNorm = String((preview || {}).type || 'test').trim().toLowerCase();
-    if (reportTypeNorm === 'test' || reportTypeNorm === 'validation') {
+    if (reportTypeRequiresApprovalGate((preview || {}).type)) {
         setReportApprovalGate(reportId, getReportOperatedByUsername(preview));
     } else {
         clearReportApprovalGate();
@@ -1359,9 +1373,9 @@ function updateReportApprovePanelForPreview(preview) {
     var reportTypeNorm = String((preview || {}).type || 'test').trim().toLowerCase();
     var titleEl = document.getElementById('report-approve-panel-title') || apprPanel.querySelector('h3');
     if (titleEl) {
-        titleEl.textContent = reportTypeNorm === 'validation'
-            ? 'Validation report approval'
-            : 'Test report approval';
+        if (reportTypeNorm === 'validation') titleEl.textContent = 'Validation report approval';
+        else if (reportTypeNorm === 'calibration') titleEl.textContent = 'Calibration report approval';
+        else titleEl.textContent = 'Test report approval';
     }
     apprPanel.style.display = pending ? 'block' : 'none';
     if (!pending) clearReportApproveVerifyError();
@@ -1489,9 +1503,8 @@ function stampOperatorOnValidationReportPayload(payload) {
 
 function reportActionsBlockedForPreview(preview) {
     var p = preview || window._lastReportPreview || {};
-    var reportTypeNorm = String(p.type || 'test').trim().toLowerCase();
     var approvalSt = String(p.reportApprovalStatus || '').trim().toLowerCase();
-    return approvalSt === 'pending' && (reportTypeNorm === 'test' || reportTypeNorm === 'validation');
+    return approvalSt === 'pending' && reportTypeRequiresApprovalGate(p.type);
 }
 
 function finishTestRunReportSaved(reportId) {
@@ -5539,7 +5552,8 @@ function userCanOpenReportPreview(userObj) {
         || canAccess(u, 'recipe-test')
         || canAccess(u, 'validation-test')
         || canAccess(u, 'test-report-approve')
-        || canAccess(u, 'validation-report-approve');
+        || canAccess(u, 'validation-report-approve')
+        || canAccess(u, 'calibration-report-approve');
 }
 
 function userCanRunValidation(userObj) {
@@ -6522,10 +6536,8 @@ function updateReportPreviewPrintExportButtons(preview) {
     var peGroup = document.getElementById('report-preview-print-export-group');
     if (!peGroup) return;
     var p = preview || window._lastReportPreview || {};
-    var reportTypeNorm = String(p.type || 'test').trim().toLowerCase();
     var approvalSt = String(p.reportApprovalStatus || '').trim().toLowerCase();
-    var blockActions = approvalSt === 'pending' &&
-        (reportTypeNorm === 'test' || reportTypeNorm === 'validation');
+    var blockActions = approvalSt === 'pending' && reportTypeRequiresApprovalGate(p.type);
     var canPrint = typeof userCanPrintReports === 'function' && userCanPrintReports() && !blockActions;
     var canExport = typeof userCanExportToUsb === 'function' && userCanExportToUsb() && !blockActions;
     peGroup.style.display = (canPrint || canExport) ? 'flex' : 'none';

@@ -489,11 +489,10 @@ def _load_reports_raw():
 
 
 def report_visible_in_list(report: Dict[str, Any]) -> bool:
-    """Approved and aborted reports appear in the reports list.
+    """Approved and finalized-aborted reports appear in the reports list.
 
-    Pending drafts stay hidden until a reviewer/Admin approves them — except
-    content-aborted reports (operator abort / power loss) which must remain
-    visible even if an older save left them stuck as pending.
+    Pending drafts (including human-aborted awaiting Pass/Fail approval) stay
+    hidden until approved. Power interruption finals are System-approved and listed.
     """
     if not isinstance(report, dict):
         return False
@@ -502,8 +501,6 @@ def report_visible_in_list(report: Dict[str, Any]) -> bool:
         return True
     norm = str(st).strip().lower()
     if norm in ("approved", "aborted"):
-        return True
-    if norm == "pending" and _report_content_is_aborted(report):
         return True
     return False
 
@@ -1532,6 +1529,8 @@ DT_INSTRUMENT_SETTINGS_FILE = "dt_instrument_settings.json"
 _DEFAULT_DT_INSTRUMENT_SETTINGS = {
     "basketConfig": 6,
     "configuredBeakers": {"1": True, "2": True},
+    "bathSetTemp": 37.0,
+    # Legacy mirror kept for older clients during transition
     "setTemp": {"1": 37.0, "2": 37.0},
 }
 
@@ -1556,23 +1555,31 @@ def _normalize_dt_instrument_settings(raw: Optional[Dict[str, Any]]) -> Dict[str
     if not out["configuredBeakers"]["1"] and not out["configuredBeakers"]["2"]:
         out["configuredBeakers"] = {"1": True, "2": True}
 
-    temps_in = raw.get("setTemp") or {}
-    if not isinstance(temps_in, dict):
-        temps_in = {}
-    set_temp = {"1": 37.0, "2": 37.0}
-    for key in ("1", "2"):
+    # Prefer bathSetTemp; migrate from setTemp["1"] when missing
+    bath = None
+    if raw.get("bathSetTemp") is not None:
         try:
-            val = float(temps_in.get(key, temps_in.get(int(key), 37.0)))
-            if 20.0 <= val <= 55.0:
-                set_temp[key] = val
+            bath = float(raw.get("bathSetTemp"))
         except (TypeError, ValueError):
-            pass
-    out["setTemp"] = set_temp
+            bath = None
+    if bath is None:
+        temps_in = raw.get("setTemp") or {}
+        if isinstance(temps_in, dict):
+            try:
+                bath = float(temps_in.get("1", temps_in.get(1, 37.0)))
+            except (TypeError, ValueError):
+                bath = 37.0
+        else:
+            bath = 37.0
+    if not (20.0 <= float(bath) <= 55.0):
+        bath = 37.0
+    out["bathSetTemp"] = float(bath)
+    out["setTemp"] = {"1": float(bath), "2": float(bath)}
     return out
 
 
 def get_dt_instrument_settings() -> Dict[str, Any]:
-    """Persistent beaker enablement + basket tube count (survives reboot)."""
+    """Persistent beaker enablement + shared bath setpoint (survives reboot)."""
     path = _get_storage_path(DT_INSTRUMENT_SETTINGS_FILE)
     data = _load_json_file(path, default={})
     return _normalize_dt_instrument_settings(data if isinstance(data, dict) else {})
@@ -1588,8 +1595,21 @@ def save_dt_instrument_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         merged["basketConfig"] = incoming.get("basketConfig")
     if "configuredBeakers" in incoming or "configured" in incoming:
         merged["configuredBeakers"] = incoming.get("configuredBeakers") or incoming.get("configured")
-    if "setTemp" in incoming:
-        merged["setTemp"] = incoming.get("setTemp")
+    if "bathSetTemp" in incoming:
+        merged["bathSetTemp"] = incoming.get("bathSetTemp")
+    elif "setTemp" in incoming:
+        # Accept legacy setTemp and fold into bathSetTemp
+        st = incoming.get("setTemp")
+        if isinstance(st, dict):
+            try:
+                merged["bathSetTemp"] = float(st.get("1", st.get(1, current.get("bathSetTemp", 37.0))))
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                merged["bathSetTemp"] = float(st)
+            except (TypeError, ValueError):
+                pass
     normalized = _normalize_dt_instrument_settings(merged)
     _save_json_file(path, normalized)
     return normalized
@@ -1613,13 +1633,17 @@ def _report_export_schedule_path() -> pathlib.Path:
 
 
 def _load_report_export_schedule() -> Dict[str, Any]:
+    """Load schedule from STORAGE_DIR (internal USB). Legacy list-shaped files are ignored."""
     path = _report_export_schedule_path()
     if not path.is_file():
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return data
+        # Legacy array shape under older installs — discard, start fresh dict schedule
+        return {}
     except Exception:
         return {}
 

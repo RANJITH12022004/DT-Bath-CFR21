@@ -13,6 +13,8 @@
     sse: null,
     recipeDraft: null,
     modes: { 1: 'manual', 2: 'manual' },
+    bathTemp: 37.0,
+    /** Legacy mirror — both keys always equal bathTemp */
     setTemp: { 1: 37.0, 2: 37.0 },
     products: { 1: null, 2: null },
     batches: { 1: null, 2: null },
@@ -23,6 +25,7 @@
     heaterOn: { 1: false, 2: false },
     /** True when heat was started from Settings (hardware PHW only, no test run). */
     heaterManual: { 1: false, 2: false },
+    bathHeaterOn: false,
     configured: { 1: true, 2: true },
     running: { 1: false, 2: false },
     /** Dashboard start-btn phase: idle | preheating | ready | running */
@@ -266,6 +269,78 @@
     }
   }
 
+  function syncBathTemp(val) {
+    var t = Number(val);
+    if (!(t >= 20 && t <= 55)) t = 37.0;
+    DT.bathTemp = t;
+    DT.setTemp[1] = t;
+    DT.setTemp[2] = t;
+    return t;
+  }
+
+  function showBathConflictModal(res) {
+    var msg = (res && (res.message || res.error)) || 'Bath temperature conflict';
+    var current = res && res.currentTemp != null ? Number(res.currentTemp).toFixed(1) : null;
+    var owners = (res && res.ownerLabels) || (res && res.owners) || [];
+    var detail = msg;
+    if (current && String(msg).indexOf(current) < 0) {
+      detail = 'Bath is already set to ' + current + '°C';
+      if (owners && owners.length) detail += ' (' + owners.join(', ') + ')';
+      detail += '. Both baskets must use the same temperature.';
+    }
+    if (typeof showAlertModal === 'function') {
+      showAlertModal(detail, 'Bath in use');
+    } else {
+      toast(detail, 'error');
+    }
+  }
+
+  function showBathBusyModal(res) {
+    var msg = (res && (res.message || res.error)) ||
+      'Bath is already preheating. Turn off the heater before starting validation or calibration.';
+    var owners = (res && res.owners) || [];
+    var onlyManual = owners.length === 1 && owners[0] === 'manual' &&
+      !DT.running[1] && !DT.running[2];
+    if (typeof showYesNoModal === 'function' && onlyManual) {
+      showYesNoModal(msg + '\n\nTurn off the heater now?', 'Bath in use', 'Turn Off Heater', 'Cancel')
+        .then(function (ok) {
+          if (!ok) return;
+          api('/api/hardware/dt/preheat', { method: 'POST', body: { temp: 0, source: 'settings' } })
+            .then(function (r) {
+              if (!r.ok) throw new Error(r.error || 'Failed to turn off heater');
+              DT.bathHeaterOn = false;
+              DT.heaterOn[1] = false;
+              DT.heaterOn[2] = false;
+              DT.heaterManual[1] = false;
+              DT.heaterManual[2] = false;
+              updateHeaterIndicators();
+              toast('Heater turned off — try again', 'success');
+            })
+            .catch(function (e) { toast(e.message || String(e), 'error'); });
+        });
+    } else if (typeof showAlertModal === 'function') {
+      showAlertModal(msg, 'Bath in use');
+    } else {
+      toast(msg, 'error');
+    }
+  }
+
+  function handleBathError(resOrErr) {
+    var res = resOrErr;
+    if (resOrErr && resOrErr.payload) res = resOrErr.payload;
+    if (!res || typeof res !== 'object') return false;
+    var code = String(res.code || res.error || '').toLowerCase();
+    if (code === 'bath_busy') {
+      showBathBusyModal(res);
+      return true;
+    }
+    if (code === 'bath_temp_conflict') {
+      showBathConflictModal(res);
+      return true;
+    }
+    return false;
+  }
+
   // -------------------- Live temps / SSE --------------------
 
   function ensureSse() {
@@ -279,10 +354,21 @@
           if (data.type === 'temps' || data.kind === 'temps' || data.IR1 != null || data.temps) {
             var t = data.temps || data;
             updateTempDisplay(t);
-            // Ready / Start is TR-driven only (Dr Reddy). Do not flip Start from IR setpoint alone.
+          }
+          // Shared bath TR — ready every preheating basket
+          if (data.type === 'TR') {
+            if (DT.running[1] && DT.btnPhase[1] === 'preheating') markBasketReady(1, 'tr');
+            if (DT.running[2] && DT.btnPhase[2] === 'preheating') markBasketReady(2, 'tr');
           }
           if (data.type === 'TR1' || data.type === 'TR2') {
             markBasketReady(data.type === 'TR1' ? 1 : 2, 'tr');
+          }
+          if (data.type === 'stroke_count' && data.count != null) {
+            var sc = document.getElementById('stroke-counter');
+            if (sc) sc.textContent = String(data.count);
+            var b = data.basket === 2 ? 2 : 1;
+            var scb = document.getElementById('stroke-count-' + b);
+            if (scb) scb.textContent = String(data.count);
           }
         } catch (e) {}
       };
@@ -307,23 +393,20 @@
       if (!el) return;
       el.textContent = (val == null || val === '') ? '--' : Number(val).toFixed(1);
     }
-    setC('dt-ir1', t.IR1); setC('dt-ir2', t.IR2);
+    // Shared bath IR mirrored into both baskets
+    var bathIr = t.IR1 != null ? t.IR1 : t.IR2;
+    setC('dt-ir1', bathIr); setC('dt-ir2', bathIr);
     setC('dt-ext1', t.EXT1); setC('dt-ext2', t.EXT2);
-    setC('temp1', t.IR1); setC('temp2', t.IR2);
+    setC('temp1', bathIr); setC('temp2', bathIr);
     setPlain('dash-ext1', t.EXT1); setPlain('dash-ext2', t.EXT2);
-    setC('dt-run-ir', DT.selectedBasket === 1 ? t.IR1 : t.IR2);
+    setC('dt-run-ir', bathIr);
 
-    var calB = DT.calBeaker || 1;
     var irEl = document.getElementById('calibration-internal-temp-input');
     var extEl = document.getElementById('calibration-external-temp-input');
-    if (irEl) {
-      var ir = calB === 2 ? t.IR2 : t.IR1;
-      irEl.value = ir != null ? Number(ir).toFixed(1) : '';
-    }
-    if (extEl) {
-      var ext = calB === 2 ? t.EXT2 : t.EXT1;
-      extEl.value = ext != null ? Number(ext).toFixed(1) : '';
-    }
+    var ext2El = document.getElementById('calibration-ext2-temp-input');
+    if (irEl) irEl.value = bathIr != null ? Number(bathIr).toFixed(1) : '';
+    if (extEl) extEl.value = t.EXT1 != null ? Number(t.EXT1).toFixed(1) : '';
+    if (ext2El) ext2El.value = t.EXT2 != null ? Number(t.EXT2).toFixed(1) : '';
   }
 
   function setStartBtnPhase(basket, phase) {
@@ -400,10 +483,13 @@
   }
 
   function updateDashboardTempButton() {
+    var bath = document.getElementById('dashboard-temp-bath');
+    var txt = Number(DT.bathTemp || DT.setTemp[1] || 37).toFixed(1);
+    if (bath) bath.textContent = txt;
     var a = document.getElementById('dashboard-temp-1');
     var b = document.getElementById('dashboard-temp-2');
-    if (a) a.textContent = Number(DT.setTemp[1] || 37).toFixed(1);
-    if (b) b.textContent = Number(DT.setTemp[2] || 37).toFixed(1);
+    if (a) a.textContent = txt;
+    if (b) b.textContent = txt;
   }
 
   function formatProductBatchLine(product, batch) {
@@ -483,17 +569,21 @@
   };
 
   function updateHeaterIndicators() {
+    // Shared bath: both basket heater icons track the same on/off state.
+    var on = !!DT.bathHeaterOn || !!(DT.heaterOn[1] || DT.heaterOn[2]);
+    DT.bathHeaterOn = on;
+    DT.heaterOn[1] = on;
+    DT.heaterOn[2] = on;
     [1, 2].forEach(function (b) {
       var el = document.getElementById('heater' + b);
       if (el) {
-        var on = !!DT.heaterOn[b];
         el.classList.toggle('is-on', on);
         el.classList.toggle('is-off', !on);
         el.style.opacity = on ? '1' : '0.6';
-        var span = el.querySelector('span');
-        if (span) {
-          span.textContent = on ? 'Heater On' : 'Heater Off';
-          span.style.color = on ? '#f59e0b' : '#6b7280';
+        var s = el.querySelector('span');
+        if (s) {
+          s.textContent = on ? 'Heater On' : 'Heater Off';
+          s.style.color = on ? '#f59e0b' : '#6b7280';
         }
       }
       syncHeaterControlUi(b);
@@ -502,40 +592,40 @@
 
   function syncHeaterControlUi(basket) {
     basket = basket === 2 ? 2 : 1;
-    var on = !!DT.heaterOn[basket];
-    var btn = document.getElementById('heater-control-btn-' + basket);
-    var label = document.getElementById('control-text-' + basket);
+    var on = !!DT.bathHeaterOn || !!DT.heaterOn[1] || !!DT.heaterOn[2];
+    var btn = document.getElementById('heater-control-btn-1');
+    var label = document.getElementById('control-text-1');
     if (label) label.textContent = on ? 'Stop' : 'Start';
     if (btn) {
       btn.classList.toggle('btn-primary', !on);
       btn.classList.toggle('btn-danger', on);
       btn.classList.toggle('is-heater-stop', on);
     }
-    var setTempEl = document.getElementById('set-temp-' + basket);
-    if (setTempEl && DT.setTemp[basket] != null) {
+    var setTempEl = document.getElementById('set-temp-1');
+    if (setTempEl && DT.bathTemp != null) {
       var cur = parseFloat(setTempEl.value);
-      if (!(cur > 0) || Math.abs(cur - Number(DT.setTemp[basket])) > 0.05) {
-        setTempEl.value = Number(DT.setTemp[basket]).toFixed(1);
+      if (!(cur > 0) || Math.abs(cur - Number(DT.bathTemp)) > 0.05) {
+        setTempEl.value = Number(DT.bathTemp).toFixed(1);
       }
     }
+    var setTemp2 = document.getElementById('set-temp-2');
+    if (setTemp2) setTemp2.value = Number(DT.bathTemp || 37).toFixed(1);
   }
 
   function stopManualHeater(basket) {
     basket = basket === 2 ? 2 : 1;
-    var t1 = 0;
-    var t2 = 0;
-    if (basket === 1) {
-      t2 = (DT.configured[2] && DT.heaterOn[2]) ? Number(DT.setTemp[2] || 0) : 0;
-    } else {
-      t1 = (DT.configured[1] && DT.heaterOn[1]) ? Number(DT.setTemp[1] || 0) : 0;
-    }
-    return api('/api/hardware/dt/preheat', { method: 'POST', body: { t1: t1, t2: t2 } })
+    return api('/api/hardware/dt/preheat', { method: 'POST', body: { temp: 0, source: 'settings' } })
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Heater stop failed');
-        DT.heaterOn[basket] = false;
-        DT.heaterManual[basket] = false;
-        DT.preheatInProgress[basket] = false;
-        setStartBtnPhase(basket, 'idle');
+        DT.bathHeaterOn = false;
+        DT.heaterOn[1] = false;
+        DT.heaterOn[2] = false;
+        DT.heaterManual[1] = false;
+        DT.heaterManual[2] = false;
+        DT.preheatInProgress[1] = false;
+        DT.preheatInProgress[2] = false;
+        if (!DT.running[1]) setStartBtnPhase(1, 'idle');
+        if (!DT.running[2]) setStartBtnPhase(2, 'idle');
         updateHeaterIndicators();
       });
   }
@@ -1145,13 +1235,13 @@
     if (modal) modal.style.display = 'none';
 
     if (purpose === 'calibration') {
-      DT.calBeaker = pick === 2 ? 2 : 1;
+      DT.calBeaker = 1;
       DT.calSessionActive = true;
       syncDtNavLock();
       var numEl = document.getElementById('calibration-beaker-num');
-      if (numEl) numEl.textContent = String(DT.calBeaker);
+      if (numEl) numEl.textContent = 'Bath';
       var sensor = document.getElementById('dt-cal-sensor');
-      if (sensor) sensor.value = DT.calBeaker === 2 ? 'IR2' : 'IR1';
+      if (sensor) sensor.value = 'IR';
       updateTempDisplay(DT.latestTemps || {});
       go('calibration-type-select');
       return;
@@ -1179,7 +1269,7 @@
       DT.products[b] = product;
       DT.batches[b] = batch || '';
       DT.fromRecipe[b] = true;
-      DT.setTemp[b] = temperature;
+      syncBathTemp(temperature);
       DT.modes[b] = mode;
       DT.durations[b] = duration;
       DT.media[b] = recipe.media || null;
@@ -1216,13 +1306,20 @@
   function finishBasketUi(basket, opts) {
     opts = opts || {};
     DT.running[basket] = false;
-    DT.heaterOn[basket] = false;
     DT.heaterManual[basket] = false;
     DT.preheatInProgress[basket] = false;
     if (DT._confirmPending) DT._confirmPending[basket] = false;
     stopRunPoll(basket);
     syncDtNavLock();
     setStartBtnPhase(basket, 'idle');
+    // Keep bath heater indicator on if the other basket still owns heat
+    var peer = basket === 1 ? 2 : 1;
+    if (!DT.running[peer] && !DT.heaterManual[peer]) {
+      DT.heaterOn[basket] = false;
+      if (!DT.heaterOn[peer]) DT.bathHeaterOn = false;
+    } else {
+      DT.heaterOn[basket] = !!DT.bathHeaterOn;
+    }
     // Clear quick-test setup so the next Start after preheat (no recipe) opens Quick Test again.
     // Recipe-loaded product stays until another recipe is loaded.
     if (!DT.fromRecipe || !DT.fromRecipe[basket]) {
@@ -1279,9 +1376,9 @@
         mesh: params.mesh,
       },
     }).then(function (res) {
-      if (!res.ok) throw new Error(res.error || 'Preheat failed');
       toast('Preheating basket ' + basket + '…', 'info');
       DT.heaterOn[basket] = true;
+      DT.bathHeaterOn = true;
       DT.heaterManual[basket] = false;
       updateHeaterIndicators();
       startRunPoll(basket);
@@ -1291,6 +1388,7 @@
       DT.heaterManual[basket] = false;
       setStartBtnPhase(basket, 'idle');
       updateHeaterIndicators();
+      if (handleBathError(e)) return;
       toast(e.message || 'Preheat failed', 'error');
     });
   }
@@ -1467,29 +1565,12 @@
     var basket = basketFromResponse(res, opts.basket);
     var siblingActive = siblingBasketStillActive(basket);
     var viewingPending = isViewingPendingApproval();
+    var aborted = !!opts.aborted;
 
     var rid = reportIdFromResponse(res);
 
-    if (opts.aborted) {
-      // Aborted reports are finalized server-side (listed, no Pass/Fail). Do not queue as pending.
-      toast('Basket ' + basket + ' aborted — report saved', 'info');
-      if (!siblingActive && !viewingPending && rid != null && typeof openReportPreview === 'function') {
-        try {
-          openReportPreview(rid, { setGate: false });
-          return;
-        } catch (eOpen) {}
-      }
-      if (!siblingActive && !viewingPending && DT.pendingReportQueue && DT.pendingReportQueue.length) {
-        if (window.dtOpenNextPendingReport()) return;
-      }
-      if (!viewingPending) go('home');
-      if (typeof loadReports === 'function') {
-        try { loadReports(); } catch (eLoad) {}
-      }
-      return;
-    }
-
     // Always queue so the second beaker is not lost when the first approval is already open.
+    // Human abort and completed runs both open the Pass/Fail approval gate.
     if (rid != null) {
       enqueuePendingReport(rid);
     }
@@ -1508,12 +1589,16 @@
     if (siblingActive || viewingPending) {
       toast(
         siblingActive
-          ? ('Basket ' + basket + ' complete — report opens when the other running test finishes')
-          : ('Basket ' + basket + ' complete — report queued for approval after the current one'),
+          ? ('Basket ' + basket + (aborted ? ' aborted' : ' complete') + ' — report opens when the other running test finishes')
+          : ('Basket ' + basket + (aborted ? ' aborted' : ' complete') + ' — report queued for approval after the current one'),
         'info'
       );
       if (!viewingPending) go('home');
       return;
+    }
+
+    if (aborted) {
+      toast('Basket ' + basket + ' aborted — report pending approval', 'info');
     }
 
     // Both idle and nothing on screen: open oldest queued report
@@ -2039,11 +2124,11 @@
       method: 'POST',
       body: { setTemperature: temp },
     }).then(function (res) {
-      if (!res.ok) throw new Error(res.error || 'Apply failed');
       toast('Set temperature applied: ' + temp.toFixed(1) + '°C', 'success');
       pollValidation('temp', basket);
     }).catch(function (e) {
       if (msg) msg.textContent = 'Apply setpoint';
+      if (handleBathError(e)) return;
       toast(e.message || 'Failed', 'error');
     });
   };
@@ -2176,12 +2261,11 @@
       .then(function (res) {
         _valAbortSaveLock = false;
         if (!res.ok) throw new Error(res.error || 'Abort save failed');
-        toast('Validation aborted — report saved', 'info');
+        toast('Validation aborted — report pending approval', 'info');
         var report = res.report || {};
         var rid = report.id;
         if (openPreview && rid && typeof openReportPreview === 'function') {
-          // Finalized as aborted — open read-only (no Pass/Fail gate).
-          openReportPreview(rid, { setGate: false });
+          openReportPreview(rid, { setGate: true });
           return res;
         }
         if (!opts.stay) {
@@ -2349,7 +2433,21 @@
   };
 
   window.cancelValidationDueModal = function () {
+    // Cancel must return to Pass/Fail — otherwise nav stays locked (_valAwaitingSave /
+    // tempDone) with no UI to reopen the due modal or finish the report.
     closeValidationDueModal();
+    if (_valSession) {
+      _valSession.phase = 'awaiting_pf';
+      _valSession.operatorValidationPassFail = null;
+      // tempDone stays true so navigation remains guarded until Pass/Fail finishes.
+    }
+    setValAwaitingSave('temp', currentValBasket());
+    var resultActions = document.getElementById('temp-validation-result-actions');
+    if (resultActions) resultActions.style.display = '';
+    var msg = document.getElementById('validation-message');
+    if (msg) msg.textContent = 'Select Pass or Fail';
+    syncDtNavLock();
+    toast('Select Pass or Fail to finish validation', 'info');
   };
 
   window.selectValidationDueMonths = function (months) {
@@ -2518,8 +2616,7 @@
 
         if (kind === 'temp') {
           var liveTemps = DT.latestTemps || {};
-          var irKey = basket === 2 ? 'IR2' : 'IR1';
-          var liveIr = liveTemps[irKey];
+          var liveIr = liveTemps.IR1 != null ? liveTemps.IR1 : liveTemps.IR2;
           var samples = s.samples || [];
           var lastSample = samples.length ? samples[samples.length - 1].temp : null;
           var measured = liveIr != null ? liveIr : (lastSample != null ? lastSample : (s.maxTemp != null ? s.maxTemp : null));
@@ -2649,18 +2746,13 @@
   // -------------------- Calibration --------------------
 
   window.selectBeakerForCalibration = function (beakerId) {
-    var pick = beakerId === 2 ? 2 : 1;
-    if (!DT.configured[pick]) {
-      toast('Configure beaker ' + pick + ' in Settings → Add Beakers', 'error');
-      return;
-    }
-    DT.calBeaker = pick;
+    DT.calBeaker = 1;
     DT.calSessionActive = true;
     syncDtNavLock();
     var numEl = document.getElementById('calibration-beaker-num');
-    if (numEl) numEl.textContent = String(DT.calBeaker);
+    if (numEl) numEl.textContent = 'Bath';
     var sensor = document.getElementById('dt-cal-sensor');
-    if (sensor) sensor.value = DT.calBeaker === 2 ? 'IR2' : 'IR1';
+    if (sensor) sensor.value = 'IR';
     updateTempDisplay(DT.latestTemps || {});
     go('calibration-type-select');
   };
@@ -2684,12 +2776,11 @@
     var hidden = document.getElementById('dt-cal-temp');
     if (hidden) hidden.value = String(measured);
     var sensor = document.getElementById('dt-cal-sensor');
-    if (sensor) sensor.value = (DT.calBeaker === 2) ? 'IR2' : 'IR1';
+    if (sensor) sensor.value = 'IR';
     window.dtCalibrate();
   };
 
   window.dtCalibrate = function () {
-    var beaker = DT.calBeaker === 2 ? 2 : 1;
     var measuredEl = document.getElementById('calibration-measured-temp-input');
     var temp = measuredEl
       ? parseFloat(measuredEl.value)
@@ -2700,19 +2791,15 @@
       return api('/api/data/calibration', {
         method: 'POST',
         body: {
-          beaker: beaker,
-          probe: 'BOTH',
+          probe: 'BATH',
           temperature: temp,
           saveReport: true,
         },
         headers: token ? { 'X-Approval-Verify-Token': token } : {},
       }).then(function (res) {
-        if (!res.ok) throw new Error(res.error || 'Calibration failed');
         DT.calSessionActive = false;
         syncDtNavLock();
-        var sensors = (res.sensors || []).map(function (s) { return s.sensor; }).join('+') ||
-          ('IR' + beaker + '+EXT' + beaker);
-        toast('Calibrated ' + sensors + ' to ' + temp.toFixed(1) + '°C', 'success');
+        toast('Calibrated shared bath (IR+EXT1+EXT2) to ' + temp.toFixed(1) + '°C — report pending approval', 'success');
         var rid = (res.report && res.report.id) || res.reportId ||
           (res.savedReport && res.savedReport.id);
         if (rid && typeof openReportPreview === 'function') {
@@ -2726,17 +2813,23 @@
     var calOpts = {
       purpose: 'calibration',
       titleText: 'Calibration approval required',
-      subtitleText: 'Enter credentials to authorize temperature calibration (IR + EXT).',
+      subtitleText: 'Enter credentials to authorize shared-bath calibration (IR + EXT1 + EXT2).',
     };
     if (typeof openApprovalVerifyModal === 'function') {
       openApprovalVerifyModal(calOpts).then(function (token) {
         if (!token) return;
-        doCal(token).catch(function (e) { toast(e.message || 'Failed', 'error'); });
+        doCal(token).catch(function (e) {
+          if (handleBathError(e)) return;
+          toast(e.message || 'Failed', 'error');
+        });
       }).catch(function (e) {
         toast((e && e.message) || 'QA verification UI is missing.', 'error');
       });
     } else {
-      doCal(null).catch(function (e) { toast(e.message || 'Failed', 'error'); });
+      doCal(null).catch(function (e) {
+        if (handleBathError(e)) return;
+        toast(e.message || 'Failed', 'error');
+      });
     }
   };
 
@@ -2751,9 +2844,10 @@
           '1': !!DT.configured[1],
           '2': !!DT.configured[2],
         },
+        bathSetTemp: Number(DT.bathTemp || DT.setTemp[1] || 37),
         setTemp: {
-          '1': Number(DT.setTemp[1] || 37),
-          '2': Number(DT.setTemp[2] || 37),
+          '1': Number(DT.bathTemp || DT.setTemp[1] || 37),
+          '2': Number(DT.bathTemp || DT.setTemp[2] || 37),
         },
       },
     }).catch(function (e) {
@@ -2773,19 +2867,20 @@
       DT.configured[1] = true;
       DT.configured[2] = true;
     }
-    var temps = settings.setTemp || {};
-    var t1 = parseFloat(temps['1'] != null ? temps['1'] : temps[1]);
-    var t2 = parseFloat(temps['2'] != null ? temps['2'] : temps[2]);
-    if (!isNaN(t1)) DT.setTemp[1] = t1;
-    if (!isNaN(t2)) DT.setTemp[2] = t2;
+    var bath = parseFloat(settings.bathSetTemp);
+    if (isNaN(bath)) {
+      var temps = settings.setTemp || {};
+      bath = parseFloat(temps['1'] != null ? temps['1'] : temps[1]);
+    }
+    if (!isNaN(bath)) syncBathTemp(bath);
     updateBasketHoles(1, DT.basketConfig);
     updateBasketHoles(2, DT.basketConfig);
     updateBasketStates();
     updateDashboardTempButton();
     var in1 = document.getElementById('set-temp-1');
     var in2 = document.getElementById('set-temp-2');
-    if (in1) in1.value = String(DT.setTemp[1]);
-    if (in2) in2.value = String(DT.setTemp[2]);
+    if (in1) in1.value = String(DT.bathTemp);
+    if (in2) in2.value = String(DT.bathTemp);
   }
 
   function loadInstrumentSettings() {
@@ -2856,85 +2951,62 @@
   };
 
   window.dtToggleHeater = function (basket) {
-    basket = basket === 2 ? 2 : 1;
-    if (!DT.configured[basket]) {
-      toast('Configure beaker ' + basket + ' in Settings → Add Beakers', 'error');
+    // Shared bath — ignore basket arg for heating; lights both sides
+    basket = 1;
+    if (DT.running[1] && !DT.heaterManual[1] &&
+        (DT.btnPhase[1] === 'running' || DT.btnPhase[1] === 'ready')) {
+      toast('Stop the active test on beaker 1 first', 'error');
       return;
     }
-    // If a full test run is active on this basket, do not use settings heater toggle
-    if (DT.running[basket] && !DT.heaterManual[basket] &&
-        (DT.btnPhase[basket] === 'running' || DT.btnPhase[basket] === 'ready')) {
-      toast('Stop the active test on beaker ' + basket + ' first', 'error');
+    if (DT.running[2] && !DT.heaterManual[2] &&
+        (DT.btnPhase[2] === 'running' || DT.btnPhase[2] === 'ready')) {
+      toast('Stop the active test on beaker 2 first', 'error');
       return;
     }
 
-    var turningOn = !DT.heaterOn[basket];
-    var input = document.getElementById('set-temp-' + basket);
-    var setTempVal = parseFloat(input && input.value) || DT.setTemp[basket] || 37;
-    DT.setTemp[basket] = setTempVal;
+    var turningOn = !(DT.bathHeaterOn || DT.heaterOn[1] || DT.heaterOn[2]);
+    var input = document.getElementById('set-temp-1');
+    var setTempVal = parseFloat(input && input.value) || DT.bathTemp || 37;
+    syncBathTemp(setTempVal);
     if (typeof updateDashboardTempButton === 'function') updateDashboardTempButton();
 
-    var t1 = 0, t2 = 0;
-    if (turningOn) {
-      if (basket === 1) {
-        t1 = setTempVal;
-        t2 = (DT.configured[2] && DT.heaterOn[2]) ? Number(DT.setTemp[2] || 0) : 0;
-      } else {
-        t2 = setTempVal;
-        t1 = (DT.configured[1] && DT.heaterOn[1]) ? Number(DT.setTemp[1] || 0) : 0;
-      }
-    } else {
-      if (basket === 1) {
-        t1 = 0;
-        t2 = (DT.configured[2] && DT.heaterOn[2]) ? Number(DT.setTemp[2] || 0) : 0;
-      } else {
-        t2 = 0;
-        t1 = (DT.configured[1] && DT.heaterOn[1]) ? Number(DT.setTemp[1] || 0) : 0;
-      }
-    }
+    var body = turningOn
+      ? { temp: setTempVal, source: 'settings' }
+      : { temp: 0, source: 'settings' };
 
-    api('/api/hardware/dt/preheat', { method: 'POST', body: { t1: t1, t2: t2 } })
+    api('/api/hardware/dt/preheat', { method: 'POST', body: body })
       .then(function (res) {
-        if (!res.ok) throw new Error(res.error || 'Heater command failed');
-        DT.heaterOn[basket] = turningOn;
+        DT.bathHeaterOn = turningOn;
+        DT.heaterOn[1] = turningOn;
+        DT.heaterOn[2] = turningOn;
         if (turningOn) {
-          DT.heaterManual[basket] = true;
-          // Mirror settings heater onto home dashboard (Preheating + Heater On).
-          // Manual heat does not create a formal run — TR will not arm Start until
-          // dashboard Preheat is used (or this session is upgraded by Preheat).
-          if (!DT.running[basket] || DT.heaterManual[basket]) {
-            if (DT.btnPhase[basket] !== 'running' && DT.btnPhase[basket] !== 'ready') {
-              setStartBtnPhase(basket, 'preheating');
+          DT.heaterManual[1] = true;
+          DT.heaterManual[2] = true;
+          [1, 2].forEach(function (b) {
+            if (DT.configured[b] && !DT.running[b] &&
+                DT.btnPhase[b] !== 'running' && DT.btnPhase[b] !== 'ready') {
+              setStartBtnPhase(b, 'preheating');
             }
-          }
+          });
         } else {
-          // Turning off from settings — stop formal preheat run if active, else clear manual heat
-          if (DT.running[basket] && !DT.heaterManual[basket] &&
-              (DT.btnPhase[basket] === 'preheating' || DT.preheatInProgress[basket] || DT.btnPhase[basket] === 'ready')) {
-            api('/api/data/dt/runs/' + basket + '/stop', {
-              method: 'POST',
-              body: { aborted: true, reason: 'preheat_abort' },
-            }).then(function () {
-              finishBasketUi(basket);
-              updateHeaterIndicators();
-            }).catch(function () {
-              DT.heaterManual[basket] = false;
-              finishBasketUi(basket);
-              updateHeaterIndicators();
-            });
-            toast('Heater ' + basket + ' OFF', 'success');
-            return;
-          }
-          DT.heaterManual[basket] = false;
-          DT.preheatInProgress[basket] = false;
-          if (!DT.running[basket] && DT.btnPhase[basket] !== 'running') {
-            setStartBtnPhase(basket, 'idle');
-          }
+          DT.heaterManual[1] = false;
+          DT.heaterManual[2] = false;
+          DT.preheatInProgress[1] = false;
+          DT.preheatInProgress[2] = false;
+          [1, 2].forEach(function (b) {
+            if (!DT.running[b] && DT.btnPhase[b] !== 'running') {
+              setStartBtnPhase(b, 'idle');
+            }
+          });
         }
         updateHeaterIndicators();
-        toast('Heater ' + basket + (turningOn ? ' ON' : ' OFF'), 'success');
+        persistInstrumentSettings();
+        toast('Bath heater ' + (turningOn ? 'ON' : 'OFF'), 'success');
       })
-      .catch(function (e) { toast(e.message || 'Heater failed', 'error'); });
+      .catch(function (e) {
+        if (handleBathError(e)) return;
+        toast(e.message || 'Heater failed', 'error');
+      });
   };
 
   // Keep quick-test helpers for compatibility

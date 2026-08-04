@@ -1,0 +1,26 @@
+[Unit]
+Description=Mount/repair internal kiosk USB for DT-CFR
+DefaultDependencies=no
+After=local-fs-pre.target systemd-fsck-root.service
+After=media-usb_internal.mount
+Wants=media-usb_internal.mount
+Before=kiosk-bridge.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=INTERNAL_USB_PATH=/media/usb_internal
+Environment=STORAGE_DIR=/media/usb_internal/storage
+Environment=REPORTS_DIR=/media/usb_internal/reports
+Environment=AUDIT_DB_DIR=/media/usb_internal/db
+Environment=INTERNAL_USB_PARTITION=/dev/sda1
+Environment=INTERNAL_USB_UUID=752a2820-c257-43cd-a2eb-fb52adca9fc2
+Environment=INTERNAL_USB_UUIDS=752a2820-c257-43cd-a2eb-fb52adca9fc2
+ExecStart=/bin/bash /opt/kiosk/scripts/kiosk_mount_internal_usb.sh
+ExecStop=/bin/bash /opt/kiosk/scripts/kiosk_repair_internal_usb.sh sync
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

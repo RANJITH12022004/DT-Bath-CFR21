@@ -1407,9 +1407,16 @@ def _disintegration_stat_pairs(stats: Any) -> list:
 
 
 def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Dict[str, Any], width: int, thermal: bool) -> None:
-    """Append DT run details, vessel times, then remarks."""
+    """Append DT run details, vessel times, then remarks/comments."""
     dash = "" if thermal else ("-" * width)
     remarks = report_data.get("approvalRemarks")
+    if remarks in (None, ""):
+        remarks = report_data.get("remarks")
+    if remarks in (None, "") and isinstance(td, dict):
+        remarks = td.get("remarks")
+
+    # Only auto-fill power-interruption comments for true power-loss finals.
+    # Operator Abort must show Aborted (or stay blank) — never invent power failure.
     if remarks in (None, ""):
         cause = str(
             report_data.get("abortCause")
@@ -1417,19 +1424,17 @@ def _append_test_report_details(lines: list, td: Dict[str, Any], report_data: Di
             or ""
         ).strip().lower()
         approved_by = str(report_data.get("approvedBy") or "").strip().lower()
-        fallback = report_data.get("remarks")
-        if fallback in (None, "") and isinstance(td, dict):
-            fallback = td.get("remarks")
-        fb = str(fallback or "").strip().lower()
         is_power = (
             cause in ("power_interruption", "power_loss", "power")
             or "power interruption" in approved_by
-            or "power interruption" in fb
         )
-        if is_power and fallback not in (None, ""):
-            remarks = fallback
-        else:
-            remarks = None
+        if is_power:
+            remarks = "power interruption"
+        elif report_data.get("aborted") or str(report_data.get("status") or "").strip().lower() in (
+            "aborted",
+            "test aborted",
+        ):
+            remarks = "Aborted"
 
     if not isinstance(td, dict):
         td = {}

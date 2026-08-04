@@ -723,8 +723,25 @@ def get_beaker_validation_dates(
     factory_settings: Optional[Dict[str, Any]] = None,
     beaker: Any = None,
 ) -> Dict[str, str]:
-    """Return last/next validation dates for a beaker (1|2), with legacy fallback."""
+    """
+    Return last/next validation dates.
+
+    DT Bath CFR uses one instrument-wide due date. Historical reports that still
+    carry a beaker may fall back to validationDatesByBeaker for display only.
+    """
     fs = factory_settings if isinstance(factory_settings, dict) else (data_service.get_factory_settings() or {})
+    # Prefer instrument-wide pair
+    last = fs.get("lastValidationDate") or "N/A"
+    nxt = fs.get("nextValidationDate") or "N/A"
+    if last not in (None, "", "N/A") or nxt not in (None, "", "N/A"):
+        out = {
+            "lastValidationDate": last or "N/A",
+            "nextValidationDate": nxt or "N/A",
+        }
+        if fs.get("dueIntervalMonths") is not None:
+            out["dueIntervalMonths"] = fs.get("dueIntervalMonths")
+        return out
+    # Historical fallback: per-beaker entry
     by = fs.get("validationDatesByBeaker") if isinstance(fs.get("validationDatesByBeaker"), dict) else {}
     key = None
     try:
@@ -735,36 +752,26 @@ def get_beaker_validation_dates(
         key = None
     entry = by.get(key) if key and isinstance(by.get(key), dict) else None
     if entry:
-        last = entry.get("lastValidationDate") or "N/A"
-        nxt = entry.get("nextValidationDate") or "N/A"
-        months = entry.get("dueIntervalMonths")
-        out = {"lastValidationDate": last, "nextValidationDate": nxt}
-        if months is not None:
-            out["dueIntervalMonths"] = months
+        out = {
+            "lastValidationDate": entry.get("lastValidationDate") or "N/A",
+            "nextValidationDate": entry.get("nextValidationDate") or "N/A",
+        }
+        if entry.get("dueIntervalMonths") is not None:
+            out["dueIntervalMonths"] = entry.get("dueIntervalMonths")
         return out
-    # Legacy instrument-wide pair
-    return {
-        "lastValidationDate": fs.get("lastValidationDate") or "N/A",
-        "nextValidationDate": fs.get("nextValidationDate") or "N/A",
-    }
+    return {"lastValidationDate": "N/A", "nextValidationDate": "N/A"}
 
 
 def apply_pending_validation_due(report: Dict[str, Any]) -> Dict[str, Any]:
     """
-    On validation approval: apply report.pendingValidationDue into
-    factorySettings.validationDatesByBeaker[beaker].
+    On validation approval: apply report.pendingValidationDue as the
+    instrument-wide last/next validation dates (shared bath).
     """
     if not isinstance(report, dict):
         return {}
     pending = report.get("pendingValidationDue")
     if not isinstance(pending, dict) or not pending:
         return {}
-    try:
-        beaker = int(pending.get("beaker") or report.get("beaker") or report.get("basket") or 1)
-    except (TypeError, ValueError):
-        beaker = 1
-    if beaker not in (1, 2):
-        beaker = 1
     last = str(pending.get("lastValidationDate") or "").strip()
     nxt = str(pending.get("nextValidationDate") or "").strip()
     try:
@@ -774,26 +781,26 @@ def apply_pending_validation_due(report: Dict[str, Any]) -> Dict[str, Any]:
     if months not in (3, 6, 12):
         months = 12
     if not last or not nxt:
-        # Compute from today if missing
         now = datetime.now()
         computed = _validation_dates_from_last(now, months)
         last = last or computed["lastValidationDate"]
         nxt = nxt or computed["nextValidationDate"]
     stored = dict(data_service.get_factory_settings() or {})
+    stored["lastValidationDate"] = last
+    stored["nextValidationDate"] = nxt
+    stored["dueIntervalMonths"] = months
+    # Keep a mirrored entry under both beaker keys for older report readers
     by = dict(stored.get("validationDatesByBeaker") or {}) if isinstance(stored.get("validationDatesByBeaker"), dict) else {}
-    by[str(beaker)] = {
+    entry = {
         "lastValidationDate": last,
         "nextValidationDate": nxt,
         "dueIntervalMonths": months,
     }
+    by["1"] = dict(entry)
+    by["2"] = dict(entry)
     stored["validationDatesByBeaker"] = by
-    # Do not overwrite the other beaker's global display; keep legacy fields as this beaker's
-    # for older UIs that only read the instrument-wide pair.
-    stored["lastValidationDate"] = last
-    stored["nextValidationDate"] = nxt
-    stored["dueIntervalMonths"] = months
     data_service.save_factory_settings(stored)
-    return dict(by[str(beaker)])
+    return dict(entry)
 
 
 def _resolve_validation_dates(factory_settings: Optional[Dict[str, Any]] = None) -> Dict[str, str]:

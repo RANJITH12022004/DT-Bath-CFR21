@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-dt_hardware_service.py - Disintegration Tester ESP32 UART protocol + mock backend.
+dt_hardware_service.py - DT Bath CFR ESP32 UART protocol + mock backend.
 
-TX: T1, T2, TS, TEMP, PHW,t1,t2, START,B1/B2/B3, START,STROKE,Bx,A,
-    STOP/STOP1/STOP2, CAL,IRx/EXTx
-RX: T1/T2 temp lines, TEMP bulk (IR1:..), TR1/TR2 ready, S1/S2 stroke counters
+TX: TE, TS, PHW,<t>, START,1|2|3,<t>, START,VAL,<n>,
+    STOP/STOP1/STOP2, CAL,IR|EXT1|EXT2
+RX: TE,<ir>,<ext1>,<ext2> (or TE,IR,x,E1,y,E2,z), bare TR ready,
+    bare stroke integers during START,VAL
 
-Aligned with Dt_Dr_Reddy / DisT-Raw bridge_services.py protocol.
+Single shared bath heater with ownership registry (manual / basket1 /
+basket2 / validation / calibration). Bath IR is mirrored into IR1 & IR2;
+EXT1/EXT2 remain per-beaker external probes.
+
 Mock mode: DT_HARDWARE_MOCK=1 (or auto when serial device unavailable).
 """
 
@@ -20,7 +24,7 @@ import queue
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from flask import Response
 
@@ -49,13 +53,26 @@ _hardware_init_done = False
 _hardware_owner_active = False
 DEFAULT_UART_LOG = "/opt/kiosk/uart_communications.log"
 
-# Preheat cooldown — skip temp polling briefly after PHW (Dt_Dr_Reddy parity)
+# Preheat cooldown — skip temp polling briefly after PHW
 _last_preheat_time = 0.0
 _preheat_cooldown = 1.0
 
 _temp_cache_lock = threading.Lock()
 _heater_lock = threading.Lock()
-_HEATER_STATE = {"t1": 0.0, "t2": 0.0}
+# Single bath setpoint mirrored as t1/t2 for legacy callers
+_HEATER_STATE = {"t": 0.0, "t1": 0.0, "t2": 0.0}
+
+# Bath ownership registry
+_BATH_OWNERS: Set[str] = set()
+_BATH_EXCLUSIVE_OWNERS = frozenset({"validation", "calibration"})
+_BATH_OWNER_LABELS = {
+    "manual": "manual heater",
+    "basket1": "basket 1",
+    "basket2": "basket 2",
+    "validation": "temperature validation",
+    "calibration": "calibration",
+}
+
 _latest_temps: Dict[str, Any] = {
     "IR1": None,
     "IR2": None,
@@ -74,9 +91,11 @@ _live_state: Dict[str, Any] = {
     "EXT2": None,
     "S1": 0,
     "S2": 0,
+    "TR": False,
     "TR1": False,
     "TR2": False,
-    "heater": {"t1": 0.0, "t2": 0.0},
+    "heater": {"t": 0.0, "t1": 0.0, "t2": 0.0},
+    "bathOwners": [],
     "lastLine": None,
     "updatedAt": None,
 }
@@ -88,9 +107,13 @@ _mock_running = {"1": False, "2": False}
 _mock_temps = {"IR1": 25.0, "IR2": 25.0, "EXT1": 24.5, "EXT2": 24.5}
 _mock_emit_strokes = True
 _calibration_in_progress = False
-# While stroke validation runs, pause T1/T2/TS so UART is free for S1/S2
+# While stroke validation runs, pause TE/TS so UART is free for bare stroke counts
 _stroke_validation_active = False
+_stroke_validation_basket = 1
 _stroke_validation_lock = threading.Lock()
+_last_stroke_count_emitted = -1
+_STROKE_COUNT_MAX = 400
+_STROKE_COUNT_MAX_JUMP = 64
 
 
 # ---------------------------------------------------------------------------
@@ -107,21 +130,51 @@ def set_mock_emit_strokes(enabled: bool) -> None:
     _mock_emit_strokes = bool(enabled)
 
 
-def set_stroke_validation_active(active: bool) -> None:
-    """Pause T1/T2/TS polling while stroke validation needs a clean UART for strokes."""
-    global _stroke_validation_active
+def set_stroke_validation_active(active: bool, basket: Optional[int] = None) -> None:
+    """Pause TE/TS polling while stroke validation needs a clean UART for counts."""
+    global _stroke_validation_active, _stroke_validation_basket, _last_stroke_count_emitted
     with _stroke_validation_lock:
         _stroke_validation_active = bool(active)
+        if basket is not None:
+            _stroke_validation_basket = 1 if int(basket) != 2 else 2
+        if not active:
+            _last_stroke_count_emitted = -1
     if _logger:
         _logger.info(
-            "[DT HW] stroke validation temp-poll %s",
+            "[DT HW] stroke validation temp-poll %s (basket=%s)",
             "paused" if active else "resumed",
+            _stroke_validation_basket if active else "-",
         )
 
 
 def is_stroke_validation_active() -> bool:
     with _stroke_validation_lock:
         return bool(_stroke_validation_active)
+
+
+def get_stroke_validation_basket() -> int:
+    with _stroke_validation_lock:
+        return int(_stroke_validation_basket or 1)
+
+
+def _stroke_count_accept(n: int) -> bool:
+    """True if n should be accepted as a stroke count (monotonic, bounded)."""
+    global _last_stroke_count_emitted
+    if n < 1 or n > _STROKE_COUNT_MAX:
+        return False
+    if _last_stroke_count_emitted >= 0:
+        if n <= _last_stroke_count_emitted:
+            return False
+        if n - _last_stroke_count_emitted > _STROKE_COUNT_MAX_JUMP:
+            if _logger:
+                _logger.debug(
+                    "[STROKE VAL] ignored bogus stroke jump %s -> %s",
+                    _last_stroke_count_emitted,
+                    n,
+                )
+            return False
+    _last_stroke_count_emitted = n
+    return True
 
 
 def _env_wants_mock() -> bool:
@@ -243,16 +296,91 @@ def _acquire_uart_owner_lock() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Protocol parsers
+# Protocol parsers (DT Bath CFR / DT_BATH)
 # ---------------------------------------------------------------------------
 
-_STROKE_RE = re.compile(
-    r"S1[=:](\d+)\s*,\s*S2[=:](\d+)|S1[=:](\d+)|S2[=:](\d+)",
-    re.IGNORECASE,
-)
+def parse_te(line: str) -> Optional[Tuple[float, float, float]]:
+    """
+    Parse TE reply. Forms:
+      TE,35.4,34.7,34.4          — compact: IR, EXT1, EXT2
+      TE,IR,23.5,E1,24.5,E2,40.0
+      TE ,IR,23.5,E1,24.5,E2,40.0
+    Returns (ir, ext1, ext2) or None.
+    """
+    if not line or not str(line).strip():
+        return None
+    s = line.strip()
+    if ":" in s and not s.upper().startswith("TE"):
+        s = s.split(":", 1)[1].strip()
+    m_compact = re.match(
+        r"(?i)TE\s*,\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)",
+        s,
+    )
+    if m_compact:
+        try:
+            return (
+                float(m_compact.group(1)),
+                float(m_compact.group(2)),
+                float(m_compact.group(3)),
+            )
+        except ValueError:
+            return None
+    s2 = re.sub(r"^TE\s*[, ]?\s*", "", s, flags=re.I).strip()
+    if not s2:
+        return None
+    parts = [p.strip() for p in s2.split(",") if p.strip() != ""]
+    if parts and parts[0].upper() == "TE":
+        parts = parts[1:]
+
+    ir_v = e1_v = e2_v = None
+    for i, p in enumerate(parts):
+        pu = re.sub(r"[^A-Z0-9]+", "", p.upper())
+        if pu == "IR" and i + 1 < len(parts):
+            try:
+                ir_v = float(parts[i + 1])
+            except ValueError:
+                return None
+        elif pu in ("E1", "EXT1", "EX1") and i + 1 < len(parts):
+            try:
+                e1_v = float(parts[i + 1])
+            except ValueError:
+                pass
+        elif pu in ("E2", "EXT2", "EX2") and i + 1 < len(parts):
+            try:
+                e2_v = float(parts[i + 1])
+            except ValueError:
+                pass
+
+    if ir_v is None:
+        m = re.search(r"(?:^|[,;])\s*IR\s*[,;]\s*([\d.+-]+)", line, re.I)
+        if m:
+            try:
+                ir_v = float(m.group(1))
+            except ValueError:
+                return None
+    if e1_v is None:
+        m = re.search(r"(?:^|[,;])\s*(?:E1|EXT1)\s*[,;]\s*([\d.+-]+)", line, re.I)
+        if m:
+            try:
+                e1_v = float(m.group(1))
+            except ValueError:
+                pass
+    if e2_v is None:
+        m = re.search(r"(?:^|[,;])\s*(?:E2|EXT2)\s*[,;]\s*([\d.+-]+)", line, re.I)
+        if m:
+            try:
+                e2_v = float(m.group(1))
+            except ValueError:
+                pass
+
+    if ir_v is None:
+        return None
+    return (ir_v, float(e1_v) if e1_v is not None else 0.0, float(e2_v) if e2_v is not None else 0.0)
 
 
+# Legacy aliases kept for selftests / callers that still import them
 def parse_t1_t2(line: str, expected_tag: str) -> Optional[Tuple[float, float]]:
+    """Legacy dual-heater parser (unused by TE poller; kept for tests)."""
     parts = [p.strip() for p in line.split(",")]
     if not parts or parts[0].upper() != expected_tag.upper():
         return None
@@ -263,12 +391,6 @@ def parse_t1_t2(line: str, expected_tag: str) -> Optional[Tuple[float, float]]:
             return None
     if len(parts) == 5:
         try:
-            if expected_tag.upper() == "T1":
-                if parts[1].upper() != "IR1" or parts[3].upper() != "EXT1":
-                    return None
-            else:
-                if parts[1].upper() != "IR2" or parts[3].upper() != "EXT2":
-                    return None
             return (float(parts[2]), float(parts[4]))
         except ValueError:
             return None
@@ -276,7 +398,7 @@ def parse_t1_t2(line: str, expected_tag: str) -> Optional[Tuple[float, float]]:
 
 
 def parse_temp_bulk(line: str) -> Optional[Dict[str, float]]:
-    """Parse Dt_Dr_Reddy TEMP reply: IR1:25.3,IR2:25.1,EXT1:24.8,EXT2:24.9"""
+    """Legacy TEMP bulk parser (firmware no longer supports TEMP)."""
     s = str(line or "").strip()
     if not s:
         return None
@@ -297,6 +419,15 @@ def parse_temp_bulk(line: str) -> Optional[Dict[str, float]]:
 
 
 def is_ts_response_line(line: str) -> bool:
+    """True for bare TR, legacy TR1/TR2 pairs, or TS,TR1,TR2 style."""
+    if not line or not str(line).strip():
+        return False
+    ls = line.lstrip()
+    if ls.upper().startswith("TE"):
+        return False
+    compact = line.strip().upper().replace(" ", "")
+    if compact == "TR" or compact.endswith(":TR"):
+        return True
     parts = [p.strip().upper() for p in line.split(",") if p.strip()]
     if len(parts) < 2:
         return False
@@ -306,8 +437,13 @@ def is_ts_response_line(line: str) -> bool:
 
 
 def parse_strokes(line: str) -> Dict[str, int]:
+    """Legacy S1=/S2= parser (kept for compatibility). Prefer bare integers."""
     out: Dict[str, int] = {}
-    m = _STROKE_RE.search(str(line or ""))
+    m = re.search(
+        r"S1[=:](\d+)\s*,\s*S2[=:](\d+)|S1[=:](\d+)|S2[=:](\d+)",
+        str(line or ""),
+        re.IGNORECASE,
+    )
     if not m:
         return out
     if m.group(1) is not None and m.group(2) is not None:
@@ -325,12 +461,16 @@ def classify_line(line: str) -> str:
     if not s:
         return "empty"
     su = s.upper()
+    if parse_te(s) is not None:
+        return "temps_te"
     if su.startswith("T1") or su.startswith("T2"):
         return "temps"
     if parse_temp_bulk(s):
         return "temps_bulk"
     if is_ts_response_line(s):
         return "ts"
+    if is_stroke_validation_active() and re.fullmatch(r"[0-9]{1,6}", s):
+        return "stroke_count"
     if parse_strokes(s):
         return "stroke"
     if su in ("OK", "STOPPED", "COMPLETED", "COMPLETE", "DONE"):
@@ -341,7 +481,7 @@ def classify_line(line: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Live state / temps / heater
+# Live state / temps / heater / bath ownership
 # ---------------------------------------------------------------------------
 
 def get_heater_state() -> Dict[str, float]:
@@ -349,13 +489,181 @@ def get_heater_state() -> Dict[str, float]:
         return dict(_HEATER_STATE)
 
 
-def set_heater_state(t1: Optional[float] = None, t2: Optional[float] = None) -> Dict[str, float]:
+def set_heater_state(
+    t: Optional[float] = None,
+    t1: Optional[float] = None,
+    t2: Optional[float] = None,
+) -> Dict[str, float]:
+    """Set bath temperature. Prefer `t`; legacy t1/t2 collapse to max(t1,t2)."""
     with _heater_lock:
-        if t1 is not None:
-            _HEATER_STATE["t1"] = float(t1)
-        if t2 is not None:
-            _HEATER_STATE["t2"] = float(t2)
+        if t is not None:
+            val = float(t)
+        elif t1 is not None or t2 is not None:
+            a = float(t1) if t1 is not None else float(_HEATER_STATE.get("t") or 0.0)
+            b = float(t2) if t2 is not None else float(_HEATER_STATE.get("t") or 0.0)
+            # Prefer the non-zero side when only one is provided
+            if t1 is not None and t2 is None:
+                val = a
+            elif t2 is not None and t1 is None:
+                val = b
+            else:
+                val = max(a, b)
+        else:
+            return dict(_HEATER_STATE)
+        _HEATER_STATE["t"] = val
+        _HEATER_STATE["t1"] = val
+        _HEATER_STATE["t2"] = val
         return dict(_HEATER_STATE)
+
+
+def get_bath_owners() -> List[str]:
+    with _heater_lock:
+        return sorted(_BATH_OWNERS)
+
+
+def _owner_label(owner: str) -> str:
+    return _BATH_OWNER_LABELS.get(owner, owner)
+
+
+def _bath_busy_payload_unlocked(owner: str, exclusive: bool, current: float, owners: List[str]) -> Dict[str, Any]:
+    """Build conflict/busy payload without taking locks (caller holds _heater_lock)."""
+    return {
+        "ok": False,
+        "error": "bath_busy" if exclusive else "bath_temp_conflict",
+        "code": "bath_busy" if exclusive else "bath_temp_conflict",
+        "currentTemp": current,
+        "owners": list(owners),
+        "ownerLabels": [_owner_label(o) for o in owners],
+        "message": (
+            f"Bath is in use by {', '.join(_owner_label(o) for o in owners)}. "
+            f"Turn off preheating and retry."
+            if exclusive
+            else (
+                f"Bath is already set to {current:.1f}°C "
+                f"({', '.join(_owner_label(o) for o in owners)}). "
+                f"Both baskets must use the same temperature."
+            )
+        ),
+        "requestedOwner": owner,
+    }
+
+
+def _bath_busy_payload(owner: str, exclusive: bool = False) -> Dict[str, Any]:
+    heater = get_heater_state()
+    owners = get_bath_owners()
+    current = float(heater.get("t") or 0.0)
+    return _bath_busy_payload_unlocked(owner, exclusive, current, owners)
+
+
+def request_bath(
+    owner: str,
+    temp: float,
+    *,
+    exclusive: bool = False,
+) -> Dict[str, Any]:
+    """
+    Claim the shared bath at `temp` for `owner`.
+
+    - If bath is off: send PHW,temp, clear TR, add owner.
+    - If bath is on at the same setpoint: add owner (reuse heat).
+    - If bath is on at a different setpoint: reject with bath_temp_conflict.
+    - If exclusive and any other owner holds it: reject with bath_busy.
+    """
+    global _last_preheat_time
+    owner = str(owner or "").strip().lower()
+    if owner not in _BATH_OWNER_LABELS:
+        return {"ok": False, "error": f"unknown bath owner: {owner}"}
+    try:
+        temp = _clamp_temp(float(temp))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid temperature"}
+
+    need_phw = False
+    owners_after: List[str] = []
+    with _heater_lock:
+        current = float(_HEATER_STATE.get("t") or 0.0)
+        owners = set(_BATH_OWNERS)
+        others = owners - {owner}
+
+        if exclusive and others:
+            return _bath_busy_payload_unlocked(owner, True, current, sorted(owners))
+
+        if current > 0 and abs(current - temp) > 0.05 and others:
+            return _bath_busy_payload_unlocked(owner, False, current, sorted(owners))
+
+        same_setpoint = current > 0 and abs(current - temp) <= 0.05
+        need_phw = not same_setpoint or current <= 0
+
+        _HEATER_STATE["t"] = temp
+        _HEATER_STATE["t1"] = temp
+        _HEATER_STATE["t2"] = temp
+        _BATH_OWNERS.add(owner)
+        owners_after = sorted(_BATH_OWNERS)
+
+    with _live_state_lock:
+        if need_phw:
+            _live_state["TR"] = False
+            _live_state["TR1"] = False
+            _live_state["TR2"] = False
+        _live_state["bathOwners"] = owners_after
+        _live_state["heater"] = {"t": temp, "t1": temp, "t2": temp}
+
+    result: Dict[str, Any]
+    if need_phw:
+        cmd = f"PHW,{temp:.1f}"
+        result = send_command(cmd)
+        _last_preheat_time = time.time()
+        result["phwSent"] = True
+        result["cmd"] = cmd
+    else:
+        result = {"ok": True, "phwSent": False, "cmd": None}
+
+    result["heater"] = get_heater_state()
+    result["owners"] = owners_after
+    result["owner"] = owner
+    result["temp"] = temp
+    return result
+
+
+def release_bath(owner: str, *, force_off: bool = False) -> Dict[str, Any]:
+    """
+    Release bath ownership. When no owners remain (or force_off), send PHW,0.0.
+    """
+    global _last_preheat_time
+    owner = str(owner or "").strip().lower()
+    with _heater_lock:
+        _BATH_OWNERS.discard(owner)
+        remaining = sorted(_BATH_OWNERS)
+        turn_off = force_off or not remaining
+        if turn_off:
+            _BATH_OWNERS.clear()
+            remaining = []
+            _HEATER_STATE["t"] = 0.0
+            _HEATER_STATE["t1"] = 0.0
+            _HEATER_STATE["t2"] = 0.0
+
+    with _live_state_lock:
+        _live_state["bathOwners"] = remaining
+        if turn_off:
+            _live_state["TR"] = False
+            _live_state["TR1"] = False
+            _live_state["TR2"] = False
+        _live_state["heater"] = get_heater_state()
+
+    result: Dict[str, Any]
+    if turn_off:
+        result = send_command("PHW,0.0")
+        _last_preheat_time = time.time()
+        result["phwSent"] = True
+        result["cmd"] = "PHW,0.0"
+    else:
+        result = {"ok": True, "phwSent": False, "cmd": None}
+
+    result["heater"] = get_heater_state()
+    result["owners"] = remaining
+    result["owner"] = owner
+    result["turnedOff"] = turn_off
+    return result
 
 
 def get_latest_temps() -> Dict[str, Any]:
@@ -370,6 +678,7 @@ def get_live_state() -> Dict[str, Any]:
     with _live_state_lock:
         state = dict(_live_state)
         state["heater"] = get_heater_state()
+        state["bathOwners"] = get_bath_owners()
         state["mock"] = is_mock_mode()
         return state
 
@@ -397,22 +706,17 @@ def _update_temps(ir1=None, ir2=None, ext1=None, ext2=None) -> Dict[str, Any]:
     return cache
 
 
+def _update_bath_temps(ir: float, ext1: float, ext2: float) -> Dict[str, Any]:
+    """Single bath IR mirrored into IR1 and IR2."""
+    return _update_temps(ir1=ir, ir2=ir, ext1=ext1, ext2=ext2)
+
+
 def _update_strokes(s1: Optional[int] = None, s2: Optional[int] = None) -> None:
     with _live_state_lock:
         if s1 is not None:
-            # Monotonic: only accept increases (controller reset cannot inflate)
-            prev = int(_live_state.get("S1") or 0)
-            if int(s1) >= prev:
-                _live_state["S1"] = int(s1)
-            else:
-                # reset detected — accept new baseline but don't invent counts
-                _live_state["S1"] = int(s1)
+            _live_state["S1"] = int(s1)
         if s2 is not None:
-            prev = int(_live_state.get("S2") or 0)
-            if int(s2) >= prev:
-                _live_state["S2"] = int(s2)
-            else:
-                _live_state["S2"] = int(s2)
+            _live_state["S2"] = int(s2)
         _live_state["updatedAt"] = time.time()
 
 
@@ -423,8 +727,7 @@ def get_stroke_counts() -> Dict[str, int]:
 
 def reset_stroke_baseline() -> Dict[str, int]:
     """Snapshot current counters as baseline for validation delta counting."""
-    counts = get_stroke_counts()
-    return dict(counts)
+    return dict(get_stroke_counts())
 
 
 # ---------------------------------------------------------------------------
@@ -464,17 +767,42 @@ def _emit_temps_sse(cache: Optional[Dict[str, Any]] = None) -> None:
     _broadcast_sse(payload)
 
 
-def _emit_tr(basket: int) -> None:
-    event = {"type": f"TR{basket}", "kind": "tr", "basket": basket, "mock": is_mock_mode()}
+def _emit_tr(basket: Optional[int] = None) -> None:
+    """
+    Emit ready. basket=None means shared bath TR — set TR and both TR1/TR2,
+    broadcast type=TR plus TR1/TR2 so existing consumers still work.
+    """
     with _live_state_lock:
-        _live_state[f"TR{basket}"] = True
+        _live_state["TR"] = True
+        if basket is None:
+            _live_state["TR1"] = True
+            _live_state["TR2"] = True
+        else:
+            _live_state[f"TR{basket}"] = True
         _live_state["updatedAt"] = time.time()
-    _broadcast_sse(event)
-    if _logger:
-        _logger.info("[TS] Emitted TR%s - basket %s ready (mock=%s)", basket, basket, is_mock_mode())
+
+    if basket is None:
+        _broadcast_sse({"type": "TR", "kind": "tr", "mock": is_mock_mode()})
+        _broadcast_sse({"type": "TR1", "kind": "tr", "basket": 1, "mock": is_mock_mode()})
+        _broadcast_sse({"type": "TR2", "kind": "tr", "basket": 2, "mock": is_mock_mode()})
+        if _logger:
+            _logger.info("[TS] Emitted TR (shared bath ready, mock=%s)", is_mock_mode())
+    else:
+        _broadcast_sse({
+            "type": f"TR{basket}",
+            "kind": "tr",
+            "basket": basket,
+            "mock": is_mock_mode(),
+        })
+        if _logger:
+            _logger.info("[TS] Emitted TR%s - basket %s ready (mock=%s)", basket, basket, is_mock_mode())
 
 
 def _handle_ts_response(line: str) -> None:
+    compact = line.strip().upper().replace(" ", "")
+    if compact == "TR" or compact.endswith(":TR"):
+        _emit_tr(None)
+        return
     parts = [p.strip().upper() for p in line.split(",") if p.strip()]
     if len(parts) < 2:
         return
@@ -493,7 +821,12 @@ def build_line_payload(line: str) -> Dict[str, Any]:
         "kind": kind,
         "mock": is_mock_mode(),
     }
-    if kind == "temps":
+    if kind == "temps_te":
+        parsed = parse_te(line)
+        if parsed:
+            ir, e1, e2 = parsed
+            payload.update({"IR1": ir, "IR2": ir, "EXT1": e1, "EXT2": e2, "type": "temps"})
+    elif kind == "temps":
         tag = "T1" if normalize_line(line).upper().startswith("T1") else "T2"
         parsed = parse_t1_t2(line, tag)
         if parsed:
@@ -506,6 +839,12 @@ def build_line_payload(line: str) -> Dict[str, Any]:
         bulk = parse_temp_bulk(line) or {}
         payload.update(bulk)
         payload["type"] = "temps"
+    elif kind == "stroke_count":
+        try:
+            payload["count"] = int(normalize_line(line))
+            payload["type"] = "stroke_count"
+        except ValueError:
+            pass
     strokes = parse_strokes(line)
     if strokes:
         payload.update(strokes)
@@ -522,6 +861,14 @@ def _ingest_uart_line(line: str, *, log_tag: str = "RX_STREAM") -> Dict[str, Any
         pass
 
     kind = payload.get("kind")
+    if kind == "temps_te":
+        cache = _update_bath_temps(
+            float(payload["IR1"]),
+            float(payload.get("EXT1") or 0.0),
+            float(payload.get("EXT2") or 0.0),
+        )
+        _emit_temps_sse(cache)
+        return payload
     if kind == "temps":
         if "IR1" in payload:
             cache = _update_temps(ir1=payload.get("IR1"), ext1=payload.get("EXT1"))
@@ -543,6 +890,36 @@ def _ingest_uart_line(line: str, *, log_tag: str = "RX_STREAM") -> Dict[str, Any
     if kind == "ts":
         _handle_ts_response(line)
         return payload
+    if kind == "stroke_count":
+        try:
+            n = int(payload.get("count") or normalize_line(line))
+        except (TypeError, ValueError):
+            return payload
+        if not _stroke_count_accept(n):
+            return payload
+        basket = get_stroke_validation_basket()
+        if basket == 2:
+            _update_strokes(s2=n)
+        else:
+            _update_strokes(s1=n)
+        counts = get_stroke_counts()
+        _broadcast_sse({
+            "type": "stroke_count",
+            "kind": "stroke_count",
+            "count": n,
+            "basket": basket,
+            "S1": counts["S1"],
+            "S2": counts["S2"],
+            "mock": is_mock_mode(),
+        })
+        _broadcast_sse({
+            "type": "stroke",
+            "kind": "stroke",
+            "S1": counts["S1"],
+            "S2": counts["S2"],
+            "mock": is_mock_mode(),
+        })
+        return payload
     if kind == "stroke":
         _update_strokes(payload.get("S1"), payload.get("S2"))
         stroke_evt = {
@@ -563,7 +940,7 @@ def _ingest_uart_line(line: str, *, log_tag: str = "RX_STREAM") -> Dict[str, Any
 
 
 # ---------------------------------------------------------------------------
-# Serial open / write (DT uses newline-terminated ASCII, NO trailing *)
+# Serial open / write
 # ---------------------------------------------------------------------------
 
 def _open_esp_serial():
@@ -661,7 +1038,7 @@ def esp_write_line(cmd: str, max_retries: int = 3) -> bool:
 
 
 def send_command(cmd: str, timeout: float = COMMAND_TIMEOUT, max_retries: int = MAX_RETRIES) -> Dict[str, Any]:
-    """Fire-and-forget style for DT: write command; optional wait for non-stream ack."""
+    """Fire-and-forget style: write command; DT firmware often does not ack."""
     if not cmd:
         return {"ok": False, "error": "Empty command"}
     cmd = cmd.strip()
@@ -671,7 +1048,6 @@ def send_command(cmd: str, timeout: float = COMMAND_TIMEOUT, max_retries: int = 
     ok = esp_write_line(cmd, max_retries=max_retries)
     if not ok:
         return {"ok": False, "error": "write failed", "cmd": cmd}
-    # DT firmware often does not ack; return success on write
     return {"ok": True, "response": "ok", "normalized": "ok", "kind": "ok", "cmd": cmd}
 
 
@@ -726,13 +1102,41 @@ def _reader_loop() -> None:
             time.sleep(1.0)
 
 
+def _read_te_from_queue(timeout: float = 2.0) -> Optional[Tuple[float, float, float]]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            remaining = max(0.05, deadline - time.time())
+            line = line_q.get(timeout=remaining)
+        except queue.Empty:
+            break
+        if is_ts_response_line(line):
+            _handle_ts_response(line)
+            continue
+        parsed = parse_te(line)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _temperature_polling_thread() -> None:
-    poll_interval = float(_config.get("TEMP_POLL_INTERVAL", 0.5))
-    t1_t2_gap = max(0.5, float(_config.get("TEMP_T1_T2_GAP", 1.0)))
+    """Poll ESP32 with TE. Single shared bath: same IR in IR1 & IR2; E1/E2 -> EXT1/EXT2."""
+    if "TEMP_POLL_INTERVAL" in _config:
+        poll_interval = max(0.05, float(_config["TEMP_POLL_INTERVAL"]))
+    else:
+        poll_hz = float(_config.get("TEMP_POLL_HZ", 2.0))
+        poll_interval = max(0.05, 1.0 / max(0.25, poll_hz))
     read_timeout = float(_config.get("TEMP_READ_TIMEOUT", 2.0))
     ts_interval = float(_config.get("TS_POLL_INTERVAL", 3.0))
-    ts_tolerance = float(_config.get("TS_TEMP_TOLERANCE", 3.0))
+    ts_tolerance = float(_config.get("TS_TEMP_TOLERANCE", 1.0))
     last_ts_time = 0.0
+    if _logger:
+        _logger.info(
+            "[TEMP POLLER] TE single-bath poll: interval %.3fs; TS every %.1fs when within ±%.1f°C",
+            poll_interval,
+            ts_interval,
+            ts_tolerance,
+        )
     time.sleep(0.3)
     while True:
         try:
@@ -742,55 +1146,30 @@ def _temperature_polling_thread() -> None:
             if _calibration_in_progress:
                 time.sleep(1.0)
                 continue
-            # Stroke validation: only strokes matter — do not rush T1/T2/TS on UART
             if is_stroke_validation_active():
                 time.sleep(0.5)
                 continue
-            # Dt_Dr_Reddy: skip poll briefly after PHW to reduce UART contention
             if (time.time() - _last_preheat_time) < float(
                 _config.get("PREHEAT_COOLDOWN", _preheat_cooldown)
             ):
                 time.sleep(0.2)
                 continue
 
-            def _read_tag(tag: str):
-                if not esp_write_line(tag):
-                    return None
-                deadline = time.time() + read_timeout
-                while time.time() < deadline:
-                    try:
-                        line = line_q.get(timeout=max(0.05, deadline - time.time()))
-                    except queue.Empty:
-                        break
-                    if is_ts_response_line(line):
-                        _handle_ts_response(line)
-                        continue
-                    parsed = parse_t1_t2(line, tag)
-                    if parsed is not None:
-                        return parsed
-                return None
+            te_result = None
+            if esp_write_line("TE"):
+                te_result = _read_te_from_queue(timeout=read_timeout)
 
-            t1 = _read_tag("T1")
-            time.sleep(t1_t2_gap)
-            t2 = _read_tag("T2")
-            any_ok = False
-            if t1 is not None:
-                _update_temps(ir1=t1[0], ext1=t1[1])
-                any_ok = True
-            if t2 is not None:
-                _update_temps(ir2=t2[0], ext2=t2[1])
-                any_ok = True
-            if any_ok:
-                _emit_temps_sse()
+            if te_result is not None:
+                ir_v, e1_v, e2_v = te_result
+                cache = _update_bath_temps(ir_v, e1_v, e2_v)
+                _emit_temps_sse(cache)
 
             heater = get_heater_state()
             cache = get_latest_temps()
-            ir1, ir2 = cache.get("IR1"), cache.get("IR2")
-            t1_set = float(heater.get("t1") or 0.0)
-            t2_set = float(heater.get("t2") or 0.0)
-            near1 = t1_set > 0 and ir1 is not None and abs(float(ir1) - t1_set) <= ts_tolerance
-            near2 = t2_set > 0 and ir2 is not None and abs(float(ir2) - t2_set) <= ts_tolerance
-            if (near1 or near2) and (time.time() - last_ts_time >= ts_interval):
+            ir = cache.get("IR1")
+            t_set = float(heater.get("t") or heater.get("t1") or 0.0)
+            near = t_set > 0 and ir is not None and abs(float(ir) - t_set) <= ts_tolerance
+            if near and (time.time() - last_ts_time >= ts_interval):
                 last_ts_time = time.time()
                 if esp_write_line("TS"):
                     try:
@@ -806,7 +1185,7 @@ def _temperature_polling_thread() -> None:
 
 
 def _mock_loop() -> None:
-    """Simulate bath temps, TR ready, and stroke pulses."""
+    """Simulate shared bath temps, TR ready, and stroke pulses."""
     last_stroke = 0.0
     last_temp = 0.0
     while True:
@@ -816,43 +1195,36 @@ def _mock_loop() -> None:
                 continue
             now = time.time()
             heater = get_heater_state()
+            target = float(heater.get("t") or heater.get("t1") or 0.0)
             with _mock_lock:
-                for basket, key_ir, key_ext, t_key in (
-                    (1, "IR1", "EXT1", "t1"),
-                    (2, "IR2", "EXT2", "t2"),
-                ):
-                    target = float(heater.get(t_key) or 0.0)
-                    cur = float(_mock_temps[key_ir])
-                    if target > 0:
-                        # ramp toward setpoint
-                        step = 0.8 if cur < target else -0.4
-                        if abs(cur - target) < 0.3:
-                            cur = target + ((-1) ** int(now) * 0.05)
-                        else:
-                            cur = cur + step
+                cur = float(_mock_temps["IR1"])
+                if target > 0:
+                    step = 0.8 if cur < target else -0.4
+                    if abs(cur - target) < 0.3:
+                        cur = target + ((-1) ** int(now) * 0.05)
                     else:
-                        # cool toward ambient
-                        cur = cur + (25.0 - cur) * 0.05
-                    _mock_temps[key_ir] = round(cur, 2)
-                    _mock_temps[key_ext] = round(cur - 0.4, 2)
+                        cur = cur + step
+                else:
+                    cur = cur + (25.0 - cur) * 0.05
+                _mock_temps["IR1"] = round(cur, 2)
+                _mock_temps["IR2"] = round(cur, 2)
+                _mock_temps["EXT1"] = round(cur - 0.4, 2)
+                _mock_temps["EXT2"] = round(cur - 0.5, 2)
 
                 if now - last_temp >= 0.5:
                     last_temp = now
-                    cache = _update_temps(
-                        ir1=_mock_temps["IR1"],
-                        ir2=_mock_temps["IR2"],
-                        ext1=_mock_temps["EXT1"],
-                        ext2=_mock_temps["EXT2"],
+                    cache = _update_bath_temps(
+                        _mock_temps["IR1"],
+                        _mock_temps["EXT1"],
+                        _mock_temps["EXT2"],
                     )
                     _emit_temps_sse(cache)
-                    # TR when within ±3°C
-                    for basket, key_ir, t_key in ((1, "IR1", "t1"), (2, "IR2", "t2")):
-                        target = float(heater.get(t_key) or 0.0)
-                        if target > 0 and abs(float(_mock_temps[key_ir]) - target) <= 3.0:
-                            with _live_state_lock:
-                                already = bool(_live_state.get(f"TR{basket}"))
-                            if not already:
-                                _emit_tr(basket)
+                    # TR when within ±1°C of bath setpoint (match TS_TEMP_TOLERANCE)
+                    if target > 0 and abs(float(_mock_temps["IR1"]) - target) <= 1.0:
+                        with _live_state_lock:
+                            already = bool(_live_state.get("TR"))
+                        if not already:
+                            _emit_tr(None)
 
                 if _mock_emit_strokes and (now - last_stroke >= 2.0):
                     last_stroke = now
@@ -861,6 +1233,18 @@ def _mock_loop() -> None:
                             sk = f"S{b}"
                             _mock_strokes[sk] = int(_mock_strokes.get(sk) or 0) + 1
                     _update_strokes(_mock_strokes["S1"], _mock_strokes["S2"])
+                    if is_stroke_validation_active():
+                        basket = get_stroke_validation_basket()
+                        count = _mock_strokes[f"S{basket}"]
+                        _broadcast_sse({
+                            "type": "stroke_count",
+                            "kind": "stroke_count",
+                            "count": count,
+                            "basket": basket,
+                            "S1": _mock_strokes["S1"],
+                            "S2": _mock_strokes["S2"],
+                            "mock": True,
+                        })
                     _broadcast_sse({
                         "type": "stroke",
                         "kind": "stroke",
@@ -890,15 +1274,24 @@ def _clamp_temp(t: float) -> float:
     return max(0.0, min(float(t), MAX_TEMP_C))
 
 
-def cmd_preheat(t1: float = 0.0, t2: float = 0.0) -> Dict[str, Any]:
+def cmd_preheat(t1: float = 0.0, t2: float = 0.0, temp: Optional[float] = None) -> Dict[str, Any]:
+    """
+    Send PHW,<t> for the shared bath.
+
+    Prefer `temp`. Legacy t1/t2 collapse to max(t1, t2). Callers that need
+    ownership semantics should use request_bath / release_bath instead.
+    """
     global _last_preheat_time
-    t1 = _clamp_temp(t1)
-    t2 = _clamp_temp(t2)
-    set_heater_state(t1=t1, t2=t2)
+    if temp is not None:
+        t = _clamp_temp(temp)
+    else:
+        t = _clamp_temp(max(float(t1 or 0.0), float(t2 or 0.0)))
+    set_heater_state(t=t)
     with _live_state_lock:
+        _live_state["TR"] = False
         _live_state["TR1"] = False
         _live_state["TR2"] = False
-    cmd = f"PHW,{t1:.1f},{t2:.1f}"
+    cmd = f"PHW,{t:.1f}"
     result = send_command(cmd)
     _last_preheat_time = time.time()
     result["heater"] = get_heater_state()
@@ -907,51 +1300,57 @@ def cmd_preheat(t1: float = 0.0, t2: float = 0.0) -> Dict[str, Any]:
 
 def cmd_start_b1(temp: float) -> Dict[str, Any]:
     temp = _clamp_temp(temp)
-    set_heater_state(t1=temp)
+    set_heater_state(t=temp)
     if is_mock_mode():
         with _mock_lock:
             _mock_running["1"] = True
     with _live_state_lock:
         _live_state["running"] = True
-    return send_command(f"START,B1,{temp:.1f}W")
+    return send_command(f"START,1,{temp:.1f}")
 
 
 def cmd_start_b2(temp: float) -> Dict[str, Any]:
     temp = _clamp_temp(temp)
-    set_heater_state(t2=temp)
+    set_heater_state(t=temp)
     if is_mock_mode():
         with _mock_lock:
             _mock_running["2"] = True
     with _live_state_lock:
         _live_state["running"] = True
-    return send_command(f"START,B2,{temp:.1f}W")
+    return send_command(f"START,2,{temp:.1f}")
 
 
 def cmd_start_b3(t1: float, t2: float) -> Dict[str, Any]:
     t1 = _clamp_temp(t1)
     t2 = _clamp_temp(t2)
-    set_heater_state(t1=t1, t2=t2)
+    t = max(t1, t2)
+    set_heater_state(t=t)
     if is_mock_mode():
         with _mock_lock:
             _mock_running["1"] = True
             _mock_running["2"] = True
     with _live_state_lock:
         _live_state["running"] = True
-    return send_command(f"START,B3,{t1:.1f}W,{t2:.1f}W")
+    return send_command(f"START,3,{t1:.1f},{t2:.1f}")
 
 
 def cmd_start_stroke(basket: int = 1) -> Dict[str, Any]:
-    """Dt_Dr_Reddy START,STROKE,Bx,A (stroke-only start). Pauses T1/T2 polling."""
+    """START,VAL,<n> — stroke-only start. Pauses TE/TS polling."""
     b = 1 if int(basket or 1) != 2 else 2
-    set_stroke_validation_active(True)
-    # Let any in-flight T1/T2 cycle finish before START,STROKE
-    time.sleep(1.2)
+    set_stroke_validation_active(True, basket=b)
+    time.sleep(0.5)
     if is_mock_mode():
         with _mock_lock:
             _mock_running[str(b)] = True
+            # Reset mock stroke counter for this basket so delta counting starts clean
+            _mock_strokes[f"S{b}"] = 0
     with _live_state_lock:
         _live_state["running"] = True
-    result = send_command(f"START,STROKE,B{b},A")
+        if b == 1:
+            _live_state["S1"] = 0
+        else:
+            _live_state["S2"] = 0
+    result = send_command(f"START,VAL,{b}")
     if not result.get("ok"):
         set_stroke_validation_active(False)
         if is_mock_mode():
@@ -961,65 +1360,87 @@ def cmd_start_stroke(basket: int = 1) -> Dict[str, Any]:
 
 
 def cmd_query_temps_bulk() -> Dict[str, Any]:
-    """Send TEMP (Dt_Dr_Reddy bulk query). Live poller still uses T1/T2."""
-    return send_command("TEMP")
+    """Legacy TEMP bulk query — firmware no longer supports it; use live TE cache."""
+    cache = get_latest_temps()
+    return {"ok": True, "temps": cache, "cmd": None, "note": "TE poller provides live temps"}
 
 
 def cmd_stop(basket: Optional[int] = None) -> Dict[str, Any]:
+    """Stop motors only. Heat is released via release_bath by callers.
+
+    Some DT_BATH firmwares also clear the heater on STOP1/STOP2. When the
+    shared bath still has owners, re-assert PHW after the stop so the peer
+    basket (or manual/validation heat) keeps running.
+    """
     if basket == 1:
         cmd = "STOP1"
         if is_mock_mode():
             with _mock_lock:
                 _mock_running["1"] = False
-        set_heater_state(t1=0.0)
     elif basket == 2:
         cmd = "STOP2"
         if is_mock_mode():
             with _mock_lock:
                 _mock_running["2"] = False
-        set_heater_state(t2=0.0)
     else:
         cmd = "STOP"
         if is_mock_mode():
             with _mock_lock:
                 _mock_running["1"] = False
                 _mock_running["2"] = False
-        set_heater_state(t1=0.0, t2=0.0)
 
-    # Resume T1/T2 after stroke validation stop
     if is_stroke_validation_active():
         set_stroke_validation_active(False)
 
-    # Clear global running when no basket is still stroking (per-basket STOP1/2
-    # previously left live.running stuck true after a completed test).
     with _mock_lock:
         any_mock = bool(_mock_running.get("1") or _mock_running.get("2"))
     if basket not in (1, 2) or not any_mock:
-        # For real hardware, also clear when the peer basket has no active run heater.
-        heater = get_heater_state()
-        peer_active = False
+        owners = get_bath_owners()
+        peer_owners = [o for o in owners if o.startswith("basket")]
         if basket == 1:
-            peer_active = float(heater.get("t2") or 0) > 0
+            peer_active = "basket2" in peer_owners or any_mock
         elif basket == 2:
-            peer_active = float(heater.get("t1") or 0) > 0
+            peer_active = "basket1" in peer_owners or any_mock
+        else:
+            peer_active = False
         if not peer_active:
             with _live_state_lock:
                 _live_state["running"] = False
-    return send_command(cmd)
+    result = send_command(cmd)
+
+    # Re-assert bath heat after single-basket stop if anyone still owns it.
+    if basket in (1, 2) and result.get("ok") is not False:
+        heater = get_heater_state()
+        bath_t = float(heater.get("t") or 0.0)
+        if bath_t > 0 and get_bath_owners():
+            reassert = send_command(f"PHW,{bath_t:.1f}")
+            result["phwReasserted"] = True
+            result["phwCmd"] = f"PHW,{bath_t:.1f}"
+            if reassert.get("ok") is False:
+                result["phwReassertOk"] = False
+                result["phwReassertError"] = reassert.get("error") or reassert.get("response")
+            else:
+                result["phwReassertOk"] = True
+    return result
 
 
 def cmd_calibrate(sensor: str, temp: float) -> Dict[str, Any]:
     global _calibration_in_progress
     sensor = str(sensor or "").strip().upper()
-    if sensor not in ("IR1", "IR2", "EXT1", "EXT2"):
-        return {"ok": False, "error": "sensor must be IR1, IR2, EXT1, or EXT2"}
+    # Map legacy IR1/IR2 to shared IR channel
+    if sensor in ("IR1", "IR2"):
+        sensor = "IR"
+    if sensor not in ("IR", "EXT1", "EXT2"):
+        return {"ok": False, "error": "sensor must be IR, EXT1, or EXT2"}
     try:
         temp = float(temp)
     except (TypeError, ValueError):
         return {"ok": False, "error": "invalid temperature"}
     if temp < 0 or temp > MAX_TEMP_C:
         return {"ok": False, "error": f"temperature must be 0-{MAX_TEMP_C}°C"}
-    before = get_latest_temps().get(sensor)
+
+    before_key = "IR1" if sensor == "IR" else sensor
+    before = get_latest_temps().get(before_key)
     _calibration_in_progress = True
     try:
         result = send_command(f"CAL,{sensor},{temp:.1f}")
@@ -1029,12 +1450,8 @@ def cmd_calibrate(sensor: str, temp: float) -> Dict[str, Any]:
         result["afterValue"] = temp
         result["mock"] = is_mock_mode()
         if is_mock_mode():
-            # In mock, snap the sensor reading to the cal value
-            kwargs = {sensor.lower(): temp}  # wrong keys; set explicitly:
-            if sensor == "IR1":
-                _update_temps(ir1=temp)
-            elif sensor == "IR2":
-                _update_temps(ir2=temp)
+            if sensor == "IR":
+                _update_temps(ir1=temp, ir2=temp)
             elif sensor == "EXT1":
                 _update_temps(ext1=temp)
             elif sensor == "EXT2":
@@ -1054,6 +1471,7 @@ def cmd_status() -> Dict[str, Any]:
         "live": get_live_state(),
         "temps": get_latest_temps(),
         "heater": get_heater_state(),
+        "bathOwners": get_bath_owners(),
     }
 
 
@@ -1061,7 +1479,6 @@ def start_sse_stream():
     def gen():
         q: queue.Queue = queue.Queue(maxsize=100)
         sse_clients.append(q)
-        # Push current temps immediately
         try:
             q.put_nowait({
                 "type": "temps",
@@ -1154,4 +1571,4 @@ def init(app, config: Dict[str, Any]) -> None:
     threading.Thread(target=_temperature_polling_thread, daemon=True, name="dt-temp-poller").start()
     threading.Thread(target=_mock_loop, daemon=True, name="dt-mock-loop").start()
     if _logger:
-        _logger.info("[DT HW] Initialized (mock=%s)", _mock_mode)
+        _logger.info("[DT HW] Initialized single-bath TE protocol (mock=%s)", _mock_mode)

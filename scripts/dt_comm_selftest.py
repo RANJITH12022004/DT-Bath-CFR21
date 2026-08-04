@@ -66,29 +66,27 @@ def req(method: str, path: str, body=None, headers=None, timeout=8.0):
 
 
 def test_parsers() -> None:
-    print("\n== 1) Protocol parsers (Dt_Dr_Reddy parity) ==")
+    print("\n== 1) Protocol parsers (DT Bath CFR / TE) ==")
     import dt_hardware_service as hw
 
-    cases = [
-        ("T1,25.3,24.8", "T1", (25.3, 24.8)),
-        ("T1,IR1,25.3,EXT1,24.8", "T1", (25.3, 24.8)),
-        ("T2,IR2,36.1,EXT2,35.9", "T2", (36.1, 35.9)),
+    te_cases = [
+        ("TE,35.4,34.7,34.4", (35.4, 34.7, 34.4)),
+        ("TE,IR,23.5,E1,24.5,E2,40.0", (23.5, 24.5, 40.0)),
+        ("TE ,IR,23.5,E1,24.5,E2,40.0", (23.5, 24.5, 40.0)),
     ]
-    for line, tag, expect in cases:
-        got = hw.parse_t1_t2(line, tag)
-        (ok if got == expect else fail)(f"parse_t1_t2({line!r}) -> {got}")
+    for line, expect in te_cases:
+        got = hw.parse_te(line)
+        (ok if got == expect else fail)(f"parse_te({line!r}) -> {got}")
 
-    bulk = hw.parse_temp_bulk("IR1:25.3,IR2:25.1,EXT1:24.8,EXT2:24.9")
-    (ok if bulk and bulk.get("IR1") == 25.3 and bulk.get("EXT2") == 24.9 else fail)(
-        f"parse_temp_bulk -> {bulk}"
-    )
+    # Legacy parsers still available
+    got = hw.parse_t1_t2("T1,25.3,24.8", "T1")
+    (ok if got == (25.3, 24.8) else fail)(f"legacy parse_t1_t2 -> {got}")
 
-    strokes = hw.parse_strokes("S1:12,S2:34")
-    (ok if strokes == {"S1": 12, "S2": 34} else fail)(f"parse_strokes -> {strokes}")
-
+    (ok if hw.is_ts_response_line("TR") else fail)("is_ts_response_line TR")
     (ok if hw.is_ts_response_line("TR1,TR2") else fail)("is_ts_response_line TR1,TR2")
     (ok if hw.is_ts_response_line("TS,TR1,0") else fail)("is_ts_response_line TS,TR1,0")
-    (ok if hw.classify_line("IR1:1,EXT1:2") == "temps_bulk" else fail)("classify TEMP bulk")
+    (ok if hw.classify_line("TE,35.4,34.7,34.4") == "temps_te" else fail)("classify TE")
+    (ok if hw.classify_line("TR") == "ts" else fail)("classify TR")
 
 
 def test_uart_probe() -> dict:
@@ -112,7 +110,7 @@ def test_uart_probe() -> dict:
     try:
         ser.reset_input_buffer()
         ser.reset_output_buffer()
-        for cmd in ("T1", "T2", "TS", "TEMP", "PHW,37.0,37.0", "STOP"):
+        for cmd in ("TE", "TS", "PHW,37.0", "STOP"):
             ser.write((cmd + "\n").encode())
             ser.flush()
             time.sleep(0.9)
@@ -184,17 +182,17 @@ def test_http_api() -> None:
     (ok if code == 200 else fail)(f"dt/live {code} mock={live.get('mock')}")
 
     steps = [
-        ("POST", "/api/hardware/dt/preheat", {"t1": 37.0, "t2": 37.0}, "PHW"),
-        ("POST", "/api/hardware/command", {"command": "T1"}, "T1"),
-        ("POST", "/api/hardware/command", {"command": "T2"}, "T2"),
-        ("POST", "/api/hardware/dt/temp", None, "TEMP"),
+        ("POST", "/api/hardware/dt/preheat", {"temp": 37.0}, "PHW"),
+        ("POST", "/api/hardware/command", {"command": "TE"}, "TE"),
+        ("POST", "/api/hardware/dt/temp", None, "TEMP-cache"),
         ("GET", "/api/hardware/dt/temp", None, "TEMP GET"),
-        ("POST", "/api/hardware/dt/start", {"basket": 1, "temp": 37.0}, "START,B1"),
-        ("POST", "/api/hardware/dt/start-stroke", {"basket": 1}, "START,STROKE"),
+        ("POST", "/api/hardware/dt/start", {"basket": 1, "temp": 37.0}, "START,1"),
+        ("POST", "/api/hardware/dt/start-stroke", {"basket": 1}, "START,VAL"),
         ("POST", "/api/hardware/dt/stop", {"basket": 1}, "STOP1"),
-        ("POST", "/api/hardware/dt/start", {"basket": 3, "t1": 37.0, "t2": 37.0}, "START,B3"),
+        ("POST", "/api/hardware/dt/start", {"basket": 3, "t1": 37.0, "t2": 37.0}, "START,3"),
         ("POST", "/api/hardware/dt/stop", {}, "STOP"),
-        ("POST", "/api/hardware/dt/calibrate", {"sensor": "IR1", "temp": 37.0}, "CAL,IR1"),
+        ("POST", "/api/hardware/dt/calibrate", {"sensor": "IR", "temp": 37.0}, "CAL,IR"),
+        ("POST", "/api/hardware/dt/preheat", {"temp": 0}, "PHW,0"),
     ]
     for method, path, body, label in steps:
         code, data = req(method, path, body, headers=headers)
@@ -235,7 +233,7 @@ def main() -> int:
     ap.add_argument("--skip-http", action="store_true")
     args = ap.parse_args()
 
-    print("DT-CFR communication self-test")
+    print("DT Bath CFR communication self-test")
     print(f"API={BASE} ESP={ESP_PORT}@{ESP_BAUD}")
 
     if not args.live_only:
@@ -258,10 +256,11 @@ def main() -> int:
             print(" -", m)
     if not uart.get("rx_any"):
         print(
-            "\nESP wiring reminder (Dt_Dr_Reddy):\n"
+            "\nESP wiring reminder (DT Bath CFR):\n"
             "  Pi GPIO14 (TX) -> ESP RX\n"
             "  Pi GPIO15 (RX) -> ESP TX\n"
-            "  GND <-> GND, ESP powered, firmware @ 9600 8N1"
+            "  GND <-> GND, ESP powered, firmware @ 9600 8N1\n"
+            "  Protocol: TE / PHW,<t> / TS→TR / START,n,<t> / START,VAL,n / CAL,IR|EXT1|EXT2"
         )
     return 1 if failed else 0
 

@@ -14,6 +14,8 @@ _DEFAULT_CARD_LABELS = {
     "perm_profile_admin": "Profile administration",
     "perm_validation_test": "Validation test",
     "perm_validation_report_approve": "Validation report approval",
+    "perm_calibration": "Calibration access",
+    "perm_calibration_report_approve": "Calibration report approval",
     "perm_datetime": "Date & time",
     "perm_reports_view": "View reports",
     "perm_audit_view": "View audit",

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-dt_calibration_service.py - Temperature sensor calibration with audit trail.
+dt_calibration_service.py - Shared-bath temperature sensor calibration with audit trail.
+
+DT Bath CFR: one internal IR channel + EXT1 + EXT2. calibrate_bath() sends
+CAL,IR / CAL,EXT1 / CAL,EXT2 with a single reference temperature.
 
 Requires permission (calibration-menu) and an approval-verify token (purpose=calibration)
-enforced at the route layer. This module applies CAL and returns before/after values.
+enforced at the route layer.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 import time
 
 import dt_hardware_service as hw
@@ -17,7 +20,10 @@ import dt_hardware_service as hw
 _logger = None
 _audit_fn: Optional[Callable] = None
 
-SENSORS = ("IR1", "IR2", "EXT1", "EXT2")
+# Shared-bath sensors (firmware tokens)
+BATH_SENSORS = ("IR", "EXT1", "EXT2")
+# Legacy aliases still accepted by calibrate()
+SENSORS = ("IR", "IR1", "IR2", "EXT1", "EXT2")
 
 
 def init(logger=None, audit_fn: Optional[Callable] = None) -> None:
@@ -39,85 +45,201 @@ def _audit(action: str, details: str = "", **extra) -> None:
         pass
 
 
+def _normalize_sensor(sensor: str) -> str:
+    s = str(sensor or "").strip().upper()
+    if s in ("IR1", "IR2"):
+        return "IR"
+    return s
+
+
+def _before_key(sensor: str) -> str:
+    """Map firmware sensor token to live-temps cache key."""
+    s = _normalize_sensor(sensor)
+    if s == "IR":
+        return "IR1"
+    return s
+
+
 def sensor_for_beaker(beaker: int, probe: str = "IR") -> str:
-    """Map beaker + probe type to sensor id."""
+    """Legacy helper — shared bath maps any beaker IR to IR, EXT to EXT{n}."""
     beaker = int(beaker)
     probe = str(probe or "IR").strip().upper()
     if beaker not in (1, 2):
         raise ValueError("beaker must be 1 or 2")
     if probe in ("IR", "IR1", "IR2"):
-        return f"IR{beaker}"
+        return "IR"
     if probe in ("EXT", "EXT1", "EXT2", "EXTERNAL"):
         return f"EXT{beaker}"
     raise ValueError("probe must be IR or EXT")
 
 
-def calibrate_both(
+def calibrate_bath(
     *,
-    beaker: int,
     temperature: float,
     operator: Optional[Dict[str, Any]] = None,
     verifier: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Calibrate IR then EXT for a beaker (Dr Reddy / ESP CAL sequence)."""
+    """
+    Calibrate the shared bath: CAL,IR then CAL,EXT1 then CAL,EXT2.
+    Claims the bath exclusively for the duration.
+    """
     try:
-        beaker_n = int(beaker)
-        if beaker_n not in (1, 2):
-            raise ValueError("beaker must be 1 or 2")
         temperature = float(temperature)
     except (TypeError, ValueError) as e:
         return {"ok": False, "error": str(e)}
+    if temperature < 0 or temperature > 55:
+        return {"ok": False, "error": "temperature must be 0-55°C"}
 
-    ir_sensor = f"IR{beaker_n}"
-    ext_sensor = f"EXT{beaker_n}"
-
-    ir_result = calibrate(
-        sensor=ir_sensor,
-        temperature=temperature,
-        operator=operator,
-        verifier=verifier,
-    )
-    if not ir_result.get("ok"):
-        return ir_result
-
-    time.sleep(0.5)
-
-    ext_result = calibrate(
-        sensor=ext_sensor,
-        temperature=temperature,
-        operator=operator,
-        verifier=verifier,
-    )
-    if not ext_result.get("ok"):
+    # Exclusive claim — refuse if a test / manual heater holds the bath
+    claim = hw.request_bath("calibration", temperature, exclusive=True)
+    if not claim.get("ok"):
+        err = claim.get("error") or claim.get("code") or "bath_busy"
         return {
             "ok": False,
-            "error": ext_result.get("error") or "EXT calibration failed after IR succeeded",
-            "irResult": ir_result,
-            "extResult": ext_result,
+            "error": err,
+            "code": claim.get("code") or err,
+            "message": claim.get("message") or err,
+            "currentTemp": claim.get("currentTemp"),
+            "owners": claim.get("owners"),
+            "hardware": claim,
         }
 
-    # Prefer EXT report as primary (covers full probe set); enrich with both sensors.
-    payload = dict(ext_result)
-    payload["probe"] = "BOTH"
-    payload["sensors"] = [
-        {"sensor": ir_sensor, "beforeValue": ir_result.get("beforeValue"), "afterValue": ir_result.get("afterValue")},
-        {"sensor": ext_sensor, "beforeValue": ext_result.get("beforeValue"), "afterValue": ext_result.get("afterValue")},
-    ]
-    payload["irResult"] = {k: ir_result.get(k) for k in ("sensor", "beforeValue", "afterValue", "setTemperature")}
-    payload["extResult"] = {k: ext_result.get(k) for k in ("sensor", "beforeValue", "afterValue", "setTemperature")}
-    report = payload.get("report")
-    if isinstance(report, dict):
-        report = dict(report)
-        report["probe"] = "BOTH"
-        report["sensors"] = payload["sensors"]
-        report["sensor"] = f"{ir_sensor}+{ext_sensor}"
-        report["details"] = (
-            f"IR{beaker_n}: {ir_result.get('beforeValue')}→{ir_result.get('afterValue')}; "
-            f"EXT{beaker_n}: {ext_result.get('beforeValue')}→{ext_result.get('afterValue')} "
-            f"(set {temperature}°C)"
-        )
+    channel_results: List[Dict[str, Any]] = []
+    try:
+        for sensor in BATH_SENSORS:
+            result = calibrate(
+                sensor=sensor,
+                temperature=temperature,
+                operator=operator,
+                verifier=verifier,
+            )
+            if not result.get("ok"):
+                return {
+                    "ok": False,
+                    "error": result.get("error") or f"{sensor} calibration failed",
+                    "failedSensor": sensor,
+                    "channels": channel_results,
+                    "partial": result,
+                }
+            channel_results.append({
+                "sensor": sensor,
+                "beforeValue": result.get("beforeValue"),
+                "afterValue": result.get("afterValue"),
+                "calibrationOffset": result.get("calibrationOffset"),
+            })
+            time.sleep(0.4)
+
+        # Primary offset vs bath IR
+        ir_ch = channel_results[0] if channel_results else {}
+        before_ir = ir_ch.get("beforeValue")
+        after_ir = ir_ch.get("afterValue")
+        offset = None
+        if before_ir is not None:
+            try:
+                offset = round(float(temperature) - float(before_ir), 3)
+            except (TypeError, ValueError):
+                offset = None
+
+        details_parts = []
+        for ch in channel_results:
+            details_parts.append(
+                f"{ch['sensor']}: {ch.get('beforeValue')}→{ch.get('afterValue')}"
+            )
+        details = "; ".join(details_parts) + f" (set {temperature}°C)"
+
+        payload = {
+            "ok": True,
+            "sensor": "IR+EXT1+EXT2",
+            "probe": "BATH",
+            "beaker": None,
+            "basket": None,
+            "setTemperature": float(temperature),
+            "beforeValue": before_ir,
+            "afterValue": after_ir,
+            "measuredTemperature": after_ir,
+            "calibrationOffset": offset,
+            "deviation": None if before_ir is None or after_ir is None else round(float(after_ir) - float(before_ir), 3),
+            "sensors": channel_results,
+            "status": "CALIBRATED & PASSED",
+            "mock": hw.is_mock_mode(),
+            "calibratedAt": _now_iso(),
+            "operatorName": (operator or {}).get("name"),
+            "operatorId": (operator or {}).get("employeeId") or (operator or {}).get("id"),
+            "operatorUsername": (operator or {}).get("username"),
+            "verifierUsername": (verifier or {}).get("username"),
+            "verifierName": (verifier or {}).get("name"),
+            "verifierRole": (verifier or {}).get("role"),
+        }
+
+        report = {
+            "type": "validation",
+            "validationSubtype": "calibration",
+            "name": "Calibration Report – Shared Bath (IR+EXT1+EXT2)",
+            "status": "CALIBRATED & PASSED",
+            "setTemperature": float(temperature),
+            "measuredTemperature": after_ir,
+            "beforeValue": before_ir,
+            "deviation": payload["deviation"],
+            "calibrationOffset": offset,
+            "beaker": None,
+            "basket": None,
+            "sensor": "IR+EXT1+EXT2",
+            "probe": "BATH",
+            "sensors": channel_results,
+            "details": details,
+            "operatorName": payload["operatorName"],
+            "operatorId": payload["operatorId"],
+            "operatorUsername": payload["operatorUsername"],
+            "employeeId": payload.get("operatorId") or payload.get("operatorUsername"),
+            "operatedByUsername": payload.get("operatorUsername") or payload.get("operatorId"),
+            "approvedBy": payload.get("verifierName"),
+            "approvedByUsername": payload.get("verifierUsername"),
+            "mock": payload["mock"],
+            "createdAt": _now_iso(),
+            "completedAt": payload["calibratedAt"],
+        }
         payload["report"] = report
-    return payload
+
+        _audit(
+            "Calibration performed",
+            f"Shared bath | {details}"
+            + (f" | verified by {payload.get('verifierUsername')}" if payload.get("verifierUsername") else ""),
+            entity_type="calibration",
+            entity_id="bath",
+            outcome="success",
+            signature={
+                "mode": "approval-verify",
+                "username": (verifier or {}).get("username"),
+                "role": (verifier or {}).get("role"),
+            } if verifier else None,
+            extra={
+                "sensor": "IR+EXT1+EXT2",
+                "sensors": channel_results,
+                "setTemperature": temperature,
+                "mock": hw.is_mock_mode(),
+            },
+        )
+        return payload
+    finally:
+        try:
+            hw.release_bath("calibration")
+        except Exception:
+            pass
+
+
+def calibrate_both(
+    *,
+    beaker: int = 1,
+    temperature: float,
+    operator: Optional[Dict[str, Any]] = None,
+    verifier: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Backward-compatible entry: shared bath calibrates all three channels."""
+    return calibrate_bath(
+        temperature=temperature,
+        operator=operator,
+        verifier=verifier,
+    )
 
 
 def calibrate(
@@ -130,22 +252,22 @@ def calibrate(
     verifier: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if sensor:
-        sensor_id = str(sensor).strip().upper()
+        sensor_id = _normalize_sensor(sensor)
     else:
         try:
-            sensor_id = sensor_for_beaker(int(beaker), probe)
+            sensor_id = sensor_for_beaker(int(beaker or 1), probe)
         except (TypeError, ValueError) as e:
             return {"ok": False, "error": str(e)}
 
-    if sensor_id not in SENSORS:
-        return {"ok": False, "error": f"sensor must be one of {', '.join(SENSORS)}"}
+    if sensor_id not in ("IR", "EXT1", "EXT2"):
+        return {"ok": False, "error": f"sensor must be one of IR, EXT1, EXT2"}
 
-    before = hw.get_latest_temps().get(sensor_id)
+    before = hw.get_latest_temps().get(_before_key(sensor_id))
     result = hw.cmd_calibrate(sensor_id, temperature)
     if not result.get("ok"):
         _audit(
             "Calibration failed",
-            f"Beaker {1 if sensor_id.endswith('1') else 2} | sensor {sensor_id} | measured {temperature}°C | failed",
+            f"Shared bath | sensor {sensor_id} | measured {temperature}°C | failed",
             entity_type="calibration",
             entity_id=sensor_id,
             outcome="failure",
@@ -163,8 +285,8 @@ def calibrate(
     payload = {
         "ok": True,
         "sensor": sensor_id,
-        "beaker": 1 if sensor_id.endswith("1") else 2,
-        "probe": "IR" if sensor_id.startswith("IR") else "EXT",
+        "beaker": None,
+        "probe": "IR" if sensor_id == "IR" else sensor_id,
         "setTemperature": float(temperature),
         "beforeValue": before,
         "afterValue": after,
@@ -184,7 +306,7 @@ def calibrate(
 
     _audit(
         "Calibration performed",
-        f"Beaker {payload['beaker']} | sensor {sensor_id} | before {before}°C → after {after}°C | measured {temperature}°C"
+        f"Shared bath | sensor {sensor_id} | before {before}°C → after {after}°C | measured {temperature}°C"
         + (f" | verified by {payload.get('verifierUsername')}" if payload.get("verifierUsername") else ""),
         entity_type="calibration",
         entity_id=sensor_id,
@@ -206,7 +328,6 @@ def calibrate(
         },
     )
 
-    # Optional calibration report payload for saving as validation report
     report = {
         "type": "validation",
         "validationSubtype": "calibration",
@@ -217,8 +338,8 @@ def calibrate(
         "beforeValue": before,
         "deviation": payload["deviation"],
         "calibrationOffset": payload["calibrationOffset"],
-        "beaker": payload["beaker"],
-        "basket": payload["beaker"],
+        "beaker": None,
+        "basket": None,
         "sensor": sensor_id,
         "operatorName": payload["operatorName"],
         "operatorId": payload["operatorId"],

@@ -1,0 +1,4 @@
+# Remount internal kiosk USB when the storage pendrive is plugged in after boot.
+# UUID matches this DT unit's ext4 usb_internal partition.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_FS_UUID}=="752a2820-c257-43cd-a2eb-fb52adca9fc2", TAG+="systemd", ENV{SYSTEMD_WANTS}="kiosk-internal-usb-mount.service"
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_FS_LABEL}=="usb_internal", TAG+="systemd", ENV{SYSTEMD_WANTS}="kiosk-internal-usb-mount.service"

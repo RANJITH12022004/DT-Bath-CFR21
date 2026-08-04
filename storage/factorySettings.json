@@ -1,22 +1,31 @@
 {
-  "lastValidationDate": "20-07-2026",
-  "companyName": "MSN LABS",
-  "companyLocation": "QC BLOCK-C",
-  "serialNo": "2606401",
-  "modelNo": "RFT-2B",
+  "lastValidationDate": "04-08-2026",
+  "companyName": "MSN",
+  "companyLocation": "G Block",
+  "serialNo": "1234@23",
+  "modelNo": "ADT-2B",
   "instrumentId": ".",
   "firmware": "RD-TDT v1.0.0",
   "installedBy": "qqq",
   "maxRecipes": 150,
-  "maxUsers": 10,
-  "maxAdmins": 2,
-  "maxSupervisors": 3,
+  "maxUsers": 50,
+  "maxAdmins": 50,
+  "maxSupervisors": 50,
   "biometricEnabled": true,
-  "passwordResetPeriodDays": 30,
-  "autoLogoutMinutes": 0,
-  "nextValidationDate": "20-07-2027",
+  "passwordResetPeriodDays": 1,
+  "autoLogoutMinutes": 2,
+  "nextValidationDate": "04-08-2027",
   "enabledBeakers": "1",
   "defaultBasket": 1,
   "defaultTubeCount": 1,
-  "installationDate": ""
+  "installationDate": "2026-08-01",
+  "maxQa": 3,
+  "validationDatesByBeaker": {
+    "1": {
+      "lastValidationDate": "04-08-2026",
+      "nextValidationDate": "04-08-2027",
+      "dueIntervalMonths": 12
+    }
+  },
+  "dueIntervalMonths": 12
 }

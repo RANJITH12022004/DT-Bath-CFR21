@@ -153,6 +153,13 @@ def _internal_uuids(env: Optional[Dict[str, str]] = None) -> Set[str]:
     return uuids
 
 
+_SKIP_FS = frozenset({"", "swap", "linux_raid_member", "crypto_luks", "lvm2_member"})
+_EXPORT_FS = frozenset({
+    "vfat", "fat", "fat32", "exfat", "ntfs", "ntfs3",
+    "ext2", "ext3", "ext4", "btrfs", "xfs",
+})
+
+
 def _is_node_internal(node: Dict[str, Any], root_pk: Optional[str], internal_uuids: Set[str]) -> bool:
     path = node.get("path") or ""
     name = node.get("name") or ""
@@ -172,22 +179,80 @@ def _is_node_internal(node: Dict[str, Any], root_pk: Optional[str], internal_uui
     return False
 
 
-def list_external_pendrives() -> List[Dict[str, Any]]:
-    """List external pendrive partitions suitable for export.
+def _is_disk_path(path: str) -> bool:
+    """True for whole-disk nodes (/dev/sdb, /dev/nvme0n1) — not partitions."""
+    if not path:
+        return False
+    return bool(
+        _RE_SD_DISK.match(path) or _RE_VD_DISK.match(path) or _RE_NVME_NS.match(path)
+    )
 
-    Returns a list of dicts with: path, name, label, fs_type, fs_uuid, size_bytes,
-    size_human, removable, mounted, mountpoint. Sorted by path name (sdb1 < sdc1).
+
+def _usable_fs(fs_type: str) -> bool:
+    fs = (fs_type or "").strip().lower()
+    if not fs or fs in _SKIP_FS:
+        return False
+    return True
+
+
+def _node_has_fs_children(node: Dict[str, Any], flat: List[Dict[str, Any]]) -> bool:
+    """True if this disk has child partitions that themselves have a filesystem."""
+    name = (node.get("name") or "").strip()
+    if not name:
+        return False
+    for child in flat:
+        if (child.get("type") or "").lower() != "part":
+            continue
+        if (child.get("pkname") or "").strip() != name:
+            continue
+        cfs = (child.get("fstype") or "").strip().lower()
+        if cfs and cfs not in _SKIP_FS:
+            return True
+    return False
+
+
+def _pendrive_entry(node: Dict[str, Any]) -> Dict[str, Any]:
+    path = node.get("path") or ""
+    size_bytes_raw = node.get("size") or 0
+    try:
+        size_bytes = int(size_bytes_raw)
+    except (TypeError, ValueError):
+        size_bytes = 0
+    mountpoint = (node.get("mountpoint") or "").strip()
+    return {
+        "path": path,
+        "name": node.get("name") or pathlib.Path(path).name,
+        "label": (node.get("label") or "").strip(),
+        "fs_type": (node.get("fstype") or "").strip().lower(),
+        "fs_uuid": (node.get("uuid") or "").strip(),
+        "size_bytes": size_bytes,
+        "size_human": _human_bytes(size_bytes),
+        "removable": bool(node.get("rm")),
+        "mounted": bool(mountpoint),
+        "mountpoint": mountpoint,
+    }
+
+
+def list_external_pendrives() -> List[Dict[str, Any]]:
+    """List external pendrive filesystems suitable for export.
+
+    Accepts:
+      - partitions (type=part) with a usable filesystem
+      - whole-disk "superfloppy" devices (type=disk) that have a filesystem and
+        no child partitions with a filesystem (e.g. /dev/sdb formatted as VFAT)
+
+    Never lists both a parent disk and its partitions.
     """
     flat = _lsblk_tree()
     root_pk = _root_pkname()
     internal_uuids = _internal_uuids()
     out: List[Dict[str, Any]] = []
+    parent_names_with_parts: Set[str] = set()
+
+    # Pass 1: partitions
     for node in flat:
         node_type = (node.get("type") or "").lower()
         if node_type != "part":
-            # We export to filesystem partitions, not whole disks.
-            # If a whole-disk USB has no partition table, we'd still skip it here
-            # to avoid confusion. Users format pendrives with partitions in practice.
             continue
         path = node.get("path") or ""
         if not _is_export_block_path(path):
@@ -195,28 +260,57 @@ def list_external_pendrives() -> List[Dict[str, Any]]:
         if _is_node_internal(node, root_pk, internal_uuids):
             continue
         fs_type = (node.get("fstype") or "").strip().lower()
-        if not fs_type or fs_type in ("swap", "linux_raid_member"):
+        if not fs_type or fs_type in _SKIP_FS:
             continue
-        size_bytes_raw = node.get("size") or 0
-        try:
-            size_bytes = int(size_bytes_raw)
-        except (TypeError, ValueError):
-            size_bytes = 0
-        mountpoint = (node.get("mountpoint") or "").strip()
-        out.append({
-            "path": path,
-            "name": node.get("name") or pathlib.Path(path).name,
-            "label": (node.get("label") or "").strip(),
-            "fs_type": fs_type,
-            "fs_uuid": (node.get("uuid") or "").strip(),
-            "size_bytes": size_bytes,
-            "size_human": _human_bytes(size_bytes),
-            "removable": bool(node.get("rm")),
-            "mounted": bool(mountpoint),
-            "mountpoint": mountpoint,
-        })
+        if not _usable_fs(fs_type):
+            continue
+        pk = (node.get("pkname") or "").strip()
+        if pk:
+            parent_names_with_parts.add(pk)
+        out.append(_pendrive_entry(node))
+
+    # Pass 2: whole-disk FS with no usable child partitions (superfloppy)
+    for node in flat:
+        node_type = (node.get("type") or "").lower()
+        if node_type != "disk":
+            continue
+        path = node.get("path") or ""
+        if not _is_disk_path(path):
+            continue
+        name = (node.get("name") or pathlib.Path(path).name).strip()
+        if name in parent_names_with_parts:
+            continue
+        if _node_has_fs_children(node, flat):
+            continue
+        if _is_node_internal(node, root_pk, internal_uuids):
+            continue
+        fs_type = (node.get("fstype") or "").strip().lower()
+        if not fs_type or fs_type in _SKIP_FS:
+            continue
+        out.append(_pendrive_entry(node))
+
     out.sort(key=lambda d: d.get("path") or "")
     return out
+
+
+def summarize_block_devices_for_log() -> str:
+    """Compact lsblk summary for diagnostics when no exportable USB is found."""
+    flat = _lsblk_tree()
+    if not flat:
+        return "lsblk empty/unavailable"
+    bits = []
+    for node in flat:
+        path = node.get("path") or node.get("name") or "?"
+        bits.append(
+            "{path} type={t} fs={fs} uuid={u} mp={mp}".format(
+                path=path,
+                t=(node.get("type") or "-"),
+                fs=(node.get("fstype") or "-") or "-",
+                u=(node.get("uuid") or "-") or "-",
+                mp=(node.get("mountpoint") or "-") or "-",
+            )
+        )
+    return "; ".join(bits[:40])
 
 
 def _human_bytes(n: int) -> str:
@@ -270,7 +364,7 @@ def ensure_pendrive_mounted(device_path: str, timeout_sec: float = 20.0) -> Dict
 
 
 def _disk_parent_device(part_device: str) -> Optional[str]:
-    """Given /dev/sdb1, return /dev/sdb (for power-off)."""
+    """Given /dev/sdb1 return /dev/sdb; given whole-disk /dev/sdb return itself."""
     if not part_device.startswith("/dev/"):
         return None
     name = part_device[len("/dev/"):]
@@ -282,6 +376,9 @@ def _disk_parent_device(part_device: str) -> Optional[str]:
     m = re.match(r"^(nvme[0-9]+n[0-9]+)p([0-9]+)$", name)
     if m:
         return "/dev/" + m.group(1)
+    # Already a whole disk — power-off the same node
+    if _is_disk_path(part_device):
+        return part_device
     return None
 
 
