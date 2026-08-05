@@ -20,6 +20,7 @@ import pdf_generator
 import rbac_service
 
 from desktop_api import auth_store
+from desktop_api.desktop_helpers import audit_event, legacy_audit
 from desktop_api.members_routes import register_members_routes
 from desktop_api.recipes_routes import register_recipes_routes
 
@@ -136,21 +137,28 @@ def create_blueprint(kiosk):
     """Build blueprint; kiosk is the loaded app module for shared PDF/audit helpers."""
     bp = Blueprint("rle_desktop_api", __name__, url_prefix="/api/desktop/v1")
 
-    audit_event = getattr(kiosk, "_audit_event", None)
-    audit_log = getattr(kiosk, "_audit", None)
-
-    def log_audit(user, action, details):
-        if audit_event:
+    def log_major(user, action, details, **kwargs):
+        """Write a machine-style major audit row attributed to the desktop user."""
+        try:
             audit_event(
+                kiosk,
+                user or {},
                 action=action,
-                outcome="success",
-                entity_type="desktop",
-                entity_name="desktop",
                 details=details,
-                target_user=user.get("username") or user.get("name"),
+                outcome=kwargs.get("outcome") or "success",
+                entity_type=kwargs.get("entity_type") or "desktop",
+                entity_id=kwargs.get("entity_id"),
+                entity_name=kwargs.get("entity_name") or "desktop-client",
+                target_user=kwargs.get("target_user") or "",
+                event_type=kwargs.get("event_type") or "compliance",
+                reason=kwargs.get("reason") or "",
             )
-        elif audit_log:
-            audit_log(user.get("username") or user.get("name"), user.get("role"), action, details)
+        except Exception:
+            # Fall back to legacy helper if structured write fails.
+            try:
+                legacy_audit(kiosk, user or {}, action, details)
+            except Exception:
+                pass
 
     def _desktop_app_name(factory):
         """Product-agnostic display name for multi-machine desktop clients."""
@@ -217,6 +225,15 @@ def create_blueprint(kiosk):
                         "error": "No member accounts are configured on this machine (members list is empty). Factory login still works; restore members or create users on the kiosk.",
                         "membersEmpty": True,
                     }), 401
+                log_major(
+                    {"username": username, "role": "--"},
+                    "Login",
+                    "Desktop client | Wrong password | User ID entered: {}".format(username),
+                    outcome="denied",
+                    entity_type="session",
+                    entity_name="password",
+                    target_user=username,
+                )
                 body = {"error": "Invalid username or password."}
                 return jsonify(body), 401
             if username.upper() != data_service.FACTORY_USERNAME.upper():
@@ -224,6 +241,15 @@ def create_blueprint(kiosk):
                 if member:
                     expiry = data_service.get_member_password_expiry_state(member)
                     if bool(expiry.get("expired")):
+                        log_major(
+                            {"username": username, "role": member.get("role") or "--"},
+                            "Login",
+                            "Desktop client | Password expired. Reset required. | User ID entered: {}".format(username),
+                            outcome="denied",
+                            entity_type="session",
+                            entity_name="password",
+                            target_user=username,
+                        )
                         return jsonify({"error": "Password expired. Reset required.", "passwordExpired": True, "expiry": expiry}), 403
             data_service.record_successful_login(username)
             member_after = data_service.get_member_by_username(username)
@@ -232,7 +258,14 @@ def create_blueprint(kiosk):
                 member_after["failedAttempts"] = 0
                 data_service._save_member_record(member_after)
             token, safe_user = auth_store.issue_token(user)
-            log_audit(safe_user, "Desktop login", "Desktop user logged in: {}".format(username))
+            log_major(
+                safe_user,
+                "Login",
+                "Desktop client | User logged in: {}".format(username),
+                entity_type="session",
+                entity_name="desktop-client",
+                target_user=username,
+            )
             return jsonify({"success": True, "token": token, "user": safe_user}), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -245,8 +278,16 @@ def create_blueprint(kiosk):
     @bp.route("/auth/logout", methods=["POST"])
     @auth_store.require_auth
     def desktop_auth_logout(user):
+        uname = user.get("username") or user.get("name") or "--"
         auth_store.revoke_token(auth_store.token_from_request())
-        log_audit(user, "Desktop logout", "Desktop user logged out: {}".format(user.get("username") or user.get("name") or "--"))
+        log_major(
+            user,
+            "Logout",
+            "Desktop client | User logged out: {}".format(uname),
+            entity_type="session",
+            entity_name="desktop-client",
+            target_user=uname,
+        )
         return jsonify({"success": True}), 200
 
     @bp.route("/reports", methods=["GET"])
@@ -275,6 +316,22 @@ def create_blueprint(kiosk):
         if not (path.exists() and path.stat().st_size > 0):
             if not kiosk._generate_report_pdf_file(report_id, write_audit=True):
                 return jsonify({"error": "PDF generation failed"}), 500
+        purpose = str(request.args.get("purpose") or request.args.get("source") or "download").strip().lower()
+        if purpose not in ("view", "download", "sync", "zip"):
+            purpose = "download"
+        uname = user.get("username") or user.get("name") or "--"
+        role = user.get("role") or "--"
+        log_major(
+            user,
+            "Reports exported",
+            "Exported 1 report via desktop client ({}) | report-{}.pdf | exported by {} ({})".format(
+                purpose, report_id, uname, role
+            ),
+            entity_type="report",
+            entity_id=report_id,
+            entity_name="report-{}".format(report_id),
+            target_user=uname,
+        )
         return send_file(path, mimetype="application/pdf", as_attachment=False, download_name="report-{}.pdf".format(report_id))
 
     @bp.route("/reports/download", methods=["POST"])
@@ -324,6 +381,22 @@ def create_blueprint(kiosk):
                     "error": "No PDF files could be added to the ZIP. Reports must be approved or aborted before download.",
                     "skipped": skipped,
                 }), 400
+            uname = user.get("username") or user.get("name") or "--"
+            role = user.get("role") or "--"
+            log_major(
+                user,
+                "Reports exported",
+                "Exported {} report{} via desktop client (ZIP) | exported by {} ({}){}".format(
+                    added,
+                    "" if added == 1 else "s",
+                    uname,
+                    role,
+                    " | skipped {}".format(skipped) if skipped else "",
+                ),
+                entity_type="report",
+                entity_name="reports-zip",
+                target_user=uname,
+            )
             return _send_temp(tmp, "reports-download.zip", "application/zip")
         except Exception:
             try:
@@ -365,13 +438,16 @@ def create_blueprint(kiosk):
                 tmp,
                 timeout_sec=per_chunk_timeout,
             )
-            if audit_log:
-                audit_log(
-                    user.get("username") or user.get("name"),
-                    user.get("role"),
-                    "Desktop audit downloaded",
-                    "{} entries".format(len(entries)),
-                )
+            uname = user.get("username") or user.get("name") or "--"
+            role = user.get("role") or "--"
+            log_major(
+                user,
+                "Audit trail exported",
+                "Desktop client | entries {} | exported by {} ({})".format(len(entries), uname, role),
+                entity_type="audit",
+                entity_name="audit-download",
+                target_user=uname,
+            )
             return _send_temp(tmp, "audit-download.pdf", "application/pdf")
         except Exception:
             try:
