@@ -3883,14 +3883,16 @@ function showAuditExportVerifyModal() {
     });
 }
 
-function showAuditExportRetentionModal(entriesScheduled) {
-    var n = parseInt(entriesScheduled, 10);
+function showAuditExportRetentionModal(entriesRemoved) {
+    var n = parseInt(entriesRemoved, 10);
     if (isNaN(n) || n < 0) n = 0;
     return showUsbExportRetentionModal({
         title: 'Audit Export Verified',
         message:
             'Export verified successfully.\n\n' +
-            'The ' + n + ' audit entries included in this export will be permanently removed from this device after 24 hours.\n\n' +
+            'The ' + n + ' audit entr' + (n === 1 ? 'y' : 'ies') +
+            ' included in this export have been permanently removed from this device.\n\n' +
+            'Who exported and who approved the export remain in the audit trail.\n\n' +
             'Ensure your USB copy is complete and stored safely.'
     });
 }
@@ -3909,7 +3911,8 @@ function showReportExportRetentionModal(reportsScheduled) {
         title: 'Report Export Verified',
         message:
             'Export verified successfully.\n\n' +
-            'The ' + n + ' report(s) included in this export will be permanently removed from this device after 24 hours.\n\n' +
+            'The ' + n + ' report(s) included in this export will be permanently removed from this device after 24 hours from the time of export.\n\n' +
+            'Who exported and who approved the export remain in the audit trail.\n\n' +
             'Ensure your USB copy is complete and stored safely.'
     });
 }
@@ -3934,15 +3937,18 @@ function _confirmReportExportAfterUsb(evt, titleText) {
             body: { export_id: exportId, verified: true }
         }).then(function (confirmRes) {
             hideLoadingOverlay();
-            if (confirmRes && confirmRes.success && confirmRes.scheduled) {
-                showReportExportRetentionModal(confirmRes.reports_scheduled).then(function () {
+            if (confirmRes && confirmRes.success && (confirmRes.scheduled || confirmRes.purged)) {
+                var n = confirmRes.reports_scheduled != null
+                    ? confirmRes.reports_scheduled
+                    : confirmRes.reports_removed;
+                showReportExportRetentionModal(n).then(function () {
                     if (typeof loadReports === 'function') {
                         loadReports(typeof currentReportFilter !== 'undefined' ? currentReportFilter : null);
                     }
                 });
             } else {
                 showAppModal(
-                    _friendlyExportError((confirmRes && confirmRes.error) || 'Could not schedule retention'),
+                    _friendlyExportError((confirmRes && confirmRes.error) || 'Could not schedule report retention'),
                     titleText
                 );
             }
@@ -5576,6 +5582,9 @@ function loadReports(filterType) {
                 if (!name && r.type === 'validation') {
                     if (!name) name = 'Validation - ' + (r.validationSubtype === 'load' ? 'USP 2' : 'USP 1');
                 }
+                if (!name && r.type === 'calibration') {
+                    name = r.name || 'Calibration Report';
+                }
                 if (!name) name = (r.recipe && r.recipe.productName) || 'Report ' + (r.id || (i + 1));
                 var createdRaw = r.createdAt || r.completedAt || r.created || '';
                 var created = (typeof formatReportDate === 'function')
@@ -5795,15 +5804,18 @@ function exportAuditTrails() {
                                         body: { export_id: exportId, verified: true }
                                     }).then(function (confirmRes) {
                                         hideLoadingOverlay();
-                                        if (confirmRes && confirmRes.success && confirmRes.scheduled) {
-                                            showAuditExportRetentionModal(confirmRes.entries_scheduled).then(function () {
+                                        if (confirmRes && confirmRes.success && (confirmRes.purged || confirmRes.scheduled)) {
+                                            var n = confirmRes.entries_removed != null
+                                                ? confirmRes.entries_removed
+                                                : confirmRes.entries_scheduled;
+                                            showAuditExportRetentionModal(n).then(function () {
                                                 if (typeof applyAuditFiltersAndRefresh === 'function') {
                                                     applyAuditFiltersAndRefresh();
                                                 }
                                             });
                                         } else {
                                             showAppModal(
-                                                _friendlyExportError((confirmRes && confirmRes.error) || 'Could not schedule retention'),
+                                                _friendlyExportError((confirmRes && confirmRes.error) || 'Could not remove exported audit entries'),
                                                 titleText
                                             );
                                         }
@@ -6307,13 +6319,25 @@ function _setReportPreviewDisplayMode(mode) {
     if (legacy) legacy.style.display = useA4 ? 'none' : 'block';
 }
 
+function isCalibrationReport(preview) {
+    if (!preview) return false;
+    var t = String(preview.type || '').trim().toLowerCase();
+    if (t === 'calibration') return true;
+    var td = preview.testData || preview;
+    var sub = String(
+        preview.validationSubtype || (td && td.validationSubtype) || ''
+    ).trim().toLowerCase();
+    return t === 'validation' && sub === 'calibration';
+}
+
 function _populateLegacyReportPreview(preview) {
     var reportType = preview.type || 'test';
-    var isValidationOrCalibration = (reportType === 'validation' || reportType === 'calibration');
+    var isCalibration = isCalibrationReport(preview);
+    var isValidation = reportType === 'validation' && !isCalibration;
     var valCalSection = document.getElementById('report-validation-calibration-section');
     var testSections = document.getElementById('report-test-sections');
-    if (valCalSection) valCalSection.style.display = isValidationOrCalibration ? 'block' : 'none';
-    if (testSections) testSections.style.display = isValidationOrCalibration ? 'none' : 'block';
+    if (valCalSection) valCalSection.style.display = isValidation ? 'block' : 'none';
+    if (testSections) testSections.style.display = (isValidation || isCalibration) ? 'none' : 'block';
 
     var recipe = preview.recipe || (preview.testData && preview.testData.recipe) || preview.testData || {};
     var fs = preview.factorySettings || {};
@@ -6324,10 +6348,15 @@ function _populateLegacyReportPreview(preview) {
     setReportEl('report-serial-no', fs.serialNo);
     setReportEl('report-location', fs.companyLocation || fs.location);
     setReportEl('report-instrument-no', fs.instrumentId);
-    setReportEl('report-previous-val', fs.lastValidationDate);
-    setReportEl('report-next-validation', fs.nextValidationDate);
+    if (isCalibration) {
+        setReportEl('report-previous-val', '--');
+        setReportEl('report-next-validation', '--');
+    } else {
+        setReportEl('report-previous-val', fs.lastValidationDate);
+        setReportEl('report-next-validation', fs.nextValidationDate);
+    }
 
-    if (reportType === 'validation' && typeof renderValidationDetailsInPreview === 'function') {
+    if (isValidation && typeof renderValidationDetailsInPreview === 'function') {
         renderValidationDetailsInPreview(preview);
     }
 
@@ -6414,6 +6443,7 @@ function _populateLegacyReportPreview(preview) {
     // Hardness-Cfr style: single Pass / Fail + approval remarks
     // Validation: Stroke + Temp Pass/Fail
     var reportTypeNorm = String(preview.type || td.type || 'test').trim().toLowerCase();
+    var isCalibration = isCalibrationReport(preview);
     var pf = preview.approvalPassFail || td.approvalPassFail || '--';
     var strokePf = preview.strokePassFail || td.strokePassFail || null;
     var tempPf = preview.tempPassFail || td.tempPassFail || null;
@@ -6430,7 +6460,7 @@ function _populateLegacyReportPreview(preview) {
     }
     var pfTh = document.getElementById('report-pass-fail-th');
     var tempPfRow = document.getElementById('report-validation-temp-pf-row');
-    if (reportTypeNorm === 'validation') {
+    if (reportTypeNorm === 'validation' && !isCalibration) {
         if (pfTh) pfTh.textContent = 'Stroke Pass / Fail';
         setReportEl('report-drum1-pass-fail', strokePf || pf || '--');
         setReportEl('report-temp-pass-fail', tempPf || '--');
@@ -6563,13 +6593,15 @@ function populateReportPreview(preview) {
 function updateReportApproveDrumPassFailUi(preview) {
     var singleGroup = document.getElementById('report-approve-passfail-single');
     var valGroup = document.getElementById('report-approve-passfail-validation');
-    var isVal = String((preview || {}).type || '').trim().toLowerCase() === 'validation';
+    var isVal = String((preview || {}).type || '').trim().toLowerCase() === 'validation'
+        && !isCalibrationReport(preview);
     if (singleGroup) singleGroup.style.display = isVal ? 'none' : '';
     if (valGroup) valGroup.style.display = isVal ? '' : 'none';
 }
 
 function collectReportApprovePassFail(preview) {
-    var isVal = String((preview || {}).type || '').trim().toLowerCase() === 'validation';
+    var isVal = String((preview || {}).type || '').trim().toLowerCase() === 'validation'
+        && !isCalibrationReport(preview);
     if (isVal) {
         var strokeEl = document.querySelector('input[name="report-approve-stroke-pass-fail"]:checked');
         var tempEl = document.querySelector('input[name="report-approve-temp-pass-fail"]:checked');

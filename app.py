@@ -2446,6 +2446,8 @@ def _audit_report_created(report_id, enriched):
         _audit(None, None, action, details)
     elif rtype == "validation":
         _audit(None, None, "Validation performed", details)
+    elif rtype == "calibration":
+        _audit(None, None, "Calibration performed", details)
     else:
         _audit(None, None, "Report saved", details)
 
@@ -2458,6 +2460,11 @@ def create_report():
             gate = _require_session_internal(
                 "validation-test",
                 "Forbidden. You do not have permission to run validation.",
+            )
+        elif rtype == "calibration":
+            gate = _require_session_internal(
+                "calibration-menu",
+                "Forbidden. You do not have permission to save calibration reports.",
             )
         elif rtype == "test":
             gate = _require_any_session_internal(
@@ -4693,7 +4700,7 @@ def _parse_audit_export_filters(data):
 
 @app.route("/api/audit/export/stage", methods=["POST"])
 def audit_export_stage():
-    """Stage filtered audit entries for verified USB export (24h purge tracking)."""
+    """Stage filtered audit entries for verified USB export (immediate purge on confirm)."""
     try:
         audit_gate = _require_session_internal(
             "audit-view",
@@ -4721,7 +4728,7 @@ def audit_export_stage():
 
 @app.route("/api/reports/export/stage", methods=["POST"])
 def reports_export_stage():
-    """Stage report IDs for verified USB export (24h purge tracking)."""
+    """Stage report IDs for verified USB export (24h purge after export)."""
     try:
         cur = data_service.get_current_user()
         if not cur:
@@ -4851,7 +4858,7 @@ def export_audit_trails():
             "unmount_detail": unmount_detail,
             "export_id": export_id,
             "entries_staged": len(entry_ids) if export_id else 0,
-            "retentionNote": "After you verify the USB copy, exported audit rows are purged from this device after 24 hours.",
+            "retentionNote": "After you verify the USB copy, the exported audit rows are removed from this device. Download does not delete audit data.",
         }), 200
     except Exception as e:
         if mounted_now:
@@ -4865,7 +4872,7 @@ def export_audit_trails():
 
 @app.route("/api/audit/export/confirm", methods=["POST"])
 def confirm_audit_export():
-    """Operator confirmed USB audit export; starts 24h retention timer."""
+    """Operator confirmed USB audit export; delete only those exported entries now."""
     try:
         _maybe_purge_scheduled_audit_export()
         cur = data_service.get_current_user()
@@ -4877,26 +4884,44 @@ def confirm_audit_export():
         export_id = (data.get("export_id") or "").strip()
         verified = bool(data.get("verified"))
         if not verified:
-            return jsonify({"success": True, "verified": False, "scheduled": False}), 200
+            return jsonify({"success": True, "verified": False, "purged": False}), 200
         if not export_id:
             return jsonify({"success": False, "error": "Missing export_id"}), 400
-        scheduled = audit_service.confirm_audit_export_verified(export_id)
-        if not scheduled:
+        purged = audit_service.confirm_audit_export_verified(export_id)
+        if not purged:
             return jsonify({"success": False, "error": "Export session expired or invalid. Export again."}), 400
+        removed = int(purged.get("rows_removed") or 0)
+        actors = _format_export_actors_detail(
+            purged.get("exported_by"), purged.get("approved_by")
+        )
+        # Durable trail: who exported / who approved — written after purge so it always remains.
         _audit(
-            cur.get("username") or cur.get("name"),
-            cur.get("role"),
-            "Audit export verified",
-            "USB export verified; {} entries scheduled for removal after 24 hours".format(
-                len(scheduled.get("entry_ids") or [])
+            (purged.get("exported_by") or {}).get("username")
+            or cur.get("username")
+            or cur.get("name"),
+            (purged.get("exported_by") or {}).get("role") or cur.get("role"),
+            "Audit trail exported",
+            "USB export verified | {} audit entr{} removed from device | {}".format(
+                removed, "y" if removed == 1 else "ies", actors
+            ),
+        )
+        _audit(
+            (purged.get("approved_by") or {}).get("username")
+            or cur.get("username")
+            or cur.get("name"),
+            (purged.get("approved_by") or {}).get("role") or cur.get("role"),
+            "Export approved",
+            "Audit USB export approved | {} entr{} | {}".format(
+                removed, "y" if removed == 1 else "ies", actors
             ),
         )
         return jsonify({
             "success": True,
             "verified": True,
-            "scheduled": True,
-            "purge_at_ms": int(scheduled.get("purge_at_ms") or 0),
-            "entries_scheduled": len(scheduled.get("entry_ids") or []),
+            "purged": True,
+            "scheduled": False,
+            "entries_removed": removed,
+            "entries_scheduled": removed,
         }), 200
     except Exception as e:
         app.logger.exception("Error confirming audit export")
@@ -4905,7 +4930,7 @@ def confirm_audit_export():
 
 @app.route("/api/reports/export/confirm", methods=["POST"])
 def confirm_report_export():
-    """Operator confirmed USB report export; starts 24h retention timer."""
+    """Operator confirmed USB report export; schedule removal 24h after export time."""
     try:
         _maybe_purge_scheduled_report_export()
         cur = data_service.get_current_user()
@@ -4917,26 +4942,49 @@ def confirm_report_export():
         export_id = (data.get("export_id") or "").strip()
         verified = bool(data.get("verified"))
         if not verified:
-            return jsonify({"success": True, "verified": False, "scheduled": False}), 200
+            return jsonify({"success": True, "verified": False, "scheduled": False, "purged": False}), 200
         if not export_id:
             return jsonify({"success": False, "error": "Missing export_id"}), 400
-        scheduled = data_service.confirm_report_export_verified(export_id)
-        if not scheduled:
+        result = data_service.confirm_report_export_verified(export_id, REPORTS_DIR)
+        if not result:
             return jsonify({"success": False, "error": "Export session expired or invalid. Export again."}), 400
+        was_purged = bool(result.get("purged"))
+        n = len(result.get("report_ids") or [])
+        if was_purged and result.get("reports_removed") is not None:
+            n = int(result.get("reports_removed") or 0)
+        actors = _format_export_actors_detail(
+            result.get("exported_by"), result.get("approved_by")
+        )
+        if was_purged:
+            detail = "USB export verified | {} report(s) removed from device | {}".format(n, actors)
+        else:
+            detail = (
+                "USB export verified | {} report(s) scheduled for removal 24 hours after export | {}"
+            ).format(n, actors)
         _audit(
-            cur.get("username") or cur.get("name"),
-            cur.get("role"),
-            "Report export verified",
-            "USB export verified; {} report(s) scheduled for removal after 24 hours".format(
-                len(scheduled.get("report_ids") or [])
-            ),
+            (result.get("exported_by") or {}).get("username")
+            or cur.get("username")
+            or cur.get("name"),
+            (result.get("exported_by") or {}).get("role") or cur.get("role"),
+            "Reports exported",
+            detail,
+        )
+        _audit(
+            (result.get("approved_by") or {}).get("username")
+            or cur.get("username")
+            or cur.get("name"),
+            (result.get("approved_by") or {}).get("role") or cur.get("role"),
+            "Export approved",
+            "Report USB export approved | {} report(s) | {}".format(n, actors),
         )
         return jsonify({
             "success": True,
             "verified": True,
-            "scheduled": True,
-            "purge_at_ms": int(scheduled.get("purge_at_ms") or 0),
-            "reports_scheduled": len(scheduled.get("report_ids") or []),
+            "scheduled": not was_purged,
+            "purged": was_purged,
+            "purge_at_ms": int(result.get("purge_at_ms") or result.get("purged_at_ms") or 0),
+            "reports_scheduled": n,
+            "reports_removed": int(result.get("reports_removed") or 0) if was_purged else 0,
         }), 200
     except Exception as e:
         app.logger.exception("Error confirming report export")

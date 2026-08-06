@@ -780,7 +780,8 @@ def export_entries(filters: Optional[Dict[str, Any]] = None, path_or_fd=None):
 
 
 AUDIT_EXPORT_SCHEDULE_FILE = "audit_export_schedule.json"
-AUDIT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000
+# Legacy: older builds scheduled purge after 24h; confirm now purges immediately.
+AUDIT_EXPORT_RETENTION_MS = 0
 EXPORT_PURGE_AFTER_MS = AUDIT_EXPORT_RETENTION_MS
 
 
@@ -853,7 +854,7 @@ def stage_audit_export_pending(
 
 
 def confirm_audit_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
-    """Operator confirmed USB PDF OK: schedule purge in 24h."""
+    """Operator confirmed USB PDF OK: delete only the exported audit entry IDs immediately."""
     want = str(export_id or "").strip()
     if not want:
         return None
@@ -862,34 +863,51 @@ def confirm_audit_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
     if str(staged.get("export_id") or "").strip() != want:
         return None
     now_ms = int(time.time() * 1000)
-    scheduled = {
+    entry_ids = list(staged.get("entry_ids") or [])
+    removed = delete_entries_by_ids(entry_ids)
+    out = {
         "export_id": want,
-        "entry_ids": list(staged.get("entry_ids") or []),
+        "entry_ids": entry_ids,
         "exported_by": dict(staged.get("exported_by") or {}),
         "approved_by": dict(staged.get("approved_by") or {}),
         "exported_at_ms": int(staged.get("exported_at_ms") or now_ms),
         "pdf_path": str(staged.get("pdf_path") or "").strip(),
         "confirmed_at_ms": now_ms,
-        "purge_at_ms": now_ms + AUDIT_EXPORT_RETENTION_MS,
+        "purged_at_ms": now_ms,
+        "rows_removed": int(removed or 0),
     }
-    state["scheduled"] = scheduled
     state.pop("staged", None)
+    state.pop("scheduled", None)
     _save_audit_export_schedule(state)
-    return scheduled
+    return out
 
 
-def delete_entries_by_ids(entry_ids: List[Any]) -> int:
-    """Delete audit rows with matching primary keys only."""
+# Actions that must remain on-device after an audit USB export purge.
+_AUDIT_EXPORT_KEEP_ACTIONS = frozenset({
+    "Audit trail exported",
+    "Export approved",
+    "Audit export verified",
+    "Reports exported",
+    "Report export verified",
+})
+
+
+def delete_entries_by_ids(entry_ids: List[Any], *, keep_export_trail: bool = True) -> int:
+    """Delete audit rows with matching primary keys only (TEXT ids).
+
+    When keep_export_trail is True, rows whose action is an export/approval trail
+    entry are never deleted — so who exported / who approved always remains.
+    """
     if not entry_ids or not _audit_db_path or not _audit_db_path.exists():
         return 0
     ids = []
+    seen = set()
     for eid in entry_ids:
-        try:
-            n = int(eid)
-            if n > 0:
-                ids.append(n)
-        except (TypeError, ValueError):
+        s = str(eid).strip() if eid is not None else ""
+        if not s or s in seen:
             continue
+        seen.add(s)
+        ids.append(s)
     if not ids:
         return 0
     conn = _db_connect()
@@ -897,10 +915,19 @@ def delete_entries_by_ids(entry_ids: List[Any]) -> int:
         return 0
     try:
         placeholders = ",".join("?" for _ in ids)
-        cur = conn.execute(
-            "DELETE FROM audit_entries WHERE id IN ({})".format(placeholders),
-            tuple(ids),
-        )
+        if keep_export_trail and _AUDIT_EXPORT_KEEP_ACTIONS:
+            keep_ph = ",".join("?" for _ in _AUDIT_EXPORT_KEEP_ACTIONS)
+            cur = conn.execute(
+                "DELETE FROM audit_entries WHERE id IN ({}) AND action NOT IN ({})".format(
+                    placeholders, keep_ph
+                ),
+                tuple(ids) + tuple(_AUDIT_EXPORT_KEEP_ACTIONS),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM audit_entries WHERE id IN ({})".format(placeholders),
+                tuple(ids),
+            )
         conn.commit()
         removed = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
         try:
@@ -930,12 +957,12 @@ def run_due_audit_export_purge() -> Optional[Dict[str, Any]]:
     if now_ms < purge_at_ms:
         return None
     entry_ids = list(scheduled.get("entry_ids") or [])
-    delete_entries_by_ids(entry_ids)
+    removed = delete_entries_by_ids(entry_ids)
     state.pop("scheduled", None)
     _save_audit_export_schedule(state)
     out = dict(scheduled)
     out["purged_at_ms"] = now_ms
-    out["rows_removed"] = len(entry_ids)
+    out["rows_removed"] = int(removed or 0)
     return out
 
 
@@ -955,15 +982,12 @@ def stage_audit_export(entry_ids: List[int], exporter_username: str, approver_us
 
 
 def confirm_audit_export_batch(batch_id: str, pdf_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    scheduled = confirm_audit_export_verified(batch_id)
-    if scheduled and pdf_path:
-        state = _load_audit_export_schedule()
-        sched = state.get("scheduled") if isinstance(state.get("scheduled"), dict) else {}
-        if str(sched.get("export_id") or "") == str(batch_id):
-            sched["pdf_path"] = str(pdf_path)
-            state["scheduled"] = sched
-            _save_audit_export_schedule(state)
-    return scheduled
+    """Confirm USB audit export and purge exported rows immediately."""
+    purged = confirm_audit_export_verified(batch_id)
+    if purged and pdf_path and not purged.get("pdf_path"):
+        purged = dict(purged)
+        purged["pdf_path"] = str(pdf_path)
+    return purged
 
 
 def purge_due_audit_exports(now_ms: Optional[int] = None) -> int:

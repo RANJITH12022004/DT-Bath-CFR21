@@ -1621,7 +1621,7 @@ def clear_dt_instrument_settings() -> None:
     _save_json_file(path, dict(_DEFAULT_DT_INSTRUMENT_SETTINGS))
 
 
-# =================== REPORT EXPORT SCHEDULE (24h purge, Tap Density style) =======
+# =================== REPORT EXPORT SCHEDULE (USB export → purge 24h after export) =======
 
 REPORT_EXPORT_SCHEDULE_FILE = "report_export_schedule.json"
 REPORT_EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000
@@ -1734,8 +1734,11 @@ def stage_report_export_pending(
     _save_report_export_schedule(state)
 
 
-def confirm_report_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
-    """Operator confirmed USB export OK: schedule purge in 24h."""
+def confirm_report_export_verified(
+    export_id: str,
+    reports_dir: Optional[pathlib.Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Operator confirmed USB export OK: schedule purge of exported report IDs 24h after export."""
     import time
     want = str(export_id or "").strip()
     if not want:
@@ -1745,18 +1748,31 @@ def confirm_report_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
     if str(staged.get("export_id") or "").strip() != want:
         return None
     now_ms = int(time.time() * 1000)
+    try:
+        exported_at_ms = int(staged.get("exported_at_ms") or now_ms)
+    except (TypeError, ValueError):
+        exported_at_ms = now_ms
+    report_ids = list(staged.get("report_ids") or [])
     scheduled = {
         "export_id": want,
-        "report_ids": list(staged.get("report_ids") or []),
+        "report_ids": report_ids,
         "exported_by": dict(staged.get("exported_by") or {}),
         "approved_by": dict(staged.get("approved_by") or {}),
-        "exported_at_ms": int(staged.get("exported_at_ms") or now_ms),
+        "exported_at_ms": exported_at_ms,
         "confirmed_at_ms": now_ms,
-        "purge_at_ms": now_ms + REPORT_EXPORT_RETENTION_MS,
+        "purge_at_ms": exported_at_ms + REPORT_EXPORT_RETENTION_MS,
+        "purged": False,
     }
     state["scheduled"] = scheduled
     state.pop("staged", None)
     _save_report_export_schedule(state)
+    # If more than 24h already elapsed since export, purge immediately.
+    if reports_dir is not None and now_ms >= int(scheduled["purge_at_ms"]):
+        purged = run_due_report_export_purge(reports_dir)
+        if purged:
+            out = dict(purged)
+            out["purged"] = True
+            return out
     return scheduled
 
 
@@ -1776,12 +1792,12 @@ def run_due_report_export_purge(reports_dir: Optional[pathlib.Path] = None) -> O
     if now_ms < purge_at_ms:
         return None
     report_ids = list(scheduled.get("report_ids") or [])
-    purge_reports_by_ids(report_ids, reports_dir)
+    removed = purge_reports_by_ids(report_ids, reports_dir)
     state.pop("scheduled", None)
     _save_report_export_schedule(state)
     out = dict(scheduled)
     out["purged_at_ms"] = now_ms
-    out["reports_removed"] = len(report_ids)
+    out["reports_removed"] = int(removed or 0)
     return out
 
 

@@ -501,8 +501,12 @@ def verify_purge_primitives(res: RunResult) -> None:
     if batch.get("id"):
         res.ok("audit_service.stage_audit_export")
     confirmed = audit_service.confirm_audit_export_batch(batch["id"], "/tmp/test.pdf")
-    if confirmed and confirmed.get("confirmedAt"):
+    if confirmed and confirmed.get("purged_at_ms") is not None:
         res.ok("audit_service.confirm_audit_export_batch")
+    elif confirmed and confirmed.get("confirmed_at_ms") is not None:
+        res.ok("audit_service.confirm_audit_export_batch")
+    else:
+        res.fail("audit_service.confirm_audit_export_batch missing purge result")
     rb = data_service.stage_report_export([999998], "tester", "approver")
     if rb.get("id"):
         res.ok("data_service.stage_report_export")

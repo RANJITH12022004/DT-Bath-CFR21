@@ -1064,6 +1064,95 @@ def _append_derived_test_summary_and_result(
     lines.append("")
 
 
+def _is_calibration_report(report_data: Dict[str, Any]) -> bool:
+    """True for calibration reports (including legacy validation+calibration subtype)."""
+    if not isinstance(report_data, dict):
+        return False
+    rtype = str(report_data.get("type") or "").strip().lower()
+    if rtype == "calibration":
+        return True
+    if rtype != "validation":
+        return False
+    sub = str(report_data.get("validationSubtype") or "").strip().lower()
+    if sub == "calibration":
+        return True
+    td = report_data.get("testData")
+    if isinstance(td, dict):
+        sub = str(td.get("validationSubtype") or "").strip().lower()
+        if sub == "calibration":
+            return True
+    return False
+
+
+def _calibration_status_label(td: Dict[str, Any], report_data: Dict[str, Any]) -> str:
+    """Simple status for calibration reports — no sensor/temp readings."""
+    overall = td.get("status") or report_data.get("status") or ""
+    low = str(overall).strip().lower()
+    if low == "fail" or "fail" in low:
+        return "Failed"
+    if low == "aborted":
+        return "Aborted"
+    # Default success wording for completed calibration
+    return "Temperature Calibrated"
+
+
+def _append_calibration_report_details(
+    lines: list, td: Dict[str, Any], report_data: Dict[str, Any], width: int, thermal: bool
+) -> None:
+    """Calibration report body: procedure + status only (no temps/offsets)."""
+    if not isinstance(td, dict):
+        td = {}
+    status_label = _calibration_status_label(td, report_data)
+    ts_end = (
+        report_data.get("completedAt")
+        or td.get("completedAt")
+        or report_data.get("createdAt")
+        or td.get("createdAt")
+    )
+    remarks = report_data.get("approvalRemarks")
+    if remarks in (None, ""):
+        remarks = report_data.get("remarks")
+    if remarks in (None, ""):
+        remarks = td.get("remarks")
+    dash = "" if thermal else ("-" * width)
+    end_date, end_time = _split_ts_date_and_time(ts_end)
+
+    if thermal:
+        lines.extend(
+            [
+                "",
+                "CALIBRATION INFORMATION",
+                "Procedure: Temperature Calibration",
+                f"Status: {status_label}",
+                f"Date: {end_date}",
+                f"Time: {end_time}",
+                "",
+            ]
+        )
+    else:
+        lines.extend(["", "CALIBRATION INFORMATION", dash if dash else ""])
+        _append_two_column_pairs(
+            lines,
+            [
+                ("Procedure", "Temperature Calibration"),
+                ("Status", status_label),
+                ("Completed", _format_ts_readable(ts_end)),
+            ],
+            width,
+        )
+        lines.append("")
+
+    if remarks not in (None, ""):
+        if thermal:
+            lines.extend(["", "REMARKS:", str(remarks), ""])
+        else:
+            lines.extend(["", "REMARKS", dash if dash else ""])
+            _append_two_column_pairs(
+                lines, [("Remarks", _truncate_with_ellipsis(remarks, max(16, width - 20)))], width
+            )
+            lines.append("")
+
+
 def _normalize_validation_runs(td: Dict[str, Any], report_data: Dict[str, Any]) -> list:
     if not isinstance(td, dict):
         td = {}
@@ -1141,12 +1230,10 @@ def _validation_run_detail_pairs(run: Dict[str, Any]) -> list:
             ("Limit (±°C)", _cell_str(run.get("requiredDeviation") or "2.0")),
         ])
     elif sub == "calibration":
+        # Calibration details are rendered via _append_calibration_report_details
         pairs.extend([
-            ("Sensor", _cell_str(run.get("sensor"))),
-            ("Set Temp (°C)", _cell_str(run.get("setTemperature"))),
-            ("Measured (°C)", _cell_str(run.get("measuredTemperature") or run.get("afterValue"))),
-            ("Before (°C)", _cell_str(run.get("beforeValue"))),
-            ("Offset", _cell_str(run.get("calibrationOffset"))),
+            ("Procedure", "Temperature Calibration"),
+            ("Status", "Temperature Calibrated"),
         ])
     else:
         pairs.extend([
@@ -1576,7 +1663,13 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
         report_data["approvalPassFail"] = approval_result
     fs = report_data.get("factorySettings") or {}
     rtype = str(report_data.get("type") or "test").strip().lower()
-    title = "DISINTEGRATION VALIDATION REPORT" if rtype == "validation" else "DISINTEGRATION TEST REPORT"
+    is_cal = _is_calibration_report(report_data)
+    if is_cal:
+        title = "DISINTEGRATION CALIBRATION REPORT"
+    elif rtype == "validation":
+        title = "DISINTEGRATION VALIDATION REPORT"
+    else:
+        title = "DISINTEGRATION TEST REPORT"
     lines: list = []
     if thermal:
         # Logo raster already includes RAISE LAB EQUIPMENT — do not repeat the brand line.
@@ -1588,35 +1681,28 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
         lines.append("")
     else:
         lines.append(sep)
+    header_pairs = [
+        ("Company", fs.get("companyName", "N/A")),
+        ("Model No", fs.get("modelNo", "N/A")),
+        ("Serial No", fs.get("serialNo", "N/A")),
+        ("Location", fs.get("companyLocation", fs.get("location", "N/A"))),
+        ("Instrument ID", fs.get("instrumentId", "N/A")),
+    ]
+    if not is_cal:
+        header_pairs.extend([
+            ("Last Val", fs.get("lastValidationDate", "N/A")),
+            ("Next Val Due", fs.get("nextValidationDate", "N/A")),
+        ])
     if thermal:
-        lines.extend(
-            [
-                f"Company: {fs.get('companyName', 'N/A')}",
-                f"Model No: {fs.get('modelNo', 'N/A')}",
-                f"Serial No: {fs.get('serialNo', 'N/A')}",
-                f"Location: {fs.get('companyLocation', fs.get('location', 'N/A'))}",
-                f"Instrument ID: {fs.get('instrumentId', 'N/A')}",
-                f"Last Val: {fs.get('lastValidationDate', 'N/A')}",
-                f"Next Val Due: {fs.get('nextValidationDate', 'N/A')}",
-            ]
-        )
+        for label, value in header_pairs:
+            lines.append(f"{label}: {value}")
     else:
-        _append_two_column_pairs(
-            lines,
-            [
-                ("Company", fs.get("companyName", "N/A")),
-                ("Model No", fs.get("modelNo", "N/A")),
-                ("Serial No", fs.get("serialNo", "N/A")),
-                ("Location", fs.get("companyLocation", fs.get("location", "N/A"))),
-                ("Instrument ID", fs.get("instrumentId", "N/A")),
-                ("Last Val", fs.get("lastValidationDate", "N/A")),
-                ("Next Val Due", fs.get("nextValidationDate", "N/A")),
-            ],
-            width,
-        )
+        _append_two_column_pairs(lines, header_pairs, width)
     if not thermal:
         lines.append("")
-    if rtype == "validation":
+    if is_cal:
+        _append_calibration_report_details(lines, td if isinstance(td, dict) else {}, report_data, width, thermal)
+    elif rtype == "validation":
         _append_validation_report_details(lines, td if isinstance(td, dict) else {}, report_data, width, thermal)
     else:
         recipe = report_data.get("recipe") or td.get("recipe") or td

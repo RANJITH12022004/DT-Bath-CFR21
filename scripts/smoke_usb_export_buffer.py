@@ -106,11 +106,17 @@ def main() -> int:
         else:
             ok("staged export {}".format(export_id))
 
-        confirmed = data_service.confirm_report_export_verified(export_id)
+        confirmed = data_service.confirm_report_export_verified(export_id, reports_dir=reports_dir)
         if not confirmed or not confirmed.get("purge_at_ms"):
             fail("confirm_report_export_verified missing purge_at_ms")
         else:
             ok("confirmed; purge_at_ms={}".format(confirmed.get("purge_at_ms")))
+
+        # Still present before due
+        if data_service.get_report(rid) is None:
+            fail("report deleted before 24h buffer")
+        else:
+            ok("report retained during 24h buffer")
 
         # Force due
         state = data_service._load_report_export_schedule()
@@ -121,10 +127,12 @@ def main() -> int:
 
         purged = data_service.run_due_report_export_purge(reports_dir=reports_dir)
         pdf_gone = not (reports_dir / "report_{}.pdf".format(rid)).exists()
-        if purged and pdf_gone:
+        report_gone = data_service.get_report(rid) is None
+        if purged and pdf_gone and report_gone:
             ok("due purge removed report files (purged={})".format(purged.get("reports_removed")))
         else:
-            fail("purge did not remove files purged={} pdf_gone={}".format(purged, pdf_gone))
+            fail("purge did not remove files purged={} pdf_gone={} report_gone={}".format(
+                purged, pdf_gone, report_gone))
 
         # Legacy array schedule ignored
         (storage / "report_export_schedule.json").write_text(json.dumps([{"old": True}]), encoding="utf-8")
