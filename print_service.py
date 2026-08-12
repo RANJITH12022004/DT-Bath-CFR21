@@ -1928,13 +1928,14 @@ def _report_timestamp_footer_lines(kind: str = "printed") -> list:
     """Date/time footer from device RTC. kind: 'printed' | 'exported'."""
     try:
         import rtc_service
+        from report_service import _format_display_date
 
         payload = rtc_service.get_device_wall_datetime_payload()
-        pdate = payload.get("date") or "--"
+        pdate = _format_display_date(payload.get("date")) if payload.get("date") else "--"
         ptime = payload.get("time") or "--"
     except Exception:
         now = datetime.now()
-        pdate = now.strftime("%d-%m-%Y")
+        pdate = now.strftime("%d/%m/%Y")
         ptime = now.strftime("%H:%M:%S")
     label = "Exported" if str(kind or "").strip().lower() == "exported" else "Printed"
     return ["", f"{label} Date: {pdate}", f"{label} Time: {ptime}"]

@@ -224,13 +224,13 @@ def _report_print_timestamp() -> Dict[str, str]:
 
         payload = rtc_service.get_device_wall_datetime_payload()
         return {
-            "printDate": str(payload.get("date") or "--"),
+            "printDate": _format_display_date(payload.get("date")) if payload.get("date") else "--",
             "printTime": str(payload.get("time") or "--"),
         }
     except Exception:
         now = datetime.now()
         return {
-            "printDate": now.strftime("%d-%m-%Y"),
+            "printDate": now.strftime("%d/%m/%Y"),
             "printTime": now.strftime("%H:%M:%S"),
         }
 
@@ -693,6 +693,15 @@ def _parse_display_date(value: Any) -> Optional[datetime]:
     return _parse_report_datetime(value)
 
 
+def _format_display_date(value: Any) -> str:
+    """Normalize display dates to DD/MM/YYYY for all report outputs."""
+    dt = _parse_display_date(value)
+    if dt is None:
+        s = str(value or "").strip()
+        return s or "N/A"
+    return dt.strftime("%d/%m/%Y")
+
+
 def _add_years(dt: datetime, years: int = 1) -> datetime:
     """Add calendar years; Feb 29 rolls to Feb 28 on non-leap years."""
     try:
@@ -726,8 +735,8 @@ def _validation_dates_from_last(dt: datetime, months: int = 12) -> Dict[str, str
         m = 12
     next_dt = _add_months(dt, m)
     return {
-        "lastValidationDate": dt.strftime("%d-%m-%Y"),
-        "nextValidationDate": next_dt.strftime("%d-%m-%Y"),
+        "lastValidationDate": dt.strftime("%d/%m/%Y"),
+        "nextValidationDate": next_dt.strftime("%d/%m/%Y"),
         "dueIntervalMonths": m,
     }
 
@@ -748,8 +757,8 @@ def get_beaker_validation_dates(
     nxt = fs.get("nextValidationDate") or "N/A"
     if last not in (None, "", "N/A") or nxt not in (None, "", "N/A"):
         out = {
-            "lastValidationDate": last or "N/A",
-            "nextValidationDate": nxt or "N/A",
+            "lastValidationDate": _format_display_date(last) if last not in (None, "", "N/A") else "N/A",
+            "nextValidationDate": _format_display_date(nxt) if nxt not in (None, "", "N/A") else "N/A",
         }
         if fs.get("dueIntervalMonths") is not None:
             out["dueIntervalMonths"] = fs.get("dueIntervalMonths")
@@ -766,8 +775,12 @@ def get_beaker_validation_dates(
     entry = by.get(key) if key and isinstance(by.get(key), dict) else None
     if entry:
         out = {
-            "lastValidationDate": entry.get("lastValidationDate") or "N/A",
-            "nextValidationDate": entry.get("nextValidationDate") or "N/A",
+            "lastValidationDate": _format_display_date(entry.get("lastValidationDate"))
+            if entry.get("lastValidationDate") not in (None, "", "N/A")
+            else "N/A",
+            "nextValidationDate": _format_display_date(entry.get("nextValidationDate"))
+            if entry.get("nextValidationDate") not in (None, "", "N/A")
+            else "N/A",
         }
         if entry.get("dueIntervalMonths") is not None:
             out["dueIntervalMonths"] = entry.get("dueIntervalMonths")
@@ -798,6 +811,8 @@ def apply_pending_validation_due(report: Dict[str, Any]) -> Dict[str, Any]:
         computed = _validation_dates_from_last(now, months)
         last = last or computed["lastValidationDate"]
         nxt = nxt or computed["nextValidationDate"]
+    last = _format_display_date(last)
+    nxt = _format_display_date(nxt)
     stored = dict(data_service.get_factory_settings() or {})
     stored["lastValidationDate"] = last
     stored["nextValidationDate"] = nxt
@@ -831,8 +846,8 @@ def _resolve_validation_dates(factory_settings: Optional[Dict[str, Any]] = None)
         # If next already stored, keep it
         if fs.get("nextValidationDate"):
             return {
-                "lastValidationDate": fs.get("lastValidationDate"),
-                "nextValidationDate": fs.get("nextValidationDate"),
+                "lastValidationDate": _format_display_date(fs.get("lastValidationDate")),
+                "nextValidationDate": _format_display_date(fs.get("nextValidationDate")),
                 "dueIntervalMonths": months,
             }
         return _validation_dates_from_last(last_dt, months)
