@@ -28,6 +28,9 @@ _save_report_fn: Optional[Callable] = None
 _runs: Dict[int, Dict[str, Any]] = {}  # basket_id -> run state
 _last_saved_reports: Dict[int, Dict[str, Any]] = {}  # basket_id -> last auto-saved report
 _watchdog_started = False
+# Gate persist-clear until app finishes unclean-shutdown / checkpoint recovery.
+# Otherwise the watchdog can wipe test_run.json before startup recovery reads it.
+_persist_enabled = False
 
 STATES = ("IDLE", "PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING", "COMPLETE", "ABORTED")
 ACTIVE_CHECKPOINT_STATES = ("PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING")
@@ -39,6 +42,20 @@ def init(logger=None, audit_fn: Optional[Callable] = None, save_report_fn: Optio
     _audit_fn = audit_fn
     if save_report_fn is not None:
         _save_report_fn = save_report_fn
+    # Do not start the watchdog here — app must call start_watchdog() after
+    # power-loss checkpoint recovery, or mid-run test_run.json is deleted first.
+
+
+def enable_persist() -> None:
+    """Allow checkpoint writes/clears after startup recovery has finished."""
+    global _persist_enabled
+    _persist_enabled = True
+
+
+def start_watchdog() -> None:
+    """Start the DT watchdog after power-loss recovery has consumed any checkpoint."""
+    global _watchdog_started
+    enable_persist()
     if not _watchdog_started:
         _watchdog_started = True
         threading.Thread(target=_watchdog_loop, daemon=True, name="dt-test-watchdog").start()
@@ -119,11 +136,19 @@ def _persist() -> None:
     When no basket is active, clear a prior DT checkpoint. Leave classic (non-DT)
     report-shaped checkpoints untouched when DT never owned the file.
     """
+    import copy
+
     if not data_service:
+        return
+    if not _persist_enabled:
+        # Startup race: empty in-memory IDLE state must not erase a mid-run
+        # checkpoint before app._startup_session_power_audit() recovers it.
         return
     try:
         with _lock:
-            baskets = {str(k): dict(v) for k, v in _runs.items()}
+            # Deep copy so beaker 1/2 tube maps never alias each other in the
+            # on-disk checkpoint (shallow dict() kept shared nested refs).
+            baskets = {str(k): copy.deepcopy(v) for k, v in _runs.items()}
         reports: List[Dict[str, Any]] = []
         for bkey, run in baskets.items():
             st = str(run.get("state") or "")
@@ -761,9 +786,10 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
         "beaker": basket,
         "basket": basket,
         "basketConfig": run.get("basketConfig") or 6,
-        "holeCompletionTimes": run.get("holeCompletionTimes") or {},
-        "holeCompletionTimestamps": run.get("holeCompletionTimestamps") or {},
-        "vesselTimes": run.get("vesselTimes") or {},
+        "holeCompletionTimes": dict(run.get("holeCompletionTimes") or {}),
+        "holeCompletionTimestamps": dict(run.get("holeCompletionTimestamps") or {}),
+        "vesselTimes": dict(run.get("vesselTimes") or {}),
+        "completedHoles": dict(run.get("completedHoles") or {}),
         "testStartTime": run.get("startedAt"),
         "testEndTime": run.get("endedAt"),
         "minTemp": run.get("minTemp"),

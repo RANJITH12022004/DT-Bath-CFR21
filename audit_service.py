@@ -828,6 +828,7 @@ def stage_audit_export_pending(
     exported_by: Dict[str, Any],
     approved_by: Dict[str, Any],
     pdf_path: str = "",
+    filters: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Store a successful USB audit export awaiting operator verification (no purge yet)."""
     now_ms = int(time.time() * 1000)
@@ -837,10 +838,12 @@ def stage_audit_export_pending(
             n = int(x)
             if n > 0:
                 ids.append(n)
+                continue
         except (TypeError, ValueError):
-            s = str(x).strip()
-            if s:
-                ids.append(s)
+            pass
+        s = str(x).strip()
+        if s:
+            ids.append(s)
     state = _load_audit_export_schedule()
     state["staged"] = {
         "export_id": str(export_id or "").strip(),
@@ -849,6 +852,7 @@ def stage_audit_export_pending(
         "approved_by": dict(approved_by or {}),
         "exported_at_ms": now_ms,
         "pdf_path": str(pdf_path or "").strip(),
+        "filters": dict(filters or {}),
     }
     _save_audit_export_schedule(state)
 
@@ -872,6 +876,7 @@ def confirm_audit_export_verified(export_id: str) -> Optional[Dict[str, Any]]:
         "approved_by": dict(staged.get("approved_by") or {}),
         "exported_at_ms": int(staged.get("exported_at_ms") or now_ms),
         "pdf_path": str(staged.get("pdf_path") or "").strip(),
+        "filters": dict(staged.get("filters") or {}) if isinstance(staged.get("filters"), dict) else {},
         "confirmed_at_ms": now_ms,
         "purged_at_ms": now_ms,
         "rows_removed": int(removed or 0),
@@ -968,7 +973,12 @@ def run_due_audit_export_purge() -> Optional[Dict[str, Any]]:
 
 # ---- Backward-compatible wrappers ----
 
-def stage_audit_export(entry_ids: List[int], exporter_username: str, approver_username: str) -> Dict[str, Any]:
+def stage_audit_export(
+    entry_ids: List[int],
+    exporter_username: str,
+    approver_username: str,
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     export_id = secrets.token_urlsafe(16)
     exported_by = {"username": (exporter_username or "").strip() or "--", "employee_id": "--", "role": "--"}
     approved_by = {"username": (approver_username or "").strip() or "--", "employee_id": "--", "role": "--"}
@@ -977,6 +987,7 @@ def stage_audit_export(entry_ids: List[int], exporter_username: str, approver_us
         entry_ids=entry_ids or [],
         exported_by=exported_by,
         approved_by=approved_by,
+        filters=filters or {},
     )
     return {"id": export_id, "export_id": export_id, "entryIds": entry_ids or []}
 

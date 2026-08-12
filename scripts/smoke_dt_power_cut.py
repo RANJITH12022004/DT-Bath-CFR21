@@ -121,9 +121,37 @@ def main() -> int:
             {
                 "type": "dt_checkpoint",
                 "baskets": {
-                    "1": {"basket": 1, "state": "RUNNING", "productName": "DualA", "operatorUsername": "op1"},
-                    "2": {"basket": 2, "state": "PREHEAT", "productName": "DualB", "operatorUsername": "op1"},
+                    "1": {
+                        "basket": 1,
+                        "state": "RUNNING",
+                        "productName": "DualA",
+                        "operatorUsername": "op1",
+                        "mode": "manual",
+                        "basketConfig": 6,
+                        "startedAt": "2026-08-04T12:00:00Z",
+                        "holeCompletionTimes": {"1": 10},
+                        "vesselTimes": {"1": "00:00:10"},
+                        "holeCompletionTimestamps": {"1": "2026-08-04T12:00:10Z"},
+                        "completedHoles": {"1": True},
+                    },
+                    "2": {
+                        "basket": 2,
+                        "state": "RUNNING",
+                        "productName": "DualB",
+                        "operatorUsername": "op1",
+                        "mode": "manual",
+                        "basketConfig": 6,
+                        "startedAt": "2026-08-04T12:00:05Z",
+                        "holeCompletionTimes": {"2": 20, "3": 21},
+                        "vesselTimes": {"2": "00:00:20", "3": "00:00:21"},
+                        "holeCompletionTimestamps": {
+                            "2": "2026-08-04T12:00:25Z",
+                            "3": "2026-08-04T12:00:26Z",
+                        },
+                        "completedHoles": {"2": True, "3": True},
+                    },
                 },
+                # Deliberately poisoned shared mirror — recovery must prefer baskets[].
                 "reports": [
                     {
                         "type": "test",
@@ -133,6 +161,8 @@ def main() -> int:
                         "productName": "DualA",
                         "name": "DualA",
                         "operatorUsername": "op1",
+                        "holeCompletionTimes": {"9": 99},
+                        "vesselTimes": {"9": "00:01:39"},
                         "_dtBasket": 1,
                     },
                     {
@@ -143,6 +173,8 @@ def main() -> int:
                         "productName": "DualB",
                         "name": "DualB",
                         "operatorUsername": "op1",
+                        "holeCompletionTimes": {"9": 99},
+                        "vesselTimes": {"9": "00:01:39"},
                         "_dtBasket": 2,
                     },
                 ],
@@ -154,6 +186,19 @@ def main() -> int:
         new_reps = [r for r in after if r.get("id") not in before_ids]
         products = {r.get("productName") or r.get("name") for r in new_reps}
         assert "DualA" in products and "DualB" in products, products
+        dual = [r for r in new_reps if (r.get("productName") or r.get("name")) in ("DualA", "DualB")]
+        by_beaker = {int(r.get("beaker") or r.get("basket") or 0): r for r in dual}
+        assert 1 in by_beaker and 2 in by_beaker, by_beaker
+        assert by_beaker[1].get("holeCompletionTimes") == {"1": 10}, by_beaker[1]
+        assert by_beaker[2].get("holeCompletionTimes") == {"2": 20, "3": 21}, by_beaker[2]
+        assert by_beaker[1].get("vesselTimes") != by_beaker[2].get("vesselTimes")
+        pi_rows = [e for e in audit_service.list_entries({"action": "Power interruption"})
+                   if "dual" in str(e.get("details") or "").lower()
+                   or "beakers" in str(e.get("details") or "").lower()]
+        # Exactly one Power interruption event for the dual recovery, not one per beaker.
+        recent_pi = [e for e in audit_service.list_entries({"action": "Power interruption"})][:5]
+        dual_pi = [e for e in recent_pi if "2" in str(e.get("details") or "") and "1" in str(e.get("details") or "") and "recovered" in str(e.get("details") or "").lower()]
+        assert len(dual_pi) >= 1, recent_pi
         print("OK dual-basket checkpoint abort")
 
         # ---------- 4) Mid validation ----------
@@ -243,6 +288,7 @@ def main() -> int:
         import dt_test_service
 
         dt_test_service.init()
+        dt_test_service.enable_persist()
         dt_test_service._set_state(
             1,
             "RUNNING",
@@ -255,12 +301,68 @@ def main() -> int:
         assert cp.get("type") == "dt_checkpoint", cp
         assert isinstance(cp.get("reports"), list) and cp["reports"], cp
         assert cp["reports"][0].get("status") == "running"
+        assert cp["reports"][0].get("createdAt") == "2026-08-04T10:00:00Z", cp["reports"][0]
         dt_test_service.clear_run(1)
         # Other basket idle → checkpoint cleared
         assert not data_service.get_test_run_data() or not (
             data_service.get_test_run_data() or {}
         ).get("reports"), data_service.get_test_run_data()
         print("OK dt_checkpoint persist shape")
+
+        # ---------- Watchdog must not wipe checkpoint before recovery ----------
+        before_ids = {r.get("id") for r in (data_service.list_reports("all", include_pending=True) or [])}
+        data_service.save_test_run_data(
+            {
+                "type": "dt_checkpoint",
+                "baskets": {
+                    "1": {
+                        "basket": 1,
+                        "state": "RUNNING",
+                        "mode": "timer",
+                        "productName": "RaceTimer",
+                        "batchNumber": "T1",
+                        "startedAt": "2026-08-04T11:00:00Z",
+                        "operatorUsername": "op1",
+                    }
+                },
+                "reports": [
+                    {
+                        "type": "test",
+                        "status": "running",
+                        "mode": "timer",
+                        "beaker": 1,
+                        "basket": 1,
+                        "productName": "RaceTimer",
+                        "name": "RaceTimer",
+                        "batchNumber": "T1",
+                        "testStartTime": "2026-08-04T11:00:00Z",
+                        "createdAt": "2026-08-04T11:00:00Z",
+                        "operatorUsername": "op1",
+                        "_dtBasket": 1,
+                        "_checkpointPhase": "running",
+                    }
+                ],
+            }
+        )
+        # Simulate old race: empty in-memory runs + persist gated off must not clear file
+        dt_test_service._persist_enabled = False
+        dt_test_service._persist()
+        assert data_service.get_test_run_data().get("type") == "dt_checkpoint"
+        # Stale clean-stop flag must not block mid-run recovery anymore
+        data_service.touch_app_clean_stop_flag()
+        data_service.write_session_power_audit_pending({"username": "op1", "role": "User"})
+        # write_session_power_audit_pending clears clean flag; re-stamp to mimic
+        # process-exit clean marker present at boot with an active checkpoint.
+        data_service.touch_app_clean_stop_flag()
+        created = app_mod._create_aborted_report_from_power_loss_checkpoint("op1")
+        assert created >= 1, created
+        after = data_service.list_reports("all", include_pending=True) or []
+        new_reps = [r for r in after if r.get("id") not in before_ids]
+        race = [r for r in new_reps if (r.get("productName") or r.get("name")) == "RaceTimer"]
+        assert race, new_reps
+        assert str(race[0].get("reportApprovalStatus") or "").lower() == "approved"
+        assert "power interruption" in str(race[0].get("remarks") or "").lower()
+        print("OK checkpoint survives pre-recovery persist gate + recovers under clean flag")
 
     print("OK: smoke_dt_power_cut passed")
     return 0

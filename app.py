@@ -814,22 +814,6 @@ def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
     _audit(None, None, "Report aborted (power loss)", pl_detail)
 
 
-def _audit_power_interruption_during_run(report: dict) -> None:
-    """Dedicated audit row for a test/validation interrupted by power loss mid-run."""
-    rid = report.get("id")
-    if rid is None:
-        return
-    ctx = _format_report_audit_details(int(rid), report)
-    rtype = str(report.get("type") or "").strip().lower()
-    phase = "validation" if rtype == "validation" else "test"
-    detail = "{} | during {} | system auto-approved | remarks: {}".format(
-        ctx,
-        phase,
-        POWER_INTERRUPTION_REMARKS,
-    )
-    _audit(None, None, "Power interruption", detail)
-
-
 def _audit_power_loss_aborted_report(report: dict) -> None:
     """Backward-compatible alias."""
     _audit_unclean_shutdown_aborted_report(report)
@@ -897,16 +881,16 @@ def _normalize_power_interruption_auto_approvals():
 
 def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) -> int:
     """Materialize one aborted test report per active DT basket from a dt_checkpoint."""
+    import copy
+
     created = 0
     reports = cp.get("reports") if isinstance(cp.get("reports"), list) else []
     baskets = cp.get("baskets") if isinstance(cp.get("baskets"), dict) else {}
 
+    # Prefer per-basket run snapshots (authoritative, isolated tube maps). The
+    # reports[] mirror can share shallow-copied nested dicts across baskets.
     entries = []
-    if reports:
-        for rep in reports:
-            if isinstance(rep, dict):
-                entries.append(dict(rep))
-    else:
+    if baskets:
         for bkey, run in baskets.items():
             if not isinstance(run, dict):
                 continue
@@ -916,9 +900,8 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
             try:
                 import dt_test_service
 
-                entries.append(dt_test_service._checkpoint_report_from_run(run))
+                entries.append(dt_test_service._checkpoint_report_from_run(copy.deepcopy(run)))
             except Exception:
-                # Minimal fallback if service import fails during early boot
                 basket = int(run.get("basket") or bkey or 1)
                 entries.append({
                     "type": "test",
@@ -931,10 +914,21 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
                     "operatorUsername": run.get("operatorUsername"),
                     "operatorName": run.get("operatorName"),
                     "operatorId": run.get("operatorId"),
+                    "mode": run.get("mode"),
+                    "holeCompletionTimes": dict(run.get("holeCompletionTimes") or {}),
+                    "holeCompletionTimestamps": dict(run.get("holeCompletionTimestamps") or {}),
+                    "vesselTimes": dict(run.get("vesselTimes") or {}),
+                    "testStartTime": run.get("startedAt"),
+                    "createdAt": run.get("startedAt"),
                     "_dtBasket": basket,
                     "_checkpointPhase": "running",
                 })
+    elif reports:
+        for rep in reports:
+            if isinstance(rep, dict):
+                entries.append(copy.deepcopy(rep))
 
+    created_reports = []
     for entry in entries:
         # Skip if this basket already has a pending report (pending scan handles it)
         pending_id = entry.get("_pendingReportId") or entry.get("id")
@@ -952,6 +946,10 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
         report_data = dict(entry)
         for k in ("_checkpointAt", "_checkpointPhase", "_pendingReportId", "_dtBasket"):
             report_data.pop(k, None)
+        # Isolate mutable tube maps so beaker 1/2 never share references.
+        for tube_key in ("holeCompletionTimes", "holeCompletionTimestamps", "vesselTimes", "completedHoles"):
+            if isinstance(report_data.get(tube_key), dict):
+                report_data[tube_key] = dict(report_data.get(tube_key) or {})
         report_data["type"] = "test"
         recipe = report_data.get("recipe")
         enriched = report_service.generate_report(
@@ -968,9 +966,26 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
             enriched,
             force_power_interruption=force_power,
         )
-        _audit_power_interruption_during_run(enriched)
-        _audit_unclean_shutdown_aborted_report(enriched)
+        created_reports.append(enriched)
         created += 1
+
+    if created_reports:
+        # One Power interruption row for the event (not one per beaker).
+        baskets_txt = ", ".join(
+            str(r.get("beaker") or r.get("basket") or "?") for r in created_reports
+        )
+        _audit(
+            None,
+            None,
+            "Power interruption",
+            "mid-test | beakers [{}] | reports recovered {} | system auto-approved | remarks: {}".format(
+                baskets_txt,
+                created,
+                POWER_INTERRUPTION_REMARKS,
+            ),
+        )
+        for enriched in created_reports:
+            _audit_unclean_shutdown_aborted_report(enriched)
     return created
 
 
@@ -1033,7 +1048,15 @@ def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
                 enriched,
                 force_power_interruption=True,
             )
-            _audit_power_interruption_during_run(enriched)
+            _audit(
+                None,
+                None,
+                "Power interruption",
+                "mid-test | beaker {} | system auto-approved | remarks: {}".format(
+                    enriched.get("beaker") or enriched.get("basket") or "?",
+                    POWER_INTERRUPTION_REMARKS,
+                ),
+            )
             _audit_unclean_shutdown_aborted_report(enriched)
             data_service.clear_test_run_data()
             created += 1
@@ -1091,7 +1114,15 @@ def _create_aborted_report_from_validation_checkpoint(session_username=None) -> 
         report["operatorUsername"] = session_username
     # Mid-validation cut is always power interruption (not operator abort finalize)
     report = _persist_unclean_shutdown_aborted_report(report, force_power_interruption=True)
-    _audit_power_interruption_during_run(report)
+    _audit(
+        None,
+        None,
+        "Power interruption",
+        "mid-validation | beaker {} | system auto-approved | remarks: {}".format(
+            report.get("beaker") or report.get("basket") or "?",
+            POWER_INTERRUPTION_REMARKS,
+        ),
+    )
     _audit_unclean_shutdown_aborted_report(report)
     data_service.clear_validation_run_data()
     try:
@@ -1118,13 +1149,13 @@ def _startup_session_power_audit():
             app.logger.exception("Normalize power-interruption auto-approvals failed")
         had_clean_shutdown = data_service.consume_app_clean_stop_flag()
         pending = data_service.read_session_power_audit_pending()
+        # Pending-approval finals first (completed reports waiting to be signed).
+        # Mid-run checkpoints second so we do not recreate a second report for a
+        # basket that already saved a pending report before the cut.
         if pending and not had_clean_shutdown:
             un = (pending.get("username") or "").strip()
-            # Always recover pending test/validation reports on unclean restart,
-            # even if the power-interruption audit row was already written.
             try:
                 _abort_pending_reports_after_power_loss(None)
-                _create_aborted_report_from_power_loss_checkpoint(None)
             except Exception:
                 app.logger.exception("Abort pending reports after power loss failed")
             if not pending.get("powerAuditLogged"):
@@ -1158,6 +1189,12 @@ def _startup_session_power_audit():
             pending = dict(pending)
             pending.pop("powerAuditLogged", None)
             data_service.write_session_power_audit_pending(pending)
+        # Mid-run DT/validation checkpoints → aborted reports (even after orderly
+        # service restart), otherwise the interrupted test disappears.
+        try:
+            _create_aborted_report_from_power_loss_checkpoint(None)
+        except Exception:
+            app.logger.exception("Recover mid-run checkpoint after restart failed")
         # Clean stop (service restart / orderly shutdown): leave pending reports alone.
         # They stay awaiting approval so a verifier can still sign after reboot.
         # Only unclean power loss (branch above) converts pending -> aborted.
@@ -1172,6 +1209,12 @@ def _startup_session_power_audit():
         data_service.clear_current_user()
     except Exception:
         app.logger.exception("Startup session power audit failed")
+    finally:
+        # Safe to persist / clear checkpoints only after recovery above.
+        try:
+            dt_test_service.start_watchdog()
+        except Exception:
+            app.logger.exception("Failed to start DT test watchdog after startup recovery")
 
 
 
@@ -3791,7 +3834,10 @@ def logout():
         if user:
             _audit_session_logout(user, reason, request_source="POST /api/data/auth/logout")
         _halt_hardware_on_logout()
-        data_service.touch_app_clean_stop_flag()
+        # Do NOT touch app_clean_stop.flag here. That flag means "process exited
+        # cleanly" and must only be set on SIGTERM/atexit. Stamping it on logout
+        # makes a later mid-test hard power-cut look like a clean restart, so the
+        # aborted report / Power interruption audit never get created.
         data_service.delete_session_power_audit_pending()
         data_service.clear_current_user()
         return jsonify({"success": True}), 200
@@ -4192,15 +4238,19 @@ def _stage_report_usb_export(cur, verifier, exported_report_ids):
     return export_id, exported_by, approved_by
 
 
-def _stage_audit_usb_export(cur, verifier, entry_ids, pdf_path=""):
+def _stage_audit_usb_export(cur, verifier, entry_ids, pdf_path="", filters=None):
     ids = []
     for eid in entry_ids or []:
         try:
             n = int(eid)
             if n > 0:
                 ids.append(n)
+                continue
         except (TypeError, ValueError):
-            continue
+            pass
+        s = str(eid).strip() if eid is not None else ""
+        if s:
+            ids.append(s)
     if not ids:
         return None, None, None
     export_id = secrets.token_urlsafe(16)
@@ -4212,6 +4262,7 @@ def _stage_audit_usb_export(cur, verifier, entry_ids, pdf_path=""):
         exported_by=exported_by,
         approved_by=approved_by,
         pdf_path=str(pdf_path or ""),
+        filters=filters or {},
     )
     return export_id, exported_by, approved_by
 
@@ -4222,6 +4273,106 @@ def _format_export_actors_detail(exported_by, approved_by):
     ap_u = (approved_by or {}).get("username") or "--"
     ap_e = (approved_by or {}).get("employee_id") or "--"
     return "exported by {} ({}) | approved by {} ({})".format(ex_u, ex_e, ap_u, ap_e)
+
+
+def _fmt_audit_export_ts(ts):
+    """Format an audit filter/entry timestamp (ms or sec) for export log details."""
+    try:
+        ts_int = int(ts)
+    except (TypeError, ValueError):
+        return "--"
+    if ts_int <= 0:
+        return "--"
+    if ts_int > 10 ** 12:
+        ts_int = ts_int // 1000
+    return time.strftime("%d/%m/%Y %H:%M:%S", time.localtime(ts_int))
+
+
+def _audit_export_range_and_filters(filters, entries=None):
+    """Return (range_phrase, filters_phrase) for audit USB export log lines."""
+    filters = filters or {}
+    from_ts = filters.get("from")
+    to_ts = filters.get("to")
+    if (from_ts is None or to_ts is None) and entries:
+        stamps = []
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            try:
+                t = int(e.get("timestamp"))
+            except (TypeError, ValueError):
+                continue
+            if t > 0:
+                stamps.append(t)
+        if stamps:
+            if from_ts is None:
+                from_ts = min(stamps)
+            if to_ts is None:
+                to_ts = max(stamps)
+    if from_ts is not None and to_ts is not None:
+        range_part = "from {} to {}".format(
+            _fmt_audit_export_ts(from_ts), _fmt_audit_export_ts(to_ts)
+        )
+    elif from_ts is not None:
+        range_part = "from {}".format(_fmt_audit_export_ts(from_ts))
+    elif to_ts is not None:
+        range_part = "to {}".format(_fmt_audit_export_ts(to_ts))
+    else:
+        range_part = "all dates"
+
+    filter_bits = []
+    if filters.get("user"):
+        filter_bits.append("User={}".format(filters.get("user")))
+    if filters.get("role"):
+        filter_bits.append("Role={}".format(filters.get("role")))
+    if filters.get("action"):
+        filter_bits.append("Action={}".format(filters.get("action")))
+    if filters.get("from") is not None:
+        filter_bits.append("From={}".format(_fmt_audit_export_ts(filters.get("from"))))
+    if filters.get("to") is not None:
+        filter_bits.append("To={}".format(_fmt_audit_export_ts(filters.get("to"))))
+    if filter_bits:
+        filters_part = "Filters applied: {}".format("; ".join(filter_bits))
+    else:
+        filters_part = "No filters applied"
+    return range_part, filters_part
+
+
+def _format_audit_export_detail(
+    filters,
+    entries=None,
+    *,
+    entry_count=None,
+    actors="",
+    verified=False,
+    removed=None,
+):
+    """Human-readable audit-export trail: date range + applied filters (not reports)."""
+    range_part, filters_part = _audit_export_range_and_filters(filters, entries)
+    if entry_count is not None:
+        n = int(entry_count)
+    else:
+        n = len(entries or [])
+    if verified:
+        removed_n = int(removed if removed is not None else n)
+        base = (
+            "Audits have been exported {} | {} | USB verified | {} audit entr{} removed from device"
+        ).format(
+            range_part,
+            filters_part,
+            removed_n,
+            "y" if removed_n == 1 else "ies",
+        )
+    else:
+        base = "Audits have been exported {} | {} | {} entr{}".format(
+            range_part,
+            filters_part,
+            n,
+            "y" if n == 1 else "ies",
+        )
+    if actors:
+        return "{} | {}".format(base, actors)
+    return base
 
 
 def _maybe_purge_scheduled_report_export() -> None:
@@ -4427,6 +4578,17 @@ def _humanize_audit_details(action: str, details: str) -> str:
             return "Unclean shutdown while {} was logged in".format(m2.group(1))
         if "kiosk-bridge" in details.lower() or "clean shutdown" in details.lower():
             return "Unclean shutdown during active session"
+        return details
+    if action == "Audit trail exported":
+        import re
+        if details.lower().startswith("audits have been exported"):
+            return details
+        m = re.search(r"entries\s+(\d+)", details, re.I)
+        if m:
+            n = int(m.group(1))
+            return "Audits have been exported | {} entr{}".format(
+                n, "y" if n == 1 else "ies"
+            )
         return details
     if action == "Reports exported":
         import re
@@ -4733,7 +4895,7 @@ def audit_export_stage():
         entries = audit_service.list_entries(filters)
         entry_ids = [e.get("id") for e in entries if e.get("id") is not None]
         exporter = str((cur or {}).get("username") or (cur or {}).get("name") or "").strip()
-        batch = audit_service.stage_audit_export(entry_ids, exporter, "")
+        batch = audit_service.stage_audit_export(entry_ids, exporter, "", filters=filters)
         return jsonify({
             "success": True,
             "batchId": batch.get("id"),
@@ -4856,12 +5018,15 @@ def export_audit_trails():
             if isinstance(e, dict) and e.get("id") is not None:
                 entry_ids.append(e.get("id"))
         export_id, exported_by, approved_by = _stage_audit_usb_export(
-            cur, verifier, entry_ids, pdf_path=str(out_path)
+            cur, verifier, entry_ids, pdf_path=str(out_path), filters=filters
         )
         actors = _format_export_actors_detail(exported_by, approved_by) if export_id else ""
-        audit_detail = "pdf {} | entries {}".format(out_path, len(entries))
-        if actors:
-            audit_detail = "{} | {}".format(audit_detail, actors)
+        audit_detail = _format_audit_export_detail(
+            filters,
+            entries,
+            entry_count=len(entries),
+            actors=actors,
+        )
         _audit(
             cur.get("username") or cur.get("name") if cur else None,
             cur.get("role") if cur else None,
@@ -4913,6 +5078,7 @@ def confirm_audit_export():
         actors = _format_export_actors_detail(
             purged.get("exported_by"), purged.get("approved_by")
         )
+        confirm_filters = purged.get("filters") if isinstance(purged.get("filters"), dict) else {}
         # Durable trail: who exported / who approved — written after purge so it always remains.
         _audit(
             (purged.get("exported_by") or {}).get("username")
@@ -4920,18 +5086,27 @@ def confirm_audit_export():
             or cur.get("name"),
             (purged.get("exported_by") or {}).get("role") or cur.get("role"),
             "Audit trail exported",
-            "USB export verified | {} audit entr{} removed from device | {}".format(
-                removed, "y" if removed == 1 else "ies", actors
+            _format_audit_export_detail(
+                confirm_filters,
+                entry_count=removed,
+                actors=actors,
+                verified=True,
+                removed=removed,
             ),
         )
+        range_part, filters_part = _audit_export_range_and_filters(confirm_filters)
         _audit(
             (purged.get("approved_by") or {}).get("username")
             or cur.get("username")
             or cur.get("name"),
             (purged.get("approved_by") or {}).get("role") or cur.get("role"),
             "Export approved",
-            "Audit USB export approved | {} entr{} | {}".format(
-                removed, "y" if removed == 1 else "ies", actors
+            "Audit USB export approved {} | {} | {} entr{} | {}".format(
+                range_part,
+                filters_part,
+                removed,
+                "y" if removed == 1 else "ies",
+                actors,
             ),
         )
         return jsonify({

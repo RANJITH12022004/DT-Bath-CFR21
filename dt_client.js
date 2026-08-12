@@ -1520,7 +1520,9 @@
           b.type = 'button';
           b.className = 'btn btn-secondary dt-hole-btn';
           b.textContent = 'Tube ' + hole;
-          b.id = 'dt-hole-' + hole;
+          b.id = 'dt-hole-b' + basket + '-' + hole;
+          b.setAttribute('data-basket', String(basket));
+          b.setAttribute('data-hole', String(hole));
           b.onclick = function () { dtTapHole(basket, hole); };
           holes.appendChild(b);
         })(i);
@@ -1719,7 +1721,7 @@
             dashHoles.forEach(function (el) {
               if (String(el.textContent) === String(h)) el.classList.add('completed');
             });
-            var el2 = document.getElementById('dt-hole-' + h);
+            var el2 = document.getElementById('dt-hole-b' + basket + '-' + h);
             if (el2) { el2.classList.add('completed'); el2.disabled = true; }
           });
         }
@@ -1840,7 +1842,7 @@
     api('/api/data/dt/runs/' + basket + '/tap', { method: 'POST', body: { vessel: hole } })
       .then(function (res) {
         if (!res.ok) throw new Error(res.error || 'Tap failed');
-        var el = document.getElementById('dt-hole-' + hole);
+        var el = document.getElementById('dt-hole-b' + basket + '-' + hole);
         if (el) { el.classList.add('completed'); el.disabled = true; }
         var container = document.getElementById('basket' + basket + '-container');
         if (container && DT.basketConfig === 1) {

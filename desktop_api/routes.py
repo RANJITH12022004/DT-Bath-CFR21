@@ -443,7 +443,12 @@ def create_blueprint(kiosk):
             log_major(
                 user,
                 "Audit trail exported",
-                "Desktop client | entries {} | exported by {} ({})".format(len(entries), uname, role),
+                kiosk._format_audit_export_detail(
+                    filters,
+                    entries,
+                    entry_count=len(entries),
+                    actors="exported by {} ({})".format(uname, role),
+                ),
                 entity_type="audit",
                 entity_name="audit-download",
                 target_user=uname,

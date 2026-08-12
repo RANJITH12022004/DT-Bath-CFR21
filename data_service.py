@@ -1423,6 +1423,9 @@ _APP_CLEAN_STOP_FLAG = "app_clean_stop.flag"
 
 def write_session_power_audit_pending(user: Dict[str, Any]):
     """Mark an open logged-in session for unclean-shutdown detection on next process start."""
+    # A prior logout/factory-reset must not leave a clean-stop flag that would
+    # suppress mid-test power-cut recovery after this new login.
+    clear_app_clean_stop_flag()
     path = _get_storage_path(_SESSION_POWER_AUDIT_PENDING)
     payload = {
         "username": (user.get("username") or user.get("name") or "").strip(),
@@ -1459,6 +1462,16 @@ def consume_app_clean_stop_flag() -> bool:
         return True
     except Exception:
         return False
+
+
+def clear_app_clean_stop_flag() -> None:
+    """Drop a stale clean-stop marker without treating this boot as a clean restart."""
+    path = _get_storage_path(_APP_CLEAN_STOP_FLAG)
+    if path.exists():
+        try:
+            path.unlink()
+        except Exception:
+            pass
 
 
 def touch_app_clean_stop_flag():
