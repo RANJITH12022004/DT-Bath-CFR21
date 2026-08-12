@@ -1732,12 +1732,19 @@ def _format_report_text(report_data: Dict[str, Any], width: int = A4_TEXT_WIDTH)
                 )
             except TypeError:
                 pass
-        ts_start = td.get("testStartTime") or report_data.get("createdAt")
+        ts_start = (
+            td.get("testStartTime")
+            or report_data.get("testStartTime")
+            or report_data.get("createdAt")
+            or td.get("createdAt")
+        )
         ts_end = (
             td.get("testEndTime")
+            or report_data.get("testEndTime")
             or report_data.get("completedAt")
             or td.get("completedAt")
             or report_data.get("createdAt")
+            or td.get("createdAt")
         )
         start_date, start_time = _split_ts_date_and_time(ts_start)
         end_date, end_time = _split_ts_date_and_time(ts_end)

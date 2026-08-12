@@ -75,6 +75,7 @@ def main() -> int:
                         "basketConfig": 6,
                         "setTemperature": 37.0,
                         "elapsedSeconds": 12,
+                        "startedAt": "2026-08-04T10:00:00Z",
                         "operatorUsername": "op1",
                         "operatorName": "Operator One",
                         "aborted": False,
@@ -89,6 +90,8 @@ def main() -> int:
                         "name": "MidRun",
                         "productName": "MidRun",
                         "batchNumber": "M1",
+                        "testStartTime": "2026-08-04T10:00:00Z",
+                        "createdAt": "2026-08-04T10:00:00Z",
                         "operatorUsername": "op1",
                         "operatorName": "Operator One",
                         "_checkpointPhase": "running",
@@ -105,6 +108,10 @@ def main() -> int:
         assert mid, new_reps
         assert str(mid[0].get("reportApprovalStatus") or "").lower() == "approved"
         assert "power interruption" in str(mid[0].get("remarks") or "").lower()
+        assert mid[0].get("createdAt") == "2026-08-04T10:00:00Z", mid[0]
+        assert mid[0].get("completedAt") != mid[0].get("createdAt"), mid[0]
+        entries = audit_service.list_entries({"action": "Power interruption"})
+        assert any("midrun" in str(e.get("details") or "").lower() for e in entries), entries
         assert not data_service.get_test_run_data()
         print("OK mid-test checkpoint abort")
 

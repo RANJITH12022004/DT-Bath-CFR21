@@ -30,6 +30,7 @@ def generate_report(
     factory_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     report = dict(test_data)
+    td = report.get("testData") if isinstance(report.get("testData"), dict) else {}
     if recipe:
         # Keep speed/USP/drums on the stub — print/preview derived RPM reads these.
         # Full recipe also remains under testData.recipe from the client payload.
@@ -51,10 +52,22 @@ def generate_report(
     if not factory_settings:
         factory_settings = data_service.get_factory_settings()
     report["factorySettings"] = enrich_factory_settings(factory_settings or {})
+    start_ts = (
+        report.get("validationStartTime")
+        or report.get("testStartTime")
+        or td.get("validationStartTime")
+        or td.get("testStartTime")
+    )
+    end_ts = (
+        report.get("validationEndTime")
+        or report.get("testEndTime")
+        or td.get("validationEndTime")
+        or td.get("testEndTime")
+    )
     if not report.get("createdAt"):
-        report["createdAt"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    if not report.get("completedAt"):
-        report["completedAt"] = report["createdAt"]
+        report["createdAt"] = start_ts or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if not report.get("completedAt") and end_ts:
+        report["completedAt"] = end_ts
     report = enrich_report_context(report)
     return report
 
@@ -889,6 +902,18 @@ def get_report_preview_data(report: Dict[str, Any]) -> Dict[str, Any]:
         "type": report.get("type", "test"),
         "createdAt": report.get("createdAt"),
         "completedAt": report.get("completedAt"),
+        "testStartTime": report.get("testStartTime")
+        or (td.get("testStartTime") if isinstance(td, dict) else None),
+        "testEndTime": report.get("testEndTime")
+        or (td.get("testEndTime") if isinstance(td, dict) else None),
+        "validationStartTime": report.get("validationStartTime")
+        or (td.get("validationStartTime") if isinstance(td, dict) else None)
+        or report.get("testStartTime")
+        or (td.get("testStartTime") if isinstance(td, dict) else None),
+        "validationEndTime": report.get("validationEndTime")
+        or (td.get("validationEndTime") if isinstance(td, dict) else None)
+        or report.get("testEndTime")
+        or (td.get("testEndTime") if isinstance(td, dict) else None),
         "recipe": report.get("recipe", {}),
         "factorySettings": report.get("factorySettings", {}),
         "testData": report.get("testData", report),

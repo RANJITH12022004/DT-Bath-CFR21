@@ -728,6 +728,8 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
     op_user = str(run.get("operatorUsername") or "").strip()
     op_id = str(run.get("operatorId") or "").strip() or op_user
     emp_id = op_id or op_user
+    created_at = run.get("startedAt") or run.get("readyAt") or run.get("preheatStartedAt") or _now_iso()
+    completed_at = run.get("endedAt")
     report = {
         "type": "test",
         "validationSubtype": None,
@@ -773,8 +775,8 @@ def build_report_payload(run: Dict[str, Any]) -> Dict[str, Any]:
         "operatedByUsername": op_user or op_id,
         "employeeId": emp_id,
         "mock": bool(run.get("mock")),
-        "createdAt": _now_iso(),
-        "completedAt": run.get("endedAt") or _now_iso(),
+        "createdAt": created_at,
+        "completedAt": completed_at,
     }
     if run.get("aborted"):
         report["aborted"] = True

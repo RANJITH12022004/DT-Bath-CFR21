@@ -814,6 +814,22 @@ def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
     _audit(None, None, "Report aborted (power loss)", pl_detail)
 
 
+def _audit_power_interruption_during_run(report: dict) -> None:
+    """Dedicated audit row for a test/validation interrupted by power loss mid-run."""
+    rid = report.get("id")
+    if rid is None:
+        return
+    ctx = _format_report_audit_details(int(rid), report)
+    rtype = str(report.get("type") or "").strip().lower()
+    phase = "validation" if rtype == "validation" else "test"
+    detail = "{} | during {} | system auto-approved | remarks: {}".format(
+        ctx,
+        phase,
+        POWER_INTERRUPTION_REMARKS,
+    )
+    _audit(None, None, "Power interruption", detail)
+
+
 def _audit_power_loss_aborted_report(report: dict) -> None:
     """Backward-compatible alias."""
     _audit_unclean_shutdown_aborted_report(report)
@@ -952,6 +968,7 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
             enriched,
             force_power_interruption=force_power,
         )
+        _audit_power_interruption_during_run(enriched)
         _audit_unclean_shutdown_aborted_report(enriched)
         created += 1
     return created
@@ -1016,6 +1033,7 @@ def _create_aborted_report_from_power_loss_checkpoint(session_username=None):
                 enriched,
                 force_power_interruption=True,
             )
+            _audit_power_interruption_during_run(enriched)
             _audit_unclean_shutdown_aborted_report(enriched)
             data_service.clear_test_run_data()
             created += 1
@@ -1073,6 +1091,7 @@ def _create_aborted_report_from_validation_checkpoint(session_username=None) -> 
         report["operatorUsername"] = session_username
     # Mid-validation cut is always power interruption (not operator abort finalize)
     report = _persist_unclean_shutdown_aborted_report(report, force_power_interruption=True)
+    _audit_power_interruption_during_run(report)
     _audit_unclean_shutdown_aborted_report(report)
     data_service.clear_validation_run_data()
     try:

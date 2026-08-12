@@ -6370,12 +6370,12 @@ function _populateLegacyReportPreview(preview) {
     setReportEl('report-mesh',
         derived.mesh || preview.mesh || recipe.mesh || td.mesh || '--');
 
-    var startStr = formatReportDate(td.testStartTime || preview.createdAt);
-    var endStr = formatReportDate(td.testEndTime || preview.completedAt || preview.createdAt);
+    var startStr = formatReportDate(td.testStartTime || preview.testStartTime || preview.createdAt);
+    var endStr = formatReportDate(td.testEndTime || preview.testEndTime || preview.completedAt || preview.createdAt);
     setReportEl('report-test-start', startStr);
     var genEl = document.getElementById('report-generated');
     if (genEl) genEl.textContent = endStr;
-    var completedParts = formatReportDateAndTimeParts(td.testEndTime || preview.completedAt || preview.createdAt);
+    var completedParts = formatReportDateAndTimeParts(td.testEndTime || preview.testEndTime || preview.completedAt || preview.createdAt);
     setReportEl('report-completed-date', completedParts.date);
     setReportEl('report-completed-time', completedParts.time);
 
