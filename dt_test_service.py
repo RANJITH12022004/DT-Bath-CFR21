@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 import dt_hardware_service as hw
@@ -20,6 +20,11 @@ try:
     import data_service
 except ImportError:
     data_service = None
+
+try:
+    import rtc_service
+except ImportError:
+    rtc_service = None
 
 _lock = threading.Lock()
 _logger = None
@@ -33,7 +38,9 @@ _watchdog_started = False
 _persist_enabled = False
 
 STATES = ("IDLE", "PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING", "COMPLETE", "ABORTED")
-ACTIVE_CHECKPOINT_STATES = ("PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING")
+# Power-cut reports are required only after ESP start (RUNNING). Preheat/ready
+# must not leave a mid-test checkpoint that fabricates a zero-duration report.
+ACTIVE_CHECKPOINT_STATES = ("RUNNING",)
 
 
 def init(logger=None, audit_fn: Optional[Callable] = None, save_report_fn: Optional[Callable] = None) -> None:
@@ -62,7 +69,88 @@ def start_watchdog() -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    """Device wall-clock ISO (naive local RTC) — matches report completedAt / audits."""
+    if rtc_service is not None:
+        try:
+            dt = rtc_service.read_rtc_wall_datetime()
+            if dt is not None:
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            pass
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _parse_wall_ts(value: Any) -> Optional[datetime]:
+    """Parse stored timestamps (UTC-Z or naive local) into naive local wall time."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt.astimezone().replace(tzinfo=None)
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            return dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _format_wall_ts(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _elapsed_seconds_since(started_at: Any, *, fallback: int = 0) -> int:
+    start = _parse_wall_ts(started_at)
+    if start is None:
+        return max(0, int(fallback or 0))
+    now = _parse_wall_ts(_now_iso()) or datetime.now()
+    return max(0, int((now - start).total_seconds()))
+
+
+def finalize_run_times_for_power_loss(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp endedAt / duration from the last known in-test moment (not boot recovery time).
+
+    Prefers checkpoint updatedAt / last tube tap, else startedAt + elapsedSeconds.
+    """
+    out = dict(run or {})
+    start = _parse_wall_ts(out.get("startedAt"))
+    updated = _parse_wall_ts(out.get("updatedAt"))
+    elapsed = 0
+    try:
+        elapsed = max(0, int(out.get("elapsedSeconds") or 0))
+    except (TypeError, ValueError):
+        elapsed = 0
+
+    last_hole: Optional[datetime] = None
+    for ts in (out.get("holeCompletionTimestamps") or {}).values():
+        t = _parse_wall_ts(ts)
+        if t is not None and (last_hole is None or t > last_hole):
+            last_hole = t
+
+    end = updated or last_hole
+    if start is not None and end is not None:
+        wall_elapsed = max(0, int((end - start).total_seconds()))
+        elapsed = max(elapsed, wall_elapsed)
+    elif start is not None and elapsed > 0:
+        end = start + timedelta(seconds=elapsed)
+    elif start is not None and end is None:
+        end = start
+
+    if end is None:
+        end = _parse_wall_ts(_now_iso()) or datetime.now()
+    if start is not None and elapsed <= 0:
+        elapsed = max(0, int((end - start).total_seconds()))
+
+    if start is not None:
+        out["startedAt"] = _format_wall_ts(start)
+    out["endedAt"] = _format_wall_ts(end)
+    out["elapsedSeconds"] = max(0, int(elapsed))
+    out["updatedAt"] = out.get("updatedAt") or out["endedAt"]
+    return out
 
 
 def _audit(action: str, details: str = "", **extra) -> None:
@@ -566,11 +654,7 @@ def tap_vessel(basket: int, vessel: int) -> Dict[str, Any]:
         return {"ok": False, "error": f"vessel must be 1..{cfg}"}
 
     started = current.get("startedAt")
-    try:
-        start_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-        elapsed = max(0, int((datetime.now(timezone.utc) - start_dt.astimezone(timezone.utc)).total_seconds()))
-    except Exception:
-        elapsed = int(current.get("elapsedSeconds") or 0)
+    elapsed = _elapsed_seconds_since(started, fallback=int(current.get("elapsedSeconds") or 0))
 
     hh = elapsed // 3600
     mm = (elapsed % 3600) // 60
@@ -640,11 +724,7 @@ def stop_test(basket: int, *, aborted: bool = False, reason: str = "") -> Dict[s
     started = current.get("startedAt")
     elapsed = int(current.get("elapsedSeconds") or 0)
     if started and prior_state == "RUNNING":
-        try:
-            start_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-            elapsed = max(0, int((datetime.now(timezone.utc) - start_dt.astimezone(timezone.utc)).total_seconds()))
-        except Exception:
-            pass
+        elapsed = _elapsed_seconds_since(started, fallback=elapsed)
 
     status = "Test Aborted" if aborted else "Completed"
     final_state = "ABORTED" if aborted else "COMPLETE"
@@ -825,11 +905,22 @@ def clear_run(basket: int) -> Dict[str, Any]:
 
 
 def _watchdog_loop() -> None:
-    """Update elapsed time, accumulate temps, auto-stop timer mode, detect TR ready."""
+    """Update elapsed time, accumulate temps, auto-stop timer mode, detect TR ready.
+
+    Checkpoint persist runs even when ESP live-state reads fail so mid-test power
+    cuts always have a durable RUNNING snapshot on USB.
+    """
     while True:
         try:
-            live = hw.get_live_state()
-            temps = hw.get_latest_temps()
+            live: Dict[str, Any] = {}
+            temps: Dict[str, Any] = {}
+            try:
+                live = hw.get_live_state() or {}
+                temps = hw.get_latest_temps() or {}
+            except Exception as e:
+                if _logger:
+                    _logger.debug("dt_test watchdog live-state: %s", e)
+
             for basket in (1, 2):
                 run = get_run(basket)
                 state = run.get("state")
@@ -845,40 +936,32 @@ def _watchdog_loop() -> None:
                 if ir is None:
                     ir = temps.get("IR2")
                 if ir is not None:
-                    record_temp_sample(basket, float(ir))
-                # Elapsed / countdown
+                    try:
+                        record_temp_sample(basket, float(ir))
+                    except Exception:
+                        pass
+                # Elapsed / countdown from wall clock (not a fragile counter)
                 started = run.get("startedAt")
                 if not started:
                     continue
-                try:
-                    start_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-                    elapsed = max(0, int((datetime.now(timezone.utc) - start_dt.astimezone(timezone.utc)).total_seconds()))
-                except Exception:
-                    elapsed = int(run.get("elapsedSeconds") or 0) + 1
+                elapsed = _elapsed_seconds_since(
+                    started, fallback=int(run.get("elapsedSeconds") or 0) + 1
+                )
+                timer_expired = False
                 with _lock:
                     if basket in _runs and _runs[basket].get("state") == "RUNNING":
                         _runs[basket]["elapsedSeconds"] = elapsed
+                        _runs[basket]["updatedAt"] = _now_iso()
                         if _runs[basket].get("mode") == "timer":
                             dur = _runs[basket].get("setDurationMinutes")
                             total = int(float(dur) * 60) if dur else 0
                             remaining = max(0, total - elapsed)
                             _runs[basket]["remainingSeconds"] = remaining
-                            _runs[basket]["updatedAt"] = _now_iso()
                             if remaining <= 0 and total > 0:
-                                # auto stop outside lock
-                                pass
-                            else:
-                                continue
-                        else:
-                            _runs[basket]["updatedAt"] = _now_iso()
-                            continue
-                # Timer expired
-                if run.get("mode") == "timer":
-                    dur = run.get("setDurationMinutes")
-                    total = int(float(dur) * 60) if dur else 0
-                    if total > 0 and elapsed >= total:
-                        stop_test(basket, aborted=False, reason="timer_complete")
-            # Persist occasionally
+                                timer_expired = True
+                if timer_expired:
+                    stop_test(basket, aborted=False, reason="timer_complete")
+            # Durable USB checkpoint (atomic + fsync via data_service)
             _persist()
         except Exception as e:
             if _logger:

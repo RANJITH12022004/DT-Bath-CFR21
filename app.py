@@ -807,10 +807,27 @@ def _audit_unclean_shutdown_aborted_report(report: dict) -> None:
         )
         _audit(None, None, "Report aborted", detail)
         return
-    pl_detail = "{} | unclean shutdown | system auto-approved | remarks: {}".format(
+    duration = report.get("duration")
+    if duration in (None, ""):
+        try:
+            sec = int(report.get("durationSeconds") or 0)
+            duration = "{:02d}:{:02d}:{:02d}".format(sec // 3600, (sec % 3600) // 60, sec % 60)
+        except (TypeError, ValueError):
+            duration = "00:00:00"
+    start_ts = report.get("testStartTime") or report.get("createdAt") or "--"
+    end_ts = report.get("testEndTime") or report.get("completedAt") or "--"
+    pl_detail = (
+        "{} | power interruption | duration {} | start {} | end {} | "
+        "system auto-approved | remarks: {}"
+    ).format(
         ctx,
+        duration,
+        start_ts,
+        end_ts,
         remarks or POWER_INTERRUPTION_REMARKS,
     )
+    # Product audit vocabulary: report is saved after power interruption recovery.
+    _audit(None, None, "Report saved", pl_detail)
     _audit(None, None, "Report aborted (power loss)", pl_detail)
 
 
@@ -895,12 +912,14 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
             if not isinstance(run, dict):
                 continue
             st = str(run.get("state") or "").strip().upper()
-            if st not in ("PREHEAT", "READY", "AWAIT_CONFIRM", "RUNNING"):
+            # Only after ESP start (RUNNING) — preheat/ready power cuts are not mid-test.
+            if st != "RUNNING":
                 continue
             try:
                 import dt_test_service
 
-                entries.append(dt_test_service._checkpoint_report_from_run(copy.deepcopy(run)))
+                run_snap = dt_test_service.finalize_run_times_for_power_loss(copy.deepcopy(run))
+                entries.append(dt_test_service._checkpoint_report_from_run(run_snap))
             except Exception:
                 basket = int(run.get("basket") or bkey or 1)
                 entries.append({
@@ -919,14 +938,25 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
                     "holeCompletionTimestamps": dict(run.get("holeCompletionTimestamps") or {}),
                     "vesselTimes": dict(run.get("vesselTimes") or {}),
                     "testStartTime": run.get("startedAt"),
+                    "testEndTime": run.get("endedAt") or run.get("updatedAt"),
                     "createdAt": run.get("startedAt"),
+                    "completedAt": run.get("endedAt") or run.get("updatedAt"),
+                    "durationSeconds": run.get("elapsedSeconds") or 0,
                     "_dtBasket": basket,
                     "_checkpointPhase": "running",
                 })
     elif reports:
         for rep in reports:
-            if isinstance(rep, dict):
-                entries.append(copy.deepcopy(rep))
+            if not isinstance(rep, dict):
+                continue
+            # Mirror path: skip non-running / preheat-shaped leftovers
+            phase = str(rep.get("_checkpointPhase") or rep.get("status") or "").strip().lower()
+            if phase and phase not in ("running", "test started", "started"):
+                # Still allow classic mid-run mirrors that only set status=running
+                if str(rep.get("status") or "").strip().lower() != "running":
+                    if not rep.get("testStartTime") and not rep.get("startedAt"):
+                        continue
+            entries.append(copy.deepcopy(rep))
 
     created_reports = []
     for entry in entries:
@@ -951,6 +981,9 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
             if isinstance(report_data.get(tube_key), dict):
                 report_data[tube_key] = dict(report_data.get(tube_key) or {})
         report_data["type"] = "test"
+        # Ensure end/duration survive generate_report even if nested oddly
+        if report_data.get("testEndTime") and not report_data.get("completedAt"):
+            report_data["completedAt"] = report_data["testEndTime"]
         recipe = report_data.get("recipe")
         enriched = report_service.generate_report(
             report_data,
@@ -974,13 +1007,17 @@ def _create_aborted_reports_from_dt_checkpoint(cp: dict, session_username=None) 
         baskets_txt = ", ".join(
             str(r.get("beaker") or r.get("basket") or "?") for r in created_reports
         )
+        durations_txt = ", ".join(
+            str(r.get("duration") or r.get("durationSeconds") or "0") for r in created_reports
+        )
         _audit(
             None,
             None,
             "Power interruption",
-            "mid-test | beakers [{}] | reports recovered {} | system auto-approved | remarks: {}".format(
+            "mid-test | beakers [{}] | reports recovered {} | duration [{}] | system auto-approved | remarks: {}".format(
                 baskets_txt,
                 created,
+                durations_txt,
                 POWER_INTERRUPTION_REMARKS,
             ),
         )

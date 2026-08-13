@@ -240,10 +240,34 @@ def _load_json_file(filepath: pathlib.Path, default=None):
         return default
 
 
+def _fsync_dir(dirpath: pathlib.Path) -> None:
+    """Best-effort directory fsync so rename/create survives sudden power loss."""
+    try:
+        fd = os.open(str(dirpath), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def _save_json_file(filepath: pathlib.Path, data):
+    """Atomic JSON write with fsync (required on USB for mid-test power-cut recovery)."""
+    filepath = pathlib.Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
-    with open(filepath, "w", encoding="utf-8") as f:
+    tmp_path = filepath.with_name(filepath.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, filepath)
+    _fsync_dir(filepath.parent)
 
 
 # =================== RECIPE OPERATIONS ==========================
@@ -1479,7 +1503,11 @@ def touch_app_clean_stop_flag():
     path = _get_storage_path(_APP_CLEAN_STOP_FLAG)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("1")
+            f.flush()
+            os.fsync(f.fileno())
+        _fsync_dir(path.parent)
     except Exception:
         pass
 

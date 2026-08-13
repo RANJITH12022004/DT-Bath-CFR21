@@ -108,12 +108,48 @@ def main() -> int:
         assert mid, new_reps
         assert str(mid[0].get("reportApprovalStatus") or "").lower() == "approved"
         assert "power interruption" in str(mid[0].get("remarks") or "").lower()
-        assert mid[0].get("createdAt") == "2026-08-04T10:00:00Z", mid[0]
+        # Start may be normalized from UTC-Z to device wall clock; duration/end must be real.
+        assert int(mid[0].get("durationSeconds") or 0) == 12, mid[0]
+        assert mid[0].get("duration") == "00:00:12", mid[0]
+        end_ts = mid[0].get("testEndTime") or mid[0].get("completedAt")
+        start_ts = mid[0].get("testStartTime") or mid[0].get("createdAt")
+        assert start_ts and end_ts and end_ts != start_ts, mid[0]
         assert mid[0].get("completedAt") != mid[0].get("createdAt"), mid[0]
         entries = audit_service.list_entries({"action": "Power interruption"})
-        assert any("midrun" in str(e.get("details") or "").lower() for e in entries), entries
+        assert any("midrun" in str(e.get("details") or "").lower() or "beakers" in str(e.get("details") or "").lower() for e in entries), entries
+        saved_rows = audit_service.list_entries({"action": "Report saved"})
+        assert any("duration" in str(e.get("details") or "").lower() for e in saved_rows), saved_rows
         assert not data_service.get_test_run_data()
         print("OK mid-test checkpoint abort")
+
+        # ---------- 2b) Preheat-only checkpoint must NOT create a mid-test report ----------
+        before_ids = {r.get("id") for r in (data_service.list_reports("all", include_pending=True) or [])}
+        data_service.save_test_run_data(
+            {
+                "type": "dt_checkpoint",
+                "baskets": {
+                    "1": {
+                        "basket": 1,
+                        "state": "PREHEAT",
+                        "productName": "PreheatOnly",
+                        "batchNumber": "PH1",
+                        "mode": "manual",
+                        "basketConfig": 6,
+                        "setTemperature": 37.0,
+                        "elapsedSeconds": 0,
+                        "preheatStartedAt": "2026-08-04T09:00:00",
+                        "operatorUsername": "op1",
+                    }
+                },
+                "reports": [],
+            }
+        )
+        created = app_mod._create_aborted_report_from_power_loss_checkpoint("op1")
+        assert created == 0, created
+        after = data_service.list_reports("all", include_pending=True) or []
+        assert not [r for r in after if r.get("id") not in before_ids and (r.get("productName") or r.get("name")) == "PreheatOnly"]
+        assert not data_service.get_test_run_data()
+        print("OK preheat-only skips mid-test report")
 
         # ---------- 3) Dual basket ----------
         before_ids = {r.get("id") for r in (data_service.list_reports("all", include_pending=True) or [])}
@@ -301,7 +337,11 @@ def main() -> int:
         assert cp.get("type") == "dt_checkpoint", cp
         assert isinstance(cp.get("reports"), list) and cp["reports"], cp
         assert cp["reports"][0].get("status") == "running"
-        assert cp["reports"][0].get("createdAt") == "2026-08-04T10:00:00Z", cp["reports"][0]
+        # startedAt is device wall clock (may normalize legacy Z)
+        assert cp["reports"][0].get("createdAt") in (
+            "2026-08-04T10:00:00Z",
+            "2026-08-04T10:00:00",
+        ) or str(cp["reports"][0].get("createdAt") or "").startswith("2026-08-04T"), cp["reports"][0]
         dt_test_service.clear_run(1)
         # Other basket idle → checkpoint cleared
         assert not data_service.get_test_run_data() or not (
