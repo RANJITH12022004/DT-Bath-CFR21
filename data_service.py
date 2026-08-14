@@ -11,6 +11,9 @@ import json
 import os
 import pathlib
 import secrets
+import tempfile
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
@@ -20,6 +23,14 @@ _config = {}
 _storage_dir = None
 _reports_dir = None
 _current_user = None
+# Serialize atomic writes per absolute path. Flask serves threaded requests; a shared
+# "file.json.tmp" name races and raises FileNotFoundError on os.replace after factory
+# reset / login when many endpoints refresh the session concurrently.
+_json_write_locks_guard = threading.Lock()
+_json_write_locks: Dict[str, threading.Lock] = {}
+# Hold across read-modify-write of recipes.json so two concurrent saves cannot
+# each load the same list and drop the other recipe on replace.
+_recipes_mutate_lock = threading.Lock()
 
 FACTORY_USERNAME = "RLERLT"
 FACTORY_PASSWORD = "Rahul"
@@ -257,17 +268,93 @@ def _fsync_dir(dirpath: pathlib.Path) -> None:
             pass
 
 
+def _json_write_lock_for(filepath: pathlib.Path) -> threading.Lock:
+    key = os.path.normpath(str(filepath))
+    with _json_write_locks_guard:
+        lock = _json_write_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _json_write_locks[key] = lock
+        return lock
+
+
+def _ensure_storage_dirs() -> None:
+    """Recreate STORAGE_DIR / REPORTS_DIR after factory reset or USB remount."""
+    if _storage_dir is not None:
+        _storage_dir.mkdir(parents=True, exist_ok=True)
+    if _reports_dir is not None:
+        _reports_dir.mkdir(parents=True, exist_ok=True)
+    if _storage_dir is not None:
+        db_dir = _storage_dir.parent / "db"
+        try:
+            db_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+
 def _save_json_file(filepath: pathlib.Path, data):
-    """Atomic JSON write with fsync (required on USB for mid-test power-cut recovery)."""
+    """Atomic JSON write with fsync (required on USB for mid-test power-cut recovery).
+
+    Durability is the same as the power-cut checkpoint work (commit ff2dd5e):
+    write+fsync a temp file in the *same* directory, ``os.replace`` onto the
+    target (atomic on ext4), then fsync the directory.
+
+    Unique temp names + a per-path lock prevent Flask worker threads from
+    sharing ``file.json.tmp`` (ENOENT on replace) and from clobbering
+    in-flight ``test_run.json`` / ``recipes.json`` / ``reports.json`` writes.
+    """
     filepath = pathlib.Path(filepath)
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = filepath.with_name(filepath.name + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, filepath)
-    _fsync_dir(filepath.parent)
+    parent = filepath.parent
+    lock = _json_write_lock_for(filepath)
+    last_err: Optional[BaseException] = None
+    with lock:
+        for attempt in range(3):
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                last_err = e
+                time.sleep(0.02 * (attempt + 1))
+                continue
+            fd = None
+            tmp_path = None
+            replaced = False
+            try:
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".{0}.".format(filepath.name),
+                    suffix=".tmp",
+                    dir=str(parent),
+                )
+                tmp_path = pathlib.Path(tmp_name)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(filepath))
+                replaced = True
+                _fsync_dir(parent)
+                return
+            except OSError as e:
+                last_err = e
+                # errno 2 = ENOENT (USB remount / raced leftover). Retry.
+                if getattr(e, "errno", None) != 2 or attempt >= 2:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+            finally:
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                # Never unlink after a successful replace — that would delete the real file.
+                if tmp_path is not None and not replaced:
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+        if last_err is not None:
+            raise last_err
+        raise OSError("Failed to write {}".format(filepath))
 
 
 # =================== RECIPE OPERATIONS ==========================
@@ -332,57 +419,61 @@ def _allocate_recipe_id(preferred: Optional[int] = None) -> int:
 
 def save_recipe(recipe_data: Dict[str, Any]) -> int:
     """Save recipe (create or update). Enforces maxRecipes from factory settings."""
-    recipes_path = _get_storage_path("recipes.json")
-    recipes = list_recipes()
-    recipe_id = _norm_recipe_id(recipe_data.get("id"))
-    if recipe_id is not None:
-        recipe_data["id"] = recipe_id
-    is_update = recipe_id is not None and any(
-        _norm_recipe_id(r.get("id")) == recipe_id for r in recipes
-    )
-
-    if not is_update:
-        fs = get_factory_settings()
-        max_recipes = int(fs.get("maxRecipes") or 150)
-        if len(recipes) >= max_recipes:
-            raise ValueError("Your limit for recipes reached. Contact support for upgrade.")
-
-    if recipe_id and is_update:
-        for i, r in enumerate(recipes):
-            if r.get("id") == recipe_id:
-                recipes[i] = recipe_data
-                _save_json_file(recipes_path, recipes)
-                return recipe_id
-
-    # Create: never reuse an id that is still reserved by a disabled archive
-    if recipe_id and not is_update:
-        if recipe_id in _all_known_recipe_ids() and not any(
+    with _recipes_mutate_lock:
+        recipes_path = _get_storage_path("recipes.json")
+        recipes = list_recipes()
+        recipe_id = _norm_recipe_id(recipe_data.get("id"))
+        if recipe_id is not None:
+            recipe_data["id"] = recipe_id
+        is_update = recipe_id is not None and any(
             _norm_recipe_id(r.get("id")) == recipe_id for r in recipes
-        ):
-            # preferred id is only in disabled archive — allocate a new one
+        )
+
+        if not is_update:
+            fs = get_factory_settings()
+            max_recipes = int(fs.get("maxRecipes") or 150)
+            if len(recipes) >= max_recipes:
+                raise ValueError("Your limit for recipes reached. Contact support for upgrade.")
+
+        if recipe_id is not None and is_update:
+            for i, r in enumerate(recipes):
+                if _norm_recipe_id(r.get("id")) == recipe_id:
+                    recipes[i] = recipe_data
+                    _save_json_file(recipes_path, recipes)
+                    return recipe_id
+            raise ValueError("Recipe not found")
+
+        # Create: never reuse an id that is still reserved by a disabled archive
+        if recipe_id and not is_update:
+            if recipe_id in _all_known_recipe_ids() and not any(
+                _norm_recipe_id(r.get("id")) == recipe_id for r in recipes
+            ):
+                # preferred id is only in disabled archive — allocate a new one
+                recipe_id = _allocate_recipe_id(None)
+                recipe_data["id"] = recipe_id
+            recipe_data["id"] = recipe_id
+            recipes.append(recipe_data)
+        else:
             recipe_id = _allocate_recipe_id(None)
             recipe_data["id"] = recipe_id
-        recipe_data["id"] = recipe_id
-        recipes.append(recipe_data)
-    else:
-        recipe_id = _allocate_recipe_id(None)
-        recipe_data["id"] = recipe_id
-        recipes.append(recipe_data)
+            recipes.append(recipe_data)
 
-    _save_json_file(recipes_path, recipes)
-    return recipe_id
+        _save_json_file(recipes_path, recipes)
+        return recipe_id
 
 
 def delete_recipe(recipe_id: int) -> bool:
     """Delete recipe by ID."""
-    recipes_path = _get_storage_path("recipes.json")
-    recipes = list_recipes()
-    original_len = len(recipes)
-    recipes = [r for r in recipes if r.get("id") != recipe_id]
-    if len(recipes) < original_len:
-        _save_json_file(recipes_path, recipes)
-        return True
-    return False
+    with _recipes_mutate_lock:
+        recipes_path = _get_storage_path("recipes.json")
+        recipes = list_recipes()
+        original_len = len(recipes)
+        want = _norm_recipe_id(recipe_id)
+        recipes = [r for r in recipes if _norm_recipe_id(r.get("id")) != want]
+        if len(recipes) < original_len:
+            _save_json_file(recipes_path, recipes)
+            return True
+        return False
 
 
 def list_disabled_recipes() -> list:
@@ -1295,6 +1386,7 @@ def enable_member(member_id: int) -> Dict[str, Any]:
 
 def factory_reset() -> Dict[str, Any]:
     """Delete all operational data. Preserves factorySettings.json only."""
+    _ensure_storage_dirs()
     recipes_path = _get_storage_path("recipes.json")
     reports_path = _get_storage_path("reports.json")
     members_path = _get_storage_path("members.json")
@@ -1326,11 +1418,28 @@ def factory_reset() -> Dict[str, Any]:
         "audit_log.json",
         "audit_export.json",
         "dt_instrument_settings.json",
+        "current_user.json",
+        "session_power_audit_pending.json",
+        "currentUser.json",  # legacy camelCase session file
     ):
         extra_path = _get_storage_path(extra_name)
         if extra_path.exists():
             try:
                 extra_path.unlink()
+                n_storage_files += 1
+            except Exception:
+                pass
+    # Sweep leftover atomic-write temps from before the wipe.
+    if _storage_dir and _storage_dir.exists():
+        for orphan in _storage_dir.glob("*.tmp"):
+            try:
+                orphan.unlink()
+                n_storage_files += 1
+            except Exception:
+                pass
+        for orphan in _storage_dir.glob(".*.tmp"):
+            try:
+                orphan.unlink()
                 n_storage_files += 1
             except Exception:
                 pass
@@ -1348,6 +1457,7 @@ def factory_reset() -> Dict[str, Any]:
             n_storage_files += 1
         except Exception:
             pass
+    _ensure_storage_dirs()
     return {
         "deleted": {
             "recipes": n_recipes,
@@ -1389,9 +1499,15 @@ def save_factory_settings(settings: Dict[str, Any]):
 
 
 def save_current_user(user: Dict[str, Any]):
-    """Save current logged-in user session."""
+    """Save current logged-in user session (skip disk write when unchanged)."""
     global _current_user
-    _current_user = dict(user)
+    incoming = dict(user) if isinstance(user, dict) else {}
+    if _current_user and incoming == _current_user:
+        # Still persist if the on-disk session was cleared (e.g. factory reset).
+        session_path = _get_storage_path("current_user.json")
+        if session_path.exists():
+            return
+    _current_user = incoming
     session_path = _get_storage_path("current_user.json")
     _save_json_file(session_path, _current_user)
 
@@ -1425,6 +1541,9 @@ def refresh_current_user_from_member() -> Optional[Dict[str, Any]]:
     updated["role"] = member.get("role", cur.get("role"))
     updated["featureOverrides"] = member.get("featureOverrides")
     updated["permissionsVersion"] = member.get("permissionsVersion")
+    # Avoid rewriting current_user.json on every gated API call (report preview, etc.).
+    if updated == cur:
+        return cur
     save_current_user(updated)
     return updated
 
@@ -1439,6 +1558,23 @@ def clear_current_user():
             session_path.unlink()
         except Exception:
             pass
+    # Best-effort: remove orphaned unique tmp files from interrupted writes.
+    parent = session_path.parent
+    try:
+        if parent.is_dir():
+            for orphan in parent.glob(".current_user.json.*.tmp"):
+                try:
+                    orphan.unlink()
+                except OSError:
+                    pass
+            legacy_tmp = parent / "current_user.json.tmp"
+            if legacy_tmp.exists():
+                try:
+                    legacy_tmp.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 _SESSION_POWER_AUDIT_PENDING = "session_power_audit_pending.json"

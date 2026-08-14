@@ -269,6 +269,51 @@
     }
   }
 
+  function normalizeDtMode(mode) {
+    return String(mode || 'manual').trim().toLowerCase() === 'timer' ? 'timer' : 'manual';
+  }
+
+  function recipeDurationMinutes(recipe, mode) {
+    if (normalizeDtMode(mode) !== 'timer' || !recipe) return null;
+    var d = recipe.duration;
+    if (d != null && d !== '' && Number(d) > 0) return Number(d);
+    if (recipe.setDuration) {
+      var parsed = parseHHMMSS(recipe.setDuration);
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    if (recipe.timeMinutes != null && Number(recipe.timeMinutes) > 0) {
+      return Number(recipe.timeMinutes);
+    }
+    return null;
+  }
+
+  function applyBasketTimerDisplay(basket, mode, durationMinutes) {
+    basket = basket === 2 ? 2 : 1;
+    var tEl = document.getElementById('timer' + basket);
+    if (!tEl) return;
+    mode = normalizeDtMode(mode);
+    if (mode === 'timer' && Number(durationMinutes) > 0) {
+      tEl.textContent = fmtSec(Math.round(Number(durationMinutes) * 60));
+    } else {
+      tEl.textContent = '00:00:00';
+    }
+  }
+
+  function dashboardTimerFromRun(run, basket) {
+    var mode = normalizeDtMode((run && run.mode) || DT.modes[basket]);
+    var state = String((run && run.state) || '').toUpperCase();
+    if (mode === 'timer') {
+      if (state === 'RUNNING' && run.remainingSeconds != null) {
+        return fmtSec(run.remainingSeconds);
+      }
+      var durMin = (run && run.setDurationMinutes != null) ? run.setDurationMinutes : DT.durations[basket];
+      if (Number(durMin) > 0) return fmtSec(Math.round(Number(durMin) * 60));
+      return '00:00:00';
+    }
+    if (state === 'RUNNING') return fmtSec(run && run.elapsedSeconds);
+    return '00:00:00';
+  }
+
   function syncBathTemp(val) {
     var t = Number(val);
     if (!(t >= 20 && t <= 55)) t = 37.0;
@@ -775,11 +820,19 @@
   }
 
   window.dtSelectMode = function (basket, mode) {
-    if (DT.running[basket]) {
+    basket = basket === 2 ? 2 : 1;
+    if (DT.running[basket] || DT.btnPhase[basket] === 'running') {
       toast('Cannot change mode while test is running', 'error');
       return;
     }
-    DT.modes[basket] = mode === 'timer' ? 'timer' : 'manual';
+    if (DT.fromRecipe[basket]) {
+      toast('Mode is set by the loaded recipe', 'info');
+      updateModeButtonsUI(basket);
+      return;
+    }
+    DT.modes[basket] = normalizeDtMode(mode);
+    if (DT.modes[basket] !== 'timer') DT.durations[basket] = null;
+    applyBasketTimerDisplay(basket, DT.modes[basket], DT.durations[basket]);
     updateModeButtonsUI(basket);
   };
 
@@ -808,7 +861,7 @@
 
   window.dtHandleBasketTap = function (basket, event, holeNum) {
     if (!DT.running[basket]) return;
-    if (DT.modes[basket] !== 'manual') return;
+    if (normalizeDtMode(DT.modes[basket]) !== 'manual') return;
     var hole = holeNum;
     if (hole == null && event && event.target && event.target.classList.contains('basket-hole')) {
       hole = parseInt(event.target.textContent, 10);
@@ -971,7 +1024,7 @@
       (DT.running[basket] && DT.btnPhase[basket] !== 'running');
     var name = ((document.getElementById('dt-qt-name') || {}).value || '').trim();
     var batch = ((document.getElementById('dt-qt-batch') || {}).value || '').trim();
-    var mode = ((document.getElementById('dt-qt-mode') || {}).value || 'manual');
+    var mode = normalizeDtMode((document.getElementById('dt-qt-mode') || {}).value || 'manual');
     var media = ((document.getElementById('dt-qt-media') || {}).value || '').trim();
     var mesh = ((document.getElementById('dt-qt-mesh') || {}).value || '').trim();
     var durStr = ((document.getElementById('dt-qt-duration') || {}).value || '').trim();
@@ -998,10 +1051,11 @@
     DT.batches[basket] = batch;
     DT.fromRecipe[basket] = false;
     DT.modes[basket] = mode;
-    DT.durations[basket] = duration;
+    DT.durations[basket] = mode === 'timer' ? duration : null;
     DT.media[basket] = media || null;
     DT.mesh[basket] = mesh || null;
     DT.configured[basket] = true;
+    applyBasketTimerDisplay(basket, mode, DT.durations[basket]);
     updateModeButtonsUI(basket);
     updateProductNames();
     updateBasketStates();
@@ -1073,8 +1127,8 @@
     basket = basket === 2 ? 2 : 1;
     var product = DT.products[basket] || ('Beaker ' + basket);
     var temp = Number(DT.setTemp[basket] || 37);
-    var mode = DT.modes[basket] || 'manual';
-    var dur = DT.durations[basket];
+    var mode = normalizeDtMode(DT.modes[basket]);
+    var dur = mode === 'timer' ? DT.durations[basket] : null;
     // Idle preheat without recipe: use manual mode until Quick Test sets timer details on Start
     if (!DT.fromRecipe[basket] && !DT.products[basket]) {
       mode = 'manual';
@@ -1083,6 +1137,10 @@
       toast('Timer mode needs a duration — set duration on Quick Test or load a timer recipe', 'error');
       return;
     }
+    DT.modes[basket] = mode;
+    DT.durations[basket] = mode === 'timer' ? dur : null;
+    applyBasketTimerDisplay(basket, mode, dur);
+    updateModeButtonsUI(basket);
     DT.selectedBasket = basket;
     openTestRun(basket, {
       productName: product,
@@ -1094,6 +1152,7 @@
       batchNumber: DT.batches[basket] || '',
       media: DT.media[basket],
       mesh: DT.mesh[basket],
+      recipeId: (DT._runParams && DT._runParams[basket] && DT._runParams[basket].recipeId) || null,
     });
   }
 
@@ -1320,30 +1379,74 @@
   function applyRecipeToDashboard(recipe, batch, beakerPick) {
     var product = recipe.productName || recipe.name || 'Recipe';
     var temperature = parseFloat(recipe.temp != null ? recipe.temp : recipe.setTemperature) || 37.0;
-    var mode = recipe.mode || 'manual';
-    var duration = recipe.duration;
-    if ((duration == null || !(duration > 0)) && recipe.setDuration) {
-      duration = parseHHMMSS(recipe.setDuration);
+    var mode = normalizeDtMode(recipe.mode);
+    var duration = recipeDurationMinutes(recipe, mode);
+    if (mode === 'timer' && !(duration > 0)) {
+      toast('Timer recipe is missing a duration', 'error');
+      return;
     }
-    var targets = beakerPick === 'both' ? [1, 2] : [beakerPick === 2 ? 2 : 1];
+    var targets = beakerPick === 'both' || beakerPick === 'Both' ? [1, 2] : [Number(beakerPick) === 2 ? 2 : 1];
     targets.forEach(function (b) {
+      if (DT.btnPhase[b] === 'running') {
+        toast('Beaker ' + b + ' is running — recipe not applied there', 'info');
+        return;
+      }
       DT.products[b] = product;
       DT.batches[b] = batch || '';
       DT.fromRecipe[b] = true;
       syncBathTemp(temperature);
       DT.modes[b] = mode;
-      DT.durations[b] = duration;
+      DT.durations[b] = mode === 'timer' ? duration : null;
       DT.media[b] = recipe.media || null;
       DT.mesh[b] = recipe.mesh || null;
       DT.configured[b] = true;
+      DT._runParams = DT._runParams || {};
+      DT._runParams[b] = {
+        productName: product,
+        recipeName: product,
+        recipeId: recipe.id,
+        setTemperature: temperature,
+        mode: mode,
+        durationMinutes: DT.durations[b],
+        basketConfig: DT.basketConfig,
+        batchNumber: batch || '',
+        media: recipe.media || null,
+        mesh: recipe.mesh || null,
+      };
+      applyBasketTimerDisplay(b, mode, DT.durations[b]);
       updateModeButtonsUI(b);
+      var container = document.getElementById('basket' + b + '-container');
+      if (container) {
+        container.classList.remove('completed');
+        container.querySelectorAll('.basket-hole').forEach(function (el) {
+          el.classList.remove('completed');
+        });
+      }
+      // If this beaker already has a preheat/ready session, push recipe mode onto the server run
+      // so a leftover timer/manual from the previous test cannot stick.
+      var phase = DT.btnPhase[b] || 'idle';
+      if (phase === 'preheating' || phase === 'ready' || DT.preheatInProgress[b] || DT.running[b]) {
+        api('/api/data/dt/runs/' + b + '/setup', {
+          method: 'POST',
+          body: {
+            productName: product,
+            batchNumber: batch || '',
+            mode: mode,
+            durationMinutes: DT.durations[b],
+            media: recipe.media,
+            mesh: recipe.mesh,
+            recipeName: product,
+            setTemperature: temperature,
+          },
+        }).catch(function () {});
+      }
     });
     updateDashboardTempButton();
     updateProductNames();
     updateBasketStates();
     if (typeof logAuditEvent === 'function') {
       try {
-        logAuditEvent('Loaded recipe', product + ', batch ' + (batch || '--'), {
+        logAuditEvent('Loaded recipe', product + ', batch ' + (batch || '--') + ' | mode ' + mode.toUpperCase(), {
           eventType: 'lifecycle',
         });
       } catch (e) {}
@@ -1390,6 +1493,8 @@
       DT.mesh[basket] = null;
       DT.durations[basket] = null;
       updateProductNames();
+    } else {
+      applyBasketTimerDisplay(basket, DT.modes[basket], DT.durations[basket]);
     }
     var container = document.getElementById('basket' + basket + '-container');
     if (container) {
@@ -1418,6 +1523,7 @@
     syncDtNavLock();
     DT._runParams = DT._runParams || {};
     DT._runParams[basket] = params;
+    applyBasketTimerDisplay(basket, params.mode, params.durationMinutes);
     // Shared bath — both configured beakers look preheating immediately
     applySharedBathPreheatUi();
     // Stay on dashboard test screen (Dt_Dr_Reddy behavior)
@@ -1691,12 +1797,12 @@
         var stateEl = document.getElementById('dt-run-state');
         if (stateEl) stateEl.textContent = run.state || '--';
         var dashTimer = document.getElementById('timer' + basket);
-        var elapsed = run.mode === 'timer' && run.remainingSeconds != null
-          ? run.remainingSeconds : run.elapsedSeconds;
-        var formatted = fmtSec(elapsed);
+        var formatted = dashboardTimerFromRun(run, basket);
         if (dashTimer) dashTimer.textContent = formatted;
-        var timerEl = document.getElementById('tr-timer');
-        if (timerEl) timerEl.textContent = formatted;
+        if (DT.selectedBasket === basket) {
+          var timerEl = document.getElementById('tr-timer');
+          if (timerEl) timerEl.textContent = formatted;
+        }
         var minEl = document.getElementById('dt-run-min');
         var maxEl = document.getElementById('dt-run-max');
         if (minEl) minEl.textContent = run.minTemp != null ? Number(run.minTemp).toFixed(1) : '--';
@@ -1799,11 +1905,13 @@
           return doConfirm();
         }
         var params = (DT._runParams && DT._runParams[basket]) || {};
-        var mode = params.mode || DT.modes[basket] || 'manual';
-        var dur = params.durationMinutes != null ? params.durationMinutes : DT.durations[basket];
+        var mode = normalizeDtMode(DT.fromRecipe[basket] ? DT.modes[basket] : (params.mode || DT.modes[basket]));
+        var dur = mode === 'timer'
+          ? (DT.durations[basket] != null ? DT.durations[basket] : params.durationMinutes)
+          : null;
         if (mode === 'timer' && !(Number(dur) > 0)) {
-          mode = 'manual';
-          dur = null;
+          toast('Timer mode needs a duration', 'error');
+          throw new Error('Timer mode needs a duration');
         }
         var body = {
           setTemperature: params.setTemperature != null ? params.setTemperature : DT.setTemp[basket],

@@ -163,6 +163,22 @@ def _audit(action: str, details: str = "", **extra) -> None:
             _logger.exception("dt_test audit failed")
 
 
+def _normalized_mode(mode: Any) -> str:
+    return "timer" if str(mode or "manual").strip().lower() == "timer" else "manual"
+
+
+def _remaining_seconds_for_timer(mode: Any, duration_minutes: Any) -> Optional[int]:
+    if _normalized_mode(mode) != "timer":
+        return None
+    try:
+        dur = float(duration_minutes)
+    except (TypeError, ValueError):
+        return None
+    if dur <= 0:
+        return None
+    return int(round(dur * 60))
+
+
 def _empty_run(basket: int) -> Dict[str, Any]:
     return {
         "basket": basket,
@@ -427,7 +443,7 @@ def start_preheat(
         startedAt=None,
         endedAt=None,
         elapsedSeconds=0,
-        remainingSeconds=int(dur * 60) if dur else None,
+        remainingSeconds=_remaining_seconds_for_timer(mode, dur),
         minTemp=None,
         maxTemp=None,
         meanTemp=None,
@@ -537,7 +553,7 @@ def apply_run_setup(
             except (TypeError, ValueError):
                 return {"ok": False, "error": "duration_minutes required for timer mode"}
             fields["setDurationMinutes"] = dur
-            fields["remainingSeconds"] = int(dur * 60)
+            fields["remainingSeconds"] = _remaining_seconds_for_timer(mode_l, dur)
         else:
             fields["setDurationMinutes"] = None
             fields["remainingSeconds"] = None
@@ -571,7 +587,7 @@ def confirm_start(basket: int) -> Dict[str, Any]:
         return {"ok": False, "error": hw_result.get("error") or "start failed", "hardware": hw_result}
 
     dur = current.get("setDurationMinutes")
-    remaining = int(float(dur) * 60) if current.get("mode") == "timer" and dur else None
+    remaining = _remaining_seconds_for_timer(current.get("mode"), dur)
     run = _set_state(
         basket,
         "RUNNING",
@@ -952,7 +968,7 @@ def _watchdog_loop() -> None:
                     if basket in _runs and _runs[basket].get("state") == "RUNNING":
                         _runs[basket]["elapsedSeconds"] = elapsed
                         _runs[basket]["updatedAt"] = _now_iso()
-                        if _runs[basket].get("mode") == "timer":
+                        if _normalized_mode(_runs[basket].get("mode")) == "timer":
                             dur = _runs[basket].get("setDurationMinutes")
                             total = int(float(dur) * 60) if dur else 0
                             remaining = max(0, total - elapsed)
