@@ -5668,6 +5668,7 @@ function refreshReportsActionButtons() {
     if (audEx) {
         audEx.style.display = u && typeof userCanExportToUsb === 'function' && userCanExportToUsb(u) ? '' : 'none';
     }
+    if (typeof initAuditReportsVisibility === 'function') initAuditReportsVisibility();
     if (typeof updateReportPreviewPrintExportButtons === 'function') {
         updateReportPreviewPrintExportButtons(window._lastReportPreview || null);
     }
@@ -5686,9 +5687,9 @@ function canViewAuditLog() {
 
 function initAuditReportsVisibility() {
     var auditBtn = document.querySelector('.reports-filter-audit');
-    if (auditBtn && !canViewAuditLog()) {
-        auditBtn.style.display = 'none';
-    }
+    if (!auditBtn) return;
+    // Must show and hide per session — a prior user without audit-view leaves display:none inline.
+    auditBtn.style.display = (typeof canViewAuditLog === 'function' && canViewAuditLog()) ? '' : 'none';
 }
 
 function filterReports(type) {
