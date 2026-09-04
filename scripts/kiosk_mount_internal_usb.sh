@@ -24,7 +24,13 @@ _writable() {
 }
 
 _ensure_dirs() {
+  local owner="${KIOSK_USER:-rle}"
   mkdir -p "$STORAGE_DIR" "$REPORTS_DIR" "$AUDIT_DB_DIR" 2>/dev/null || true
+  _run_root mkdir -p "$STORAGE_DIR" "$REPORTS_DIR" "$AUDIT_DB_DIR" 2>/dev/null || true
+  # Flask runs as rle; root-owned db/storage dirs make sqlite fail with
+  # "unable to open database file" and the API crash-loops.
+  _run_root chown -R "$owner:$owner" "$STORAGE_DIR" "$REPORTS_DIR" "$AUDIT_DB_DIR" 2>/dev/null || true
+  _run_root chmod u+rwx "$STORAGE_DIR" "$REPORTS_DIR" "$AUDIT_DB_DIR" 2>/dev/null || true
 }
 
 _repair() {
