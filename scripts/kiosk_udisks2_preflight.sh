@@ -18,22 +18,8 @@ if ! command -v udisksctl >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! systemctl is-enabled udisks2.service >/dev/null 2>&1; then
-  log "enabling udisks2.service"
-  _run_root systemctl enable udisks2.service 2>/dev/null || true
-fi
-
-if ! systemctl is-active --quiet udisks2.service; then
-  log "starting udisks2.service"
-  _run_root systemctl start udisks2.service 2>/dev/null || true
-  # Socket activation / settle
-  for _i in 1 2 3 4 5 6 7 8; do
-    if systemctl is-active --quiet udisks2.service; then
-      break
-    fi
-    sleep 0.25
-  done
-fi
+# Do not systemctl enable/start from kiosk-bridge ExecStartPre — nested
+# systemctl jobs deadlock or delay boot. Wants=udisks2.service pulls it in.
 
 if systemctl is-active --quiet udisks2.service; then
   log "udisks2 active"

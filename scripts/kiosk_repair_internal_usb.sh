@@ -81,7 +81,8 @@ _umount_usb() {
 }
 
 _mount_usb() {
-  _run_root systemctl start media-usb_internal.mount 2>/dev/null && return 0
+  # Direct mount only. systemctl start media-usb_internal.mount waits on fstab's
+  # by-uuid device (10s) and is the main boot stall when the UUID is stale.
   _run_root mount "$INTERNAL_USB_PATH" 2>/dev/null && return 0
   local part fst
   part="$(_resolve_partition)"

@@ -1,7 +1,7 @@
 [Unit]
 Description=Disintegration Tester (DT-CFR) kiosk API (Flask)
-After=network-online.target local-fs.target media-usb_internal.mount kiosk-internal-usb-mount.service udisks2.service
-Wants=network-online.target media-usb_internal.mount kiosk-internal-usb-mount.service udisks2.service
+After=local-fs.target kiosk-internal-usb-mount.service
+Wants=kiosk-internal-usb-mount.service udisks2.service
 
 [Service]
 Type=simple

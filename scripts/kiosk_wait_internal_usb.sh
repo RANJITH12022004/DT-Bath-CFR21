@@ -4,7 +4,7 @@ set -euo pipefail
 
 INTERNAL="${INTERNAL_USB_PATH:-/media/usb_internal}"
 STORAGE="${STORAGE_DIR:-$INTERNAL/storage}"
-WAIT_SEC="${KIOSK_USB_WAIT_SEC:-90}"
+WAIT_SEC="${KIOSK_USB_WAIT_SEC:-15}"
 
 deadline=$((SECONDS + WAIT_SEC))
 while (( SECONDS < deadline )); do
