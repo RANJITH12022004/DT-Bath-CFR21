@@ -4595,6 +4595,23 @@ def _format_wall_datetime_for_audit(dt_value) -> str:
         return s
 
 
+def _device_now_display() -> str:
+    """Current device wall clock for PDF/export stamps (dd/mm/yyyy HH:MM:SS).
+
+    Prefer the DS1307 RTC — the same source used for audit row dateTime and
+    report print/export stamps — so the PDF header matches today's device date.
+    """
+    try:
+        formatted = _format_wall_datetime_for_audit(
+            rtc_service.get_device_wall_datetime_payload().get("datetime")
+        )
+        if formatted and formatted != "--":
+            return formatted
+    except Exception:
+        pass
+    return datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+
 def _humanize_audit_details(action: str, details: str) -> str:
     """Normalize verbose/internal audit detail text for UI and PDF export."""
     action = str(action or "").strip()
@@ -4749,7 +4766,7 @@ def _build_audit_trail_html(entries, filters, factory):
     serial = _html_escape(factory.get("serialNo") or "")
     location = _html_escape(factory.get("companyLocation") or factory.get("location") or "")
     instrument_no = _html_escape(factory.get("instrumentId") or "")
-    generated_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    generated_at = _device_now_display()
 
     def _fmt_ts(ts):
         try:
@@ -4760,7 +4777,7 @@ def _build_audit_trail_html(entries, filters, factory):
             return ""
         if ts_int > 10 ** 12:
             ts_int = ts_int // 1000
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_int))
+        return time.strftime("%d/%m/%Y %H:%M:%S", time.localtime(ts_int))
 
     def _split_date_time_cell(raw, timestamp_fallback):
         """Return (date_html, time_html). Splits any 'DATE TIME' string on the first space.
