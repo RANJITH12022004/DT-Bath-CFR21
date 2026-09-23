@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+# Adopt a connected pendrive as the DT kiosk internal storage device.
+#
+# Usage:
+#   sudo mount-internal-usb              # auto-pick /dev/sdX1 (prefers sda1)
+#   sudo mount-internal-usb /dev/sda1    # use this partition
+#   sudo mount-internal-usb --list       # show candidate USB partitions
+#   sudo mount-internal-usb --help
+#
+# What it does (one command, no 10-step checklist):
+#   1) Resolve the partition (arg or scan)
+#   2) Mount it at /media/usb_internal
+#   3) Create storage/ /reports/ /db/ owned by the kiosk user
+#   4) Persist the UUID in fstab, systemd units, and udev rules
+#   5) daemon-reload so the next boot uses this stick
+set -euo pipefail
+
+INTERNAL="${INTERNAL_USB_PATH:-/media/usb_internal}"
+OWNER="${KIOSK_USB_OWNER:-rle:rle}"
+APP_ROOT="${APP_ROOT:-/opt/kiosk}"
+DEV_ARG=""
+DO_LIST=0
+NO_RESTART=0
+
+usage() {
+  sed -n '2,18p' "$0"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -l|--list) DO_LIST=1; shift ;;
+    --no-restart) NO_RESTART=1; shift ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$DEV_ARG" ]]; then
+        echo "Only one device argument allowed (got '$DEV_ARG' and '$1')" >&2
+        exit 2
+      fi
+      DEV_ARG="$1"
+      shift
+      ;;
+  esac
+done
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run as root: sudo mount-internal-usb ${*:-}" >&2
+    exit 1
+  fi
+}
+
+is_usb_disk() {
+  local disk="$1" removable transit
+  removable="$(cat "/sys/block/${disk}/removable" 2>/dev/null || echo 0)"
+  transit="$(readlink -f "/sys/block/${disk}" 2>/dev/null || true)"
+  [[ "$removable" == "1" ]] && return 0
+  [[ "$transit" == *"/usb"* ]] && return 0
+  return 1
+}
+
+list_candidates() {
+  local p disk uuid label fst size
+  printf '%-12s %-10s %-12s %-36s %s\n' "DEVICE" "SIZE" "FSTYPE" "UUID" "LABEL"
+  for p in /dev/sd[a-z][0-9]* /dev/sd[a-z]; do
+    [[ -b "$p" ]] || continue
+    # Prefer partitions (…1), skip whole-disk if partition siblings exist
+    if [[ "$p" =~ /dev/sd[a-z]$ ]]; then
+      local has_part=0
+      for q in "${p}"[0-9]*; do
+        [[ -b "$q" ]] && has_part=1 && break
+      done
+      [[ "$has_part" -eq 1 ]] && continue
+    fi
+    disk="${p#/dev/}"
+    disk="${disk%%[0-9]*}"
+    is_usb_disk "$disk" || continue
+    uuid="$(blkid -s UUID -o value "$p" 2>/dev/null || true)"
+    label="$(blkid -s LABEL -o value "$p" 2>/dev/null || true)"
+    fst="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
+    size="$(lsblk -ndo SIZE "$p" 2>/dev/null || true)"
+    printf '%-12s %-10s %-12s %-36s %s\n' "$p" "${size:--}" "${fst:--}" "${uuid:--}" "${label:--}"
+  done
+}
+
+resolve_device() {
+  local p disk
+
+  if [[ -n "$DEV_ARG" ]]; then
+    if [[ ! -b "$DEV_ARG" ]]; then
+      echo "Not a block device: $DEV_ARG" >&2
+      exit 1
+    fi
+    # If a whole disk was given, prefer its first partition
+    if [[ "$DEV_ARG" =~ /dev/sd[a-z]$ ]]; then
+      if [[ -b "${DEV_ARG}1" ]]; then
+        printf '%s' "${DEV_ARG}1"
+        return 0
+      fi
+    fi
+    printf '%s' "$DEV_ARG"
+    return 0
+  fi
+
+  if [[ -e /dev/disk/by-label/usb_internal ]]; then
+    readlink -f /dev/disk/by-label/usb_internal
+    return 0
+  fi
+
+  if [[ -b /dev/sda1 ]] && is_usb_disk sda; then
+    printf '%s' /dev/sda1
+    return 0
+  fi
+
+  for p in /dev/sd[a-z]1; do
+    [[ -b "$p" ]] || continue
+    disk="${p#/dev/}"
+    disk="${disk%%[0-9]*}"
+    is_usb_disk "$disk" || continue
+    printf '%s' "$p"
+    return 0
+  done
+
+  return 1
+}
+
+ensure_dirs() {
+  mkdir -p "$INTERNAL/storage" "$INTERNAL/reports" "$INTERNAL/db"
+  if id -u "${OWNER%%:*}" >/dev/null 2>&1; then
+    chown -R "$OWNER" "$INTERNAL/storage" "$INTERNAL/reports" "$INTERNAL/db" || true
+    chown "$OWNER" "$INTERNAL" 2>/dev/null || true
+  fi
+  chmod u+rwx "$INTERNAL/storage" "$INTERNAL/reports" "$INTERNAL/db" || true
+}
+
+mount_opts_for() {
+  local fst="$1"
+  case "$fst" in
+    vfat|fat|fat32|msdos)
+      printf '%s' "rw,uid=1000,gid=1000,fmask=0133,dmask=0022,flush"
+      ;;
+    exfat)
+      printf '%s' "rw,uid=1000,gid=1000"
+      ;;
+    *)
+      printf '%s' "rw"
+      ;;
+  esac
+}
+
+replace_uuid_in_file() {
+  local file="$1" new_uuid="$2"
+  local tmp old
+  [[ -f "$file" ]] || return 0
+  tmp="$(mktemp)"
+  # Replace known USB UUID env/rule patterns without touching unrelated UUIDs when possible.
+  # Strategy: rewrite INTERNAL_USB_UUID* lines and ID_FS_UUID=="..." for the kiosk udev rule.
+  awk -v nu="$new_uuid" '
+    BEGIN { updated=0 }
+    /^Environment=INTERNAL_USB_UUID=/ {
+      print "Environment=INTERNAL_USB_UUID=" nu
+      updated=1
+      next
+    }
+    /^Environment=INTERNAL_USB_UUIDS=/ {
+      print "Environment=INTERNAL_USB_UUIDS=" nu
+      updated=1
+      next
+    }
+    /ENV\{ID_FS_UUID\}=="[^"]+"/ && /kiosk-internal-usb-mount/ {
+      gsub(/ENV\{ID_FS_UUID\}=="[^"]+"/, "ENV{ID_FS_UUID}==\"" nu "\"")
+      updated=1
+      print
+      next
+    }
+    { print }
+    END { }
+  ' "$file" >"$tmp"
+
+  # If file had no UUID lines yet (bridge template without UUID), append env for service files.
+  if [[ "$file" == *kiosk-bridge.service || "$file" == *kiosk-internal-usb-mount.service ]]; then
+    if ! grep -q '^Environment=INTERNAL_USB_UUID=' "$tmp"; then
+      # Insert after STORAGE_DIR / AUDIT_DB_DIR block when possible
+      awk -v nu="$new_uuid" '
+        { print }
+        /^Environment=AUDIT_DB_DIR=/ && !done {
+          print "Environment=INTERNAL_USB_UUIDS=" nu
+          print "Environment=INTERNAL_USB_UUID=" nu
+          done=1
+        }
+        END {
+          if (!done) {
+            print "Environment=INTERNAL_USB_UUIDS=" nu
+            print "Environment=INTERNAL_USB_UUID=" nu
+          }
+        }
+      ' "$tmp" >"${tmp}.2"
+      mv "${tmp}.2" "$tmp"
+    fi
+  fi
+
+  if ! cmp -s "$file" "$tmp"; then
+    cp -a "$file" "${file}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    cat "$tmp" >"$file"
+    echo "  updated $file"
+  fi
+  rm -f "$tmp"
+}
+
+update_fstab() {
+  local uuid="$1" fstype="$2" line tmp opts
+  [[ -n "$uuid" ]] || return 0
+  case "$fstype" in
+    vfat|fat|fat32|msdos)
+      opts="defaults,uid=1000,gid=1000,fmask=0133,dmask=0022,nofail,flush,x-systemd.device-timeout=10s"
+      ;;
+    *)
+      opts="defaults,nofail,x-systemd.device-timeout=10s"
+      ;;
+  esac
+  line="UUID=${uuid}  ${INTERNAL}  ${fstype}  ${opts}  0  0"
+  tmp="$(mktemp)"
+  if grep -qE '[[:space:]]/media/usb_internal[[:space:]]' /etc/fstab; then
+    awk -v line="$line" '
+      $1 ~ /^#/ { print; next }
+      $2 == "/media/usb_internal" {
+        if (!done) { print line; done=1 }
+        next
+      }
+      { print }
+      END { if (!done) print line }
+    ' /etc/fstab >"$tmp"
+  else
+    cat /etc/fstab >"$tmp"
+    printf '\n# Internal kiosk pendrive (managed by mount-internal-usb)\n%s\n' "$line" >>"$tmp"
+  fi
+  cp -a /etc/fstab "/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
+  cat "$tmp" >/etc/fstab
+  rm -f "$tmp"
+  echo "  updated /etc/fstab -> UUID=$uuid"
+}
+
+update_uuid_everywhere() {
+  local uuid="$1" fstype="$2"
+  echo "Persisting UUID=$uuid as internal storage..."
+  update_fstab "$uuid" "$fstype"
+  replace_uuid_in_file "$APP_ROOT/config/kiosk-bridge.service" "$uuid"
+  replace_uuid_in_file "$APP_ROOT/config/kiosk-internal-usb-mount.service" "$uuid"
+  replace_uuid_in_file "$APP_ROOT/kiosk-bridge.service" "$uuid"
+  replace_uuid_in_file "$APP_ROOT/config/99-kiosk-internal-usb.rules" "$uuid"
+  # Installed copies used at boot
+  if [[ -f /etc/systemd/system/kiosk-bridge.service ]]; then
+    replace_uuid_in_file /etc/systemd/system/kiosk-bridge.service "$uuid"
+  else
+    cp -a "$APP_ROOT/config/kiosk-bridge.service" /etc/systemd/system/kiosk-bridge.service
+    echo "  installed /etc/systemd/system/kiosk-bridge.service"
+  fi
+  if [[ -f /etc/systemd/system/kiosk-internal-usb-mount.service ]]; then
+    replace_uuid_in_file /etc/systemd/system/kiosk-internal-usb-mount.service "$uuid"
+  else
+    cp -a "$APP_ROOT/config/kiosk-internal-usb-mount.service" /etc/systemd/system/kiosk-internal-usb-mount.service
+    echo "  installed /etc/systemd/system/kiosk-internal-usb-mount.service"
+  fi
+  if [[ -f /etc/udev/rules.d/99-kiosk-internal-usb.rules ]]; then
+    replace_uuid_in_file /etc/udev/rules.d/99-kiosk-internal-usb.rules "$uuid"
+  elif [[ -f "$APP_ROOT/config/99-kiosk-internal-usb.rules" ]]; then
+    cp -a "$APP_ROOT/config/99-kiosk-internal-usb.rules" /etc/udev/rules.d/99-kiosk-internal-usb.rules
+    echo "  installed /etc/udev/rules.d/99-kiosk-internal-usb.rules"
+  fi
+  systemctl daemon-reload 2>/dev/null || true
+  udevadm control --reload-rules 2>/dev/null || true
+  systemctl enable kiosk-internal-usb-mount.service 2>/dev/null || true
+}
+
+# ---- main ----
+if [[ "$DO_LIST" -eq 1 ]]; then
+  list_candidates
+  exit 0
+fi
+
+need_root "$@"
+
+DEV="$(resolve_device)" || {
+  echo "No USB pendrive partition found." >&2
+  echo "Plug in a stick and retry, or pass the device explicitly:" >&2
+  echo "  sudo mount-internal-usb /dev/sda1" >&2
+  echo "Candidates:" >&2
+  list_candidates >&2 || true
+  exit 1
+}
+
+FSTYPE="$(blkid -s TYPE -o value "$DEV" 2>/dev/null || true)"
+UUID="$(blkid -s UUID -o value "$DEV" 2>/dev/null || true)"
+LABEL="$(blkid -s LABEL -o value "$DEV" 2>/dev/null || true)"
+
+if [[ -z "$FSTYPE" || -z "$UUID" ]]; then
+  echo "Cannot read filesystem/UUID on $DEV (is it partitioned and formatted?)" >&2
+  exit 1
+fi
+
+mkdir -p "$INTERNAL"
+
+if mountpoint -q "$INTERNAL"; then
+  CUR="$(findmnt -n -o SOURCE --target "$INTERNAL" 2>/dev/null || true)"
+  CUR_UUID="$(findmnt -n -o UUID --target "$INTERNAL" 2>/dev/null || true)"
+  if [[ "$CUR" == "$DEV" || ( -n "$CUR_UUID" && "$CUR_UUID" == "$UUID" ) ]]; then
+    echo "Already mounted: $INTERNAL <- $CUR (uuid=$UUID)"
+  else
+    echo "Remounting $INTERNAL (was $CUR) -> $DEV"
+    umount "$INTERNAL" || umount -l "$INTERNAL"
+    mount -t "$FSTYPE" -o "$(mount_opts_for "$FSTYPE")" "$DEV" "$INTERNAL"
+  fi
+else
+  # Path may be a plain directory on rootfs with leftover data — don't hide it under the mount.
+  if [[ -d "$INTERNAL" ]] && [[ -n "$(ls -A "$INTERNAL" 2>/dev/null || true)" ]]; then
+    BAK="${INTERNAL}.rootfs_bak.$(date +%Y%m%d%H%M%S)"
+    echo "  moving leftover non-mount contents aside -> $BAK"
+    mv "$INTERNAL" "$BAK"
+    mkdir -p "$INTERNAL"
+  fi
+  echo "Mounting $DEV (type=$FSTYPE label=${LABEL:--} uuid=$UUID) -> $INTERNAL"
+  mount -t "$FSTYPE" -o "$(mount_opts_for "$FSTYPE")" "$DEV" "$INTERNAL"
+fi
+
+ensure_dirs
+update_uuid_everywhere "$UUID" "$FSTYPE"
+
+echo
+echo "OK: $(findmnt -n -o TARGET,SOURCE,FSTYPE,UUID --target "$INTERNAL")"
+echo "Folders: $INTERNAL/{storage,reports,db}"
+df -h "$INTERNAL" | tail -1
+ls -la "$INTERNAL"
+
+if [[ "$NO_RESTART" -eq 0 ]]; then
+  if systemctl is-enabled kiosk-bridge.service >/dev/null 2>&1 \
+      || systemctl is-active kiosk-bridge.service >/dev/null 2>&1; then
+    echo "Restarting kiosk-bridge so it picks up the new UUID..."
+    systemctl restart kiosk-bridge.service || true
+  fi
+fi
+
+echo "Done. Next boot will auto-use UUID=$UUID."

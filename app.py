@@ -1459,6 +1459,30 @@ def _stamp_report_operator(enriched):
     return enriched
 
 
+def _verifier_approved_by_line(verified):
+    """Name (Role) line for the person who e-signed."""
+    verified = verified or {}
+    verified_name = (verified.get("name") or verified.get("username") or "—").strip()
+    verified_role = (verified.get("role") or "").strip()
+    if verified_role:
+        return "{} ({})".format(verified_name, _display_role_label(verified_role))
+    return verified_name
+
+
+def _finalize_calibration_report_from_verifier(report, verified):
+    """Calibration e-sign also approves the report — no second Pass/Fail gate."""
+    report = _stamp_report_operator(dict(report or {}))
+    verified = verified or {}
+    by_line = _verifier_approved_by_line(verified)
+    report["reportApprovalStatus"] = "approved"
+    report["approvalPassFail"] = "PASS"
+    report["approvedBy"] = by_line
+    report["approvedByUsername"] = str(verified.get("username") or "").strip()
+    report["approvedAt"] = _utc_now_iso()
+    report["verifierRole"] = (verified.get("role") or "").strip()
+    return report
+
+
 def _report_requires_approval(report):
     rtype = (report.get("type") or "").strip().lower()
     return rtype in ("test", "validation", "calibration")
@@ -1513,6 +1537,27 @@ PERMISSION_CARD_LABELS = {
 }
 
 
+def _approval_purpose_audit_label(purpose, report_type=None) -> str:
+    """Human-readable approval rule shown in the audit trail."""
+    p = str(purpose or "").strip().lower()
+    if p == "report":
+        rt = str(report_type or "test").strip().lower() or "test"
+        if rt == "validation":
+            return "Validation report approval"
+        if rt == "calibration":
+            return "Calibration report approval"
+        return "Test report approval"
+    labels = {
+        "recipe": "Recipe approval",
+        "user_admin": "Profile management approval",
+        "export": "Export approval",
+        "recipe_disable": "Recipe disable approval",
+        "recipe_enable": "Recipe enable approval",
+        "calibration": "Calibration approval",
+    }
+    return labels.get(p, purpose or "Approval")
+
+
 def _member_permission_card_set(member: dict) -> set:
     raw = (member or {}).get("featureOverrides") or {}
     allow = raw.get("allow") if isinstance(raw, dict) else []
@@ -1550,7 +1595,11 @@ def _member_permission_change_detail(before_member: dict, after_member: dict, us
     disabled = before_cards - after_cards
     if not enabled and not disabled:
         return ""
-    parts = ["Permissions updated for {}".format(username or "--")]
+    role_label = _display_role_label((after_member or {}).get("role") or (before_member or {}).get("role") or "")
+    who = username or "--"
+    if role_label:
+        who = "{} ({})".format(who, role_label)
+    parts = ["Permissions updated for {}".format(who)]
     enabled_labels = _permission_card_labels(enabled)
     disabled_labels = _permission_card_labels(disabled)
     if enabled_labels:
@@ -2770,13 +2819,15 @@ def approve_report(report_id):
         if pdf_ok:
             _audit_report_pdf_generated(report_id, report)
         ctx = _format_report_audit_details(report_id, report)
-        appr_detail = "{} | {} | verified by {}".format(ctx, pf, verified_name)
-        if is_validation:
-            appr_detail = "{} | stroke={} temp={} | verified by {}".format(
-                ctx, stroke_pf, temp_pf, verified_name
-            )
         v_audit_user = verified.get("username") or verified_username or verified_name
         v_audit_role = (verified.get("role") or "").strip() or "--"
+        appr_detail = "{} | {} | verified by {} ({})".format(
+            ctx, pf, verified_name, _display_role_label(v_audit_role)
+        )
+        if is_validation:
+            appr_detail = "{} | stroke={} temp={} | verified by {} ({})".format(
+                ctx, stroke_pf, temp_pf, verified_name, _display_role_label(v_audit_role)
+            )
         rtype = str(report.get("type") or "test").strip().lower() or "test"
         if rtype == "validation":
             approve_action = "Validation report approved"
@@ -4060,15 +4111,23 @@ def approval_verify():
             verifier, purpose, report_type=report_type_for_verify if purpose == "report" else None
         )
         vname = verifier.get("username") or username
+        purpose_label = _approval_purpose_audit_label(purpose, report_type_for_verify)
+        role_label = _display_role_label(verifier.get("role") or verifier_role) or "--"
         _audit_event(
             action="Approval verification",
             outcome="success",
             entity_type="verification",
             entity_name=purpose,
-            details="Verification token issued | issued by User ID: {}".format(vname or "--"),
+            details="{} | issued by User ID: {} ({})".format(
+                purpose_label,
+                vname or "--",
+                role_label,
+            ),
             target_user=vname,
-            signature={"mode": method, "username": vname, "role": verifier_role},
-            extra={"purpose": purpose, "method": method},
+            actor_user=vname,
+            actor_role=(verifier.get("role") or verifier_role or "").strip() or "--",
+            signature={"mode": method, "username": vname, "role": verifier.get("role") or verifier_role},
+            extra={"purpose": purpose, "purposeLabel": purpose_label, "method": method, "reportType": report_type_for_verify},
         )
         return jsonify(
             {
@@ -4741,11 +4800,31 @@ def _audit_entry_should_omit(entry: dict) -> bool:
 
 def _prepare_audit_entries_for_display(entries):
     out = []
+    approval_user_actions = {
+        "Approval verification",
+        "Test report approved",
+        "Validation report approved",
+        "Calibration report approved",
+        "Recipe approved",
+        "Recipe enable approved",
+        "Recipe disable approved",
+        "Export approved",
+    }
     for entry in entries or []:
         if _audit_entry_should_omit(entry):
             continue
         row = dict(entry)
-        row["role"] = _display_role_label(row.get("role"))
+        action = str(row.get("action") or "").strip()
+        sig_user = str(row.get("signatureUser") or "").strip()
+        sig_role = str(row.get("signatureRole") or "").strip()
+        if action in approval_user_actions and sig_user:
+            row["user"] = sig_user
+        if sig_role and sig_role not in ("--",) and (
+            action in approval_user_actions or action.endswith("approved")
+        ):
+            row["role"] = _display_role_label(sig_role)
+        else:
+            row["role"] = _display_role_label(row.get("role"))
         row["details"] = _humanize_audit_details(row.get("action"), row.get("details"))
         row["outcome"] = row.get("outcome") or ""
         out.append(row)
@@ -6848,28 +6927,38 @@ def dt_calibration():
         )
     if result.get("ok") and result.get("report") and data.get("saveReport", True):
         try:
-            report = dict(result["report"])
-            report["reportApprovalStatus"] = "pending"
-            for k in (
-                "approvalPassFail",
-                "approvalRemarks",
-                "approvedBy",
-                "approvedAt",
-                "approvedByUsername",
-            ):
-                report.pop(k, None)
-            report = _stamp_report_operator(report)
+            report = _finalize_calibration_report_from_verifier(result["report"], verified)
             saved_id = data_service.save_report(report)
             saved = data_service.get_report(saved_id) or report
             result["savedReport"] = saved
             result["report"] = saved
+            try:
+                print_service.save_report_text_files(saved, saved_id, REPORTS_DIR)
+            except Exception:
+                app.logger.exception("calibration report text files failed")
+            try:
+                _generate_report_pdf_file(int(saved_id), write_audit=True)
+            except Exception:
+                app.logger.exception("calibration report PDF failed")
+            by_line = saved.get("approvedBy") or _verifier_approved_by_line(verified)
+            vname = (verified or {}).get("username") or ""
+            vrole = (verified or {}).get("role") or ""
             _audit_event(
-                action="Report saved",
+                action="Calibration report approved",
                 outcome="success",
-                details="Pending calibration report",
+                details="Calibration report | approved by {} | report id {}".format(
+                    by_line, saved_id
+                ),
                 entity_type="report",
                 entity_id=str(saved_id or ""),
                 entity_name=(saved or {}).get("name") or "",
+                actor_user=vname or None,
+                actor_role=vrole or None,
+                signature={
+                    "mode": "approval-verify",
+                    "username": vname,
+                    "role": vrole,
+                },
             )
         except Exception as e:
             app.logger.exception("save calibration report failed")

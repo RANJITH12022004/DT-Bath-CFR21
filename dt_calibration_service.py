@@ -32,6 +32,17 @@ def init(logger=None, audit_fn: Optional[Callable] = None) -> None:
     _audit_fn = audit_fn
 
 
+def _verifier_audit_line(verifier) -> str:
+    verifier = verifier or {}
+    name = str(verifier.get("name") or verifier.get("username") or "").strip()
+    role = str(verifier.get("role") or "").strip()
+    if role.lower() == "supervisor":
+        role = "Reviewer"
+    if name and role:
+        return "{} ({})".format(name, role)
+    return name
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -195,7 +206,7 @@ def calibrate_bath(
         _audit(
             "Calibration performed",
             f"Shared bath | {details}"
-            + (f" | verified by {payload.get('verifierUsername')}" if payload.get("verifierUsername") else ""),
+            + (f" | verified by {_verifier_audit_line(verifier)}" if _verifier_audit_line(verifier) else ""),
             entity_type="calibration",
             entity_id="bath",
             outcome="success",
@@ -299,7 +310,7 @@ def calibrate(
     _audit(
         "Calibration performed",
         f"Shared bath | sensor {sensor_id} | before {before}°C → after {after}°C | measured {temperature}°C"
-        + (f" | verified by {payload.get('verifierUsername')}" if payload.get("verifierUsername") else ""),
+        + (f" | verified by {_verifier_audit_line(verifier)}" if _verifier_audit_line(verifier) else ""),
         entity_type="calibration",
         entity_id=sensor_id,
         outcome="success",

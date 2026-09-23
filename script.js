@@ -2101,6 +2101,8 @@ function refreshShellAccessVisibility() {
         var ok = true;
         if (page === 'home') {
             ok = true;
+        } else if (page === 'reports' && typeof canOpenReportsShell === 'function') {
+            ok = !!u && canOpenReportsShell(u);
         } else if (u && typeof canAccess === 'function') {
             ok = canAccess(u, feat);
         } else if (!u) {
@@ -2118,6 +2120,7 @@ function refreshShellAccessVisibility() {
     if (mp) mp.style.display = u && typeof canAccess === 'function' && canAccess(u, 'user-manage') ? '' : 'none';
     if (am) am.style.display = u && typeof canAccess === 'function' && canAccess(u, 'user-add') ? '' : 'none';
     if (typeof refreshReportsActionButtons === 'function') refreshReportsActionButtons();
+    if (typeof initAuditReportsVisibility === 'function') initAuditReportsVisibility();
     if (typeof updateSettingsVisibility === 'function') updateSettingsVisibility();
 }
 
@@ -2243,6 +2246,9 @@ function goToPage(pageName) {
         if (backBtnEl) backBtnEl.style.display = 'block';
     }
     if (pageName === 'reports' && typeof loadReports === 'function') {
+        if (typeof isAuditOnlyReportsUser === 'function' && isAuditOnlyReportsUser()) {
+            currentReportFilter = 'audit';
+        }
         if (typeof refreshReportsActionButtons === 'function') refreshReportsActionButtons();
         setTimeout(function () { loadReports(currentReportFilter || null); }, 50);
     }
@@ -3571,7 +3577,7 @@ function _populateAuditFilterDropdowns(userEl, actionEl, fullList) {
         'Reports exported', 'Reports downloaded', 'Export approved',
         'Factory settings changed', 'Power interruption', 'Power interruption logout',
         'Added new user', 'Password changed', 'Password reset',
-        'User update', 'Profile updated',
+        'User update', 'Profile updated', 'Approval verification',
         'User disable', 'User disabled', 'User unlock', 'User enable', 'User restrict',
         'Biometric enroll', 'Biometric template delete'
     ];
@@ -3619,11 +3625,22 @@ function _renderAuditLogRows(tbody, list) {
     list.forEach(function (entry) {
         var row = document.createElement('tr');
         var outcomeLabel = _formatAuditOutcome(entry.outcome);
+        var actionName = String(entry.action || '');
+        var userVal = entry.user || '--';
+        if (actionName === 'Approval verification' && entry.signatureUser) {
+            userVal = entry.signatureUser;
+        }
+        var roleVal = entry.role || '--';
+        if (entry.signatureRole && (
+            actionName === 'Approval verification' || /approved$/i.test(actionName)
+        )) {
+            roleVal = entry.signatureRole;
+        }
         row.innerHTML =
             '<td>' + _escapeAuditCell(entry.dateTime || '') + '</td>' +
-            '<td>' + _escapeAuditCell(entry.user || '--') + '</td>' +
-            '<td>' + _escapeAuditCell(displayRoleLabel(entry.role || '--')) + '</td>' +
-            '<td>' + _escapeAuditCell(entry.action || '') + '</td>' +
+            '<td>' + _escapeAuditCell(userVal) + '</td>' +
+            '<td>' + _escapeAuditCell(displayRoleLabel(roleVal)) + '</td>' +
+            '<td>' + _escapeAuditCell(actionName) + '</td>' +
             '<td>' + _escapeAuditCell(outcomeLabel || (String(entry.outcome || '').toLowerCase() === 'success' ? 'OK' : '--')) + '</td>' +
             '<td>' + _escapeAuditCell(entry.details || '') + '</td>';
         tbody.appendChild(row);
@@ -5490,6 +5507,9 @@ function enableMember(id) {
 var _auditLogViewLoggedForSession = false;
 
 function loadReports(filterType) {
+    if (!filterType && typeof isAuditOnlyReportsUser === 'function' && isAuditOnlyReportsUser()) {
+        filterType = 'audit';
+    }
     currentReportFilter = filterType || null;
     var tbody = document.getElementById('reports-table-body');
     var theadRow = document.getElementById('reports-thead-row');
@@ -5624,9 +5644,30 @@ function userCanOpenReportPreview(userObj) {
     return canAccess(u, 'reports-view')
         || canAccess(u, 'recipe-test')
         || canAccess(u, 'validation-test')
+        || canAccess(u, 'calibration-menu')
         || canAccess(u, 'test-report-approve')
         || canAccess(u, 'validation-report-approve')
         || canAccess(u, 'calibration-report-approve');
+}
+
+/** Reports sidebar/shell: reports-view OR audit-view (audit-only users land on Audit Trails). */
+function canOpenReportsShell(userObj) {
+    var u = userObj || window.currentUser;
+    if (!u) return false;
+    if (isFactorySessionUser(u)) return true;
+    if (typeof canAccess !== 'function') return false;
+    return canAccess(u, 'reports-view') || canAccess(u, 'audit-view') ||
+        (typeof userHasInternalKey === 'function' && (
+            userHasInternalKey(u, 'reports-view') || userHasInternalKey(u, 'audit-view')
+        ));
+}
+
+function isAuditOnlyReportsUser(userObj) {
+    var u = userObj || window.currentUser;
+    if (!u || isFactorySessionUser(u)) return false;
+    var hasAudit = typeof canViewAuditLog === 'function' && canViewAuditLog();
+    var hasReports = typeof userCanViewReports === 'function' && userCanViewReports(u);
+    return !!(hasAudit && !hasReports);
 }
 
 function userCanRunValidation(userObj) {
@@ -5688,8 +5729,19 @@ function canViewAuditLog() {
 function initAuditReportsVisibility() {
     var auditBtn = document.querySelector('.reports-filter-audit');
     if (!auditBtn) return;
-    // Must show and hide per session — a prior user without audit-view leaves display:none inline.
+    // Must show again after a prior non-audit user hid the button in this SPA session.
     auditBtn.style.display = (typeof canViewAuditLog === 'function' && canViewAuditLog()) ? '' : 'none';
+    var auditOnly = typeof isAuditOnlyReportsUser === 'function' && isAuditOnlyReportsUser();
+    ['test', 'validation', 'recipes'].forEach(function (kind) {
+        var btn = document.querySelector('.reports-filter-' + kind);
+        if (btn) btn.style.display = auditOnly ? 'none' : '';
+    });
+    var expBtn = document.querySelector('.reports-filter-export');
+    if (expBtn && auditOnly) expBtn.style.display = 'none';
+    if (auditOnly) {
+        auditBtn.style.display = '';
+        if (currentReportFilter !== 'audit') currentReportFilter = 'audit';
+    }
 }
 
 function filterReports(type) {

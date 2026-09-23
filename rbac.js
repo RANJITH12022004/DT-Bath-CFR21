@@ -363,6 +363,15 @@ function checkNavigationAccess(screenId) {
       return userCanOpenReportPreview(userObj);
     }
   }
+  // Audit-only profiles may open the Reports shell (Audit Trails filter only).
+  if (screenId === 'reports') {
+    if (typeof canOpenReportsShell === 'function') {
+      return canOpenReportsShell(userObj);
+    }
+    if (userObj && typeof userHasInternalKey === 'function') {
+      return userHasInternalKey(userObj, 'reports-view') || userHasInternalKey(userObj, 'audit-view');
+    }
+  }
   var featureKey = SCREEN_FEATURE_MAP[screenId] || screenId;
   if (screenId === 'manage-recipes') {
     var mode = (typeof window !== 'undefined' && window.recipeListMode) ? window.recipeListMode : 'manage';

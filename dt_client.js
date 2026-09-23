@@ -2980,11 +2980,11 @@
       }).then(function (res) {
         DT.calSessionActive = false;
         syncDtNavLock();
-        toast('Calibrated shared bath (IR+EXT1+EXT2) to ' + temp.toFixed(1) + '°C — report pending approval', 'success');
+        toast('Calibrated shared bath (IR+EXT1+EXT2) to ' + temp.toFixed(1) + '°C', 'success');
         var rid = (res.report && res.report.id) || res.reportId ||
           (res.savedReport && res.savedReport.id);
         if (rid && typeof openReportPreview === 'function') {
-          openReportPreview(rid, { setGate: true });
+          openReportPreview(rid);
         } else {
           go('validate');
         }
