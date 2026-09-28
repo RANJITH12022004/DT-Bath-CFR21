@@ -1,0 +1,10 @@
+[Unit]
+Description=Check internal kiosk USB stays read-write
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target

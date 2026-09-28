@@ -63,15 +63,62 @@ _resolve_src() {
   return 1
 }
 
+# VFAT's kernel default is errors=remount-ro. After a power cut the dirty bit
+# is set; the next FAT error then flips the whole stick read-only and login
+# / reports writes fail. errors=continue keeps it writable. fsck.vfat -a
+# (once per boot, volume unmounted) clears the dirty bit without wiping files.
+_VFAT_OPTS="rw,uid=1000,gid=1000,fmask=0133,dmask=0022,flush,errors=continue"
+_FSCK_STAMP="/run/kiosk-internal-usb-fsck.done"
+
+_fstype_of() {
+  blkid -o value -s TYPE "$1" 2>/dev/null || true
+}
+
+_mount_opts_ok() {
+  local src fst
+  src="$(_resolve_src)" || return 0
+  fst="$(_fstype_of "$src")"
+  case "$fst" in
+    vfat|fat|fat32)
+      findmnt -n -o OPTIONS --target "$INTERNAL_USB_PATH" 2>/dev/null | grep -q 'errors=continue'
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+_umount_for_fsck() {
+  _run_root sync 2>/dev/null || true
+  _run_root umount "$INTERNAL_USB_PATH" 2>/dev/null || \
+    _run_root umount -l "$INTERNAL_USB_PATH" 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null || return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+_fsck_vfat_unmounted() {
+  local src="$1" rc=0
+  [[ -b "$src" ]] || return 1
+  mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null && return 1
+  echo "kiosk_mount_internal_usb: fsck.vfat -a $src" >&2
+  _run_root fsck.vfat -a "$src"
+  rc=$?
+  # dosfsck: 0 clean, 1 errors corrected
+  [[ $rc -eq 0 || $rc -eq 1 ]]
+}
+
 _direct_mount() {
   local src fst
   src="$(_resolve_src)" || return 1
   mkdir -p "$INTERNAL_USB_PATH" 2>/dev/null || true
-  fst="$(blkid -o value -s TYPE "$src" 2>/dev/null || true)"
+  fst="$(_fstype_of "$src")"
   case "$fst" in
     vfat|fat|fat32)
-      _run_root mount -t vfat -o "rw,uid=1000,gid=1000,fmask=0133,dmask=0022,flush" \
-        "$src" "$INTERNAL_USB_PATH"
+      _run_root mount -t vfat -o "$_VFAT_OPTS" "$src" "$INTERNAL_USB_PATH"
       ;;
     *)
       _run_root mount "$src" "$INTERNAL_USB_PATH" || \
@@ -80,13 +127,46 @@ _direct_mount() {
   esac
 }
 
+# Once per boot, unmount + repair a VFAT stick so a dirty power-off cannot
+# leave it read-only. Skipped on later service restarts after a successful fsck.
+_ensure_vfat_clean() {
+  local src fst
+  src="$(_resolve_src)" || return 1
+  fst="$(_fstype_of "$src")"
+  case "$fst" in
+    vfat|fat|fat32) ;;
+    *) return 0 ;;
+  esac
+  if [[ -f "$_FSCK_STAMP" ]] && mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null \
+      && _writable && _mount_opts_ok; then
+    return 0
+  fi
+  if mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null; then
+    echo "kiosk_mount_internal_usb: unmounting $src for fsck" >&2
+    _umount_for_fsck || {
+      echo "kiosk_mount_internal_usb: WARN could not unmount; skipping fsck" >&2
+      return 1
+    }
+  fi
+  _fsck_vfat_unmounted "$src" || echo "kiosk_mount_internal_usb: WARN fsck.vfat failed" >&2
+  _direct_mount || return 1
+  if _writable && _mount_opts_ok; then
+    _run_root touch "$_FSCK_STAMP" 2>/dev/null || touch "$_FSCK_STAMP" 2>/dev/null || true
+  fi
+}
+
 _repair() {
   if [[ -x "$REPAIR_SCRIPT" ]]; then
     bash "$REPAIR_SCRIPT" || true
   fi
 }
 
-if mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null && _writable; then
+# Always settle VFAT once per boot (dirty bit from power loss) before the
+# "already writable" short-circuit. A tiny write can succeed on a dirty
+# volume and the kernel will remount-ro only on the next metadata error.
+_ensure_vfat_clean || true
+
+if mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null && _writable && _mount_opts_ok; then
   _ensure_dirs
   exit 0
 fi

@@ -90,7 +90,8 @@ _mount_usb() {
   fst="$(_fstype_of "$part")"
   case "$fst" in
     vfat|fat|fat32)
-      _run_root mount -t vfat -o "rw,uid=1000,gid=1000,fmask=0133,dmask=0022,errors=remount-ro,flush" \
+      # errors=continue: do not flip the stick read-only after a power-cut FAT error.
+      _run_root mount -t vfat -o "rw,uid=1000,gid=1000,fmask=0133,dmask=0022,flush,errors=continue" \
         "$part" "$INTERNAL_USB_PATH" 2>/dev/null && return 0
       ;;
     ext2|ext3|ext4|*)
@@ -144,22 +145,40 @@ repair() {
 
   if mountpoint -q "$INTERNAL_USB_PATH" 2>/dev/null; then
     log "attempt remount,rw"
-    _run_root mount -o remount,rw "$INTERNAL_USB_PATH" 2>/dev/null || true
-    if _writable; then
+    _run_root mount -o remount,rw,errors=continue "$INTERNAL_USB_PATH" 2>/dev/null || \
+      _run_root mount -o remount,rw "$INTERNAL_USB_PATH" 2>/dev/null || true
+    local opts fst_now
+    opts="$(findmnt -n -o OPTIONS --target "$INTERNAL_USB_PATH" 2>/dev/null || true)"
+    fst_now="$(findmnt -n -o FSTYPE --target "$INTERNAL_USB_PATH" 2>/dev/null || true)"
+    if _writable && [[ "$fst_now" != vfat && "$fst_now" != fat && "$fst_now" != fat32 || "$opts" == *errors=continue* ]]; then
       _ensure_dirs
       _clean_orphan_tmps
       log "remount,rw ok"
       return 0
     fi
+    log "still need full fsck (writable=${?} fst=$fst_now opts=$opts)"
   fi
 
   log "umount + fsck + remount"
+  # Pause the API only for the unmount. systemctl stop does not fight Restart=always.
+  local writers_stopped=0
+  if systemctl is-active --quiet kiosk-bridge.service 2>/dev/null; then
+    log "pausing kiosk-bridge so the stick can be unmounted for fsck"
+    _run_root systemctl stop kiosk-bridge.service || true
+    writers_stopped=1
+  fi
   _umount_usb || log "WARN umount incomplete (continuing)"
   _fsck_partition "$part" || log "WARN fsck failed"
   _mount_usb || {
     log "ERROR remount failed"
+    if [[ "$writers_stopped" -eq 1 ]]; then
+      _run_root systemctl start kiosk-bridge.service || true
+    fi
     return 1
   }
+  if [[ "$writers_stopped" -eq 1 ]]; then
+    _run_root systemctl start kiosk-bridge.service || true
+  fi
 
   if _writable; then
     _ensure_dirs

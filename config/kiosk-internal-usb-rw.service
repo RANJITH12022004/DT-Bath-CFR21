@@ -1,0 +1,13 @@
+[Unit]
+Description=Remount internal kiosk USB read-write if power loss left it read-only
+After=kiosk-internal-usb-mount.service
+ConditionPathIsMountPoint=/media/usb_internal
+
+[Service]
+Type=oneshot
+Environment=INTERNAL_USB_PATH=/media/usb_internal
+Environment=STORAGE_DIR=/media/usb_internal/storage
+Environment=REPORTS_DIR=/media/usb_internal/reports
+Environment=AUDIT_DB_DIR=/media/usb_internal/db
+Environment=INTERNAL_USB_PARTITION=/dev/sda1
+ExecStart=/bin/bash /opt/kiosk/scripts/kiosk_repair_internal_usb.sh

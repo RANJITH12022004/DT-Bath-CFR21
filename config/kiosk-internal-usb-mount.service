@@ -18,7 +18,7 @@ Environment=INTERNAL_USB_UUID=752a2820-c257-43cd-a2eb-fb52adca9fc2
 Environment=INTERNAL_USB_UUIDS=752a2820-c257-43cd-a2eb-fb52adca9fc2
 ExecStart=/bin/bash /opt/kiosk/scripts/kiosk_mount_internal_usb.sh
 ExecStop=/bin/bash /opt/kiosk/scripts/kiosk_repair_internal_usb.sh sync
-TimeoutStartSec=20
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target
