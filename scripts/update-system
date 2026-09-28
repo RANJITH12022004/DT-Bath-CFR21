@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Update /opt/kiosk to the latest DT-Bath-CFR21 main.
+# Always fetches that repository, even if this machine's other git remotes differ.
+#
+#   sudo update-system
+#   sudo update-server
+#   sudo update-latest
+#
+# Does not touch the internal USB stick (/media/usb_internal) or its reports,
+# members, or database. Local /opt/kiosk/storage is put back after the code update.
+# This machine's internal USB UUID is written back into service files.
+set -uo pipefail
+
+APP_ROOT="/opt/kiosk"
+REPO_SSH="git@github.com:RANJITH12022004/DT-Bath-CFR21.git"
+REPO_HTTPS="https://github.com/RANJITH12022004/DT-Bath-CFR21.git"
+BRANCH="main"
+
+say_ok() { echo "Successfully updated."; exit 0; }
+say_none() { echo "Nothing to update."; exit 0; }
+say_fail() { echo "Failed to update, try again."; exit 1; }
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run: sudo update-system" >&2
+  say_fail
+fi
+
+if [[ ! -d "$APP_ROOT/.git" ]]; then
+  echo "No git checkout at $APP_ROOT." >&2
+  say_fail
+fi
+
+cd "$APP_ROOT"
+
+# Never follow an interactive prompt (missing deploy key, password, etc.).
+export GIT_TERMINAL_PROMPT=0
+
+echo "Fetching ${REPO_HTTPS} (${BRANCH})..."
+# Public repo: HTTPS works when the command is run with sudo (root has no user SSH keys).
+if ! git fetch --prune "$REPO_HTTPS" "$BRANCH"; then
+  echo "HTTPS fetch failed, trying SSH..."
+  if ! git fetch --prune "$REPO_SSH" "$BRANCH"; then
+    echo "Could not reach ${REPO_HTTPS}." >&2
+    say_fail
+  fi
+fi
+
+REMOTE="$(git rev-parse FETCH_HEAD 2>/dev/null || true)"
+LOCAL="$(git rev-parse HEAD 2>/dev/null || true)"
+if [[ -z "$REMOTE" || -z "$LOCAL" ]]; then
+  echo "Could not read git versions." >&2
+  say_fail
+fi
+
+if [[ "$LOCAL" == "$REMOTE" ]]; then
+  say_none
+fi
+
+# Refuse to throw away commits that are not already on this GitHub main.
+if ! git merge-base --is-ancestor "$LOCAL" "$REMOTE"; then
+  echo "This machine has local commits that are not on ${REPO_HTTPS}." >&2
+  echo "Local:  ${LOCAL}" >&2
+  echo "GitHub: ${REMOTE}" >&2
+  say_fail
+fi
+
+capture_uuid() {
+  local f line uuid=""
+  for f in \
+    /etc/systemd/system/kiosk-bridge.service \
+    "$APP_ROOT/config/kiosk-bridge.service" \
+    "$APP_ROOT/kiosk-bridge.service"
+  do
+    [[ -f "$f" ]] || continue
+    line="$(grep -m1 '^Environment=INTERNAL_USB_UUID=' "$f" 2>/dev/null || true)"
+    uuid="${line#Environment=INTERNAL_USB_UUID=}"
+    uuid="${uuid// /}"
+    if [[ -n "$uuid" ]]; then
+      printf '%s' "$uuid"
+      return 0
+    fi
+  done
+  if mountpoint -q /media/usb_internal 2>/dev/null; then
+    uuid="$(findmnt -n -o UUID --target /media/usb_internal 2>/dev/null || true)"
+    uuid="${uuid// /}"
+    if [[ -n "$uuid" ]]; then
+      printf '%s' "$uuid"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+apply_uuid() {
+  local uuid="$1" f
+  [[ -n "$uuid" ]] || return 0
+  for f in \
+    "$APP_ROOT/config/kiosk-bridge.service" \
+    "$APP_ROOT/config/kiosk-internal-usb-mount.service" \
+    "$APP_ROOT/kiosk-bridge.service" \
+    /etc/systemd/system/kiosk-bridge.service \
+    /etc/systemd/system/kiosk-internal-usb-mount.service
+  do
+    [[ -f "$f" ]] || continue
+    sed -i -E "s/^Environment=INTERNAL_USB_UUIDS=.*/Environment=INTERNAL_USB_UUIDS=${uuid}/" "$f"
+    sed -i -E "s/^Environment=INTERNAL_USB_UUID=.*/Environment=INTERNAL_USB_UUID=${uuid}/" "$f"
+  done
+  for f in \
+    "$APP_ROOT/config/99-kiosk-internal-usb.rules" \
+    /etc/udev/rules.d/99-kiosk-internal-usb.rules
+  do
+    [[ -f "$f" ]] || continue
+    sed -i -E "s/ENV\\{ID_FS_UUID\\}==\"[^\"]+\"/ENV{ID_FS_UUID}==\"${uuid}\"/" "$f"
+  done
+}
+
+UUID_KEEP="$(capture_uuid || true)"
+STORAGE_KEEP="$(mktemp -d /var/tmp/kiosk-storage-keep.XXXXXX)"
+cleanup() { rm -rf "$STORAGE_KEEP"; }
+trap cleanup EXIT
+
+if [[ -d "$APP_ROOT/storage" ]]; then
+  cp -a "$APP_ROOT/storage/." "$STORAGE_KEEP/" || say_fail
+fi
+
+echo "Updating ${LOCAL:0:7} -> ${REMOTE:0:7}..."
+if ! git reset --hard "$REMOTE"; then
+  echo "Could not switch the checkout to GitHub main." >&2
+  say_fail
+fi
+
+if [[ -d "$STORAGE_KEEP" ]]; then
+  mkdir -p "$APP_ROOT/storage"
+  cp -a "$STORAGE_KEEP/." "$APP_ROOT/storage/" || say_fail
+fi
+
+if [[ -n "$UUID_KEEP" ]]; then
+  apply_uuid "$UUID_KEEP"
+fi
+
+install_unit() {
+  local src="$1" dest="$2"
+  [[ -f "$src" ]] || return 0
+  cp -a "$src" "$dest"
+}
+
+install_unit "$APP_ROOT/config/kiosk-bridge.service" /etc/systemd/system/kiosk-bridge.service
+install_unit "$APP_ROOT/config/kiosk-internal-usb-mount.service" /etc/systemd/system/kiosk-internal-usb-mount.service
+install_unit "$APP_ROOT/config/99-kiosk-internal-usb.rules" /etc/udev/rules.d/99-kiosk-internal-usb.rules
+install_unit "$APP_ROOT/config/kiosk-internal-usb-rw.service" /etc/systemd/system/kiosk-internal-usb-rw.service
+install_unit "$APP_ROOT/config/kiosk-internal-usb-rw.timer" /etc/systemd/system/kiosk-internal-usb-rw.timer
+if [[ -n "$UUID_KEEP" ]]; then
+  apply_uuid "$UUID_KEEP"
+fi
+
+if [[ -x "$APP_ROOT/scripts/mount-internal-usb" ]]; then
+  install -m 755 "$APP_ROOT/scripts/mount-internal-usb" /usr/local/sbin/mount-internal-usb
+fi
+install -m 755 "$APP_ROOT/scripts/update-system" /usr/local/sbin/update-system
+ln -sfn /usr/local/sbin/update-system /usr/local/sbin/update-server
+ln -sfn /usr/local/sbin/update-system /usr/local/sbin/update-latest
+
+systemctl daemon-reload || say_fail
+if [[ -f /etc/systemd/system/kiosk-internal-usb-rw.timer ]]; then
+  systemctl enable kiosk-internal-usb-rw.timer >/dev/null 2>&1 || true
+  systemctl start kiosk-internal-usb-rw.timer >/dev/null 2>&1 || true
+fi
+udevadm control --reload-rules >/dev/null 2>&1 || true
+
+# Load the new code. systemctl restart can hang on Restart=always; recover if it does.
+sync
+systemctl restart kiosk-bridge.service &
+RPID=$!
+ready=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  if ! kill -0 "$RPID" 2>/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$ready" -ne 1 ]]; then
+  echo "kiosk-bridge restart was slow; recovering the service..." >&2
+  MAINPID="$(systemctl show -p MainPID --value kiosk-bridge.service || true)"
+  if [[ -n "${MAINPID:-}" && "$MAINPID" != "0" ]]; then
+    kill -9 "$MAINPID" 2>/dev/null || true
+  fi
+  systemctl kill kiosk-bridge.service >/dev/null 2>&1 || true
+  systemctl reset-failed kiosk-bridge.service >/dev/null 2>&1 || true
+  systemctl start kiosk-bridge.service || say_fail
+else
+  wait "$RPID" || say_fail
+fi
+
+sleep 2
+if ! systemctl is-active --quiet kiosk-bridge.service; then
+  echo "kiosk-bridge did not stay running." >&2
+  say_fail
+fi
+if ! curl -sf --max-time 5 http://127.0.0.1:5000/api/health >/dev/null; then
+  echo "kiosk API health check failed." >&2
+  say_fail
+fi
+
+echo "Now at $(git rev-parse --short HEAD)."
+say_ok
