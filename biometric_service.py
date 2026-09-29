@@ -26,10 +26,13 @@ _DEFAULT_PASSWORD = 0x00000000
 
 _CMD_GEN_IMAGE = 0x01
 _CMD_IMAGE_2_TZ = 0x02
+_CMD_MATCH = 0x03
 _CMD_SEARCH = 0x04
 _CMD_REG_MODEL = 0x05
 _CMD_STORE = 0x06
+_CMD_LOAD_CHAR = 0x07
 _CMD_DELETE = 0x0C
+_CMD_READ_INDEX = 0x1F
 _CMD_EMPTY = 0x0D
 _CMD_TEMPLATE_COUNT = 0x1D
 _CMD_VERIFY_PASSWORD = 0x13
@@ -384,6 +387,70 @@ def identify(timeout_sec=10.0):
         return {"ok": True, "templateId": template_id, "confidence": confidence}
     finally:
         _idle_sensor_led()
+
+
+def finger_matches_template(template_id):
+    """1:1 check of the finger already in CharBuffer1 against a stored template.
+
+    Search can return an old unused slot that scores slightly higher than the
+    profile's slot. Load that profile's template into CharBuffer2 and compare.
+    """
+    try:
+        template_id = int(template_id)
+    except (TypeError, ValueError):
+        return False
+    if template_id <= 0 or template_id > 1000:
+        return False
+    loaded = _exec(bytes([_CMD_LOAD_CHAR, 0x02]) + template_id.to_bytes(2, "big"), timeout_sec=2.0)
+    if not loaded.get("ok"):
+        return False
+    matched = _exec(bytes([_CMD_MATCH]), timeout_sec=2.0)
+    return bool(matched.get("ok"))
+
+
+def list_template_ids(max_pages=4):
+    """Template slot numbers currently stored on the sensor."""
+    ids = []
+    for page in range(max_pages):
+        res = _exec(bytes([_CMD_READ_INDEX, page]), timeout_sec=2.0)
+        if not res.get("ok"):
+            break
+        bitmap = res.get("payload", b"")[1:33]
+        if not bitmap:
+            break
+        for i, byte in enumerate(bitmap):
+            if not byte:
+                continue
+            for bit in range(8):
+                if byte & (1 << bit):
+                    ids.append(page * 256 + i * 8 + bit)
+    return ids
+
+
+def delete_unlinked_templates(keep_ids):
+    """Remove sensor slots that are not attached to a member.
+
+    Refuses to delete anything when keep_ids is empty, so a missing members
+    file cannot wipe every enrolled finger.
+    """
+    keep = set()
+    for raw in keep_ids or []:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid > 0:
+            keep.add(tid)
+    if not keep:
+        return {"ok": False, "error": "No linked templates to keep", "removed": []}
+    removed = []
+    for tid in list_template_ids():
+        if tid in keep or tid <= 0:
+            continue
+        result = delete_template(tid)
+        if result.get("ok"):
+            removed.append(tid)
+    return {"ok": True, "removed": removed}
 
 
 def delete_template(template_id):

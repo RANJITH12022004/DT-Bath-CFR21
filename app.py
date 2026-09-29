@@ -3700,6 +3700,66 @@ def mandatory_password_reset():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _linked_fingerprint_ids():
+    ids = []
+    for member in data_service.list_members() or []:
+        raw = member.get("fingerprintTemplateId")
+        if raw is None:
+            continue
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid > 0:
+            ids.append(tid)
+    return ids
+
+
+def _drop_unlinked_fingerprint_templates():
+    """Drop sensor slots left behind after a failed enroll or a wiped profile.
+
+    Only runs when at least one profile still has a stored template, so an
+    empty members file cannot erase every finger on the sensor.
+    """
+    keep = _linked_fingerprint_ids()
+    if not keep:
+        return
+    try:
+        biometric_service.delete_unlinked_templates(keep)
+    except Exception:
+        app.logger.exception("Failed to delete unlinked fingerprint templates")
+
+
+def _member_for_scanned_finger(search_template_id):
+    """Map a sensor search hit to a profile.
+
+    The sensor returns one best-scoring slot. An older unused slot of the same
+    finger can win that score and is not stored on the account, which produced
+    "Fingerprint is not linked to any member account" even after a successful enroll.
+    If that slot is unlinked, compare the same scan to each profile's template.
+    """
+    member = data_service.get_member_by_fingerprint_template(search_template_id)
+    if member:
+        return member, search_template_id
+    scanned = None
+    try:
+        scanned = int(search_template_id)
+    except (TypeError, ValueError):
+        scanned = None
+    for member in data_service.list_members() or []:
+        raw = member.get("fingerprintTemplateId")
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid == scanned:
+            continue
+        if biometric_service.finger_matches_template(tid):
+            _drop_unlinked_fingerprint_templates()
+            return member, tid
+    return None, search_template_id
+
+
 @app.route("/api/data/auth/login-biometric", methods=["POST"])
 def login_biometric():
     try:
@@ -3714,7 +3774,7 @@ def login_biometric():
             return jsonify({"error": identified.get("error") or "Fingerprint not recognized"}), 401
 
         template_id = identified.get("templateId")
-        member = data_service.get_member_by_fingerprint_template(template_id)
+        member, template_id = _member_for_scanned_finger(template_id)
         if not member:
             return jsonify({"error": "Fingerprint is not linked to any member account"}), 404
 
@@ -4003,7 +4063,7 @@ def approval_verify():
                 )
                 return jsonify({"ok": False, "error": identified.get("error") or "Fingerprint not recognized"}), 401
             template_id = identified.get("templateId")
-            member = data_service.get_member_by_fingerprint_template(template_id)
+            member, template_id = _member_for_scanned_finger(template_id)
             if not member:
                 _audit_event(
                     action="Approval verification",
@@ -7020,6 +7080,7 @@ def biometric_enroll():
         member["biometricEnrolledAt"] = int(time.time())
         member["biometricEnabled"] = True
         data_service.save_member(member)
+        _drop_unlinked_fingerprint_templates()
         _audit_event(
             action="Biometric enroll",
             outcome="success",
@@ -7145,6 +7206,7 @@ def biometric_enroll_capture():
         member["biometricEnrolledAt"] = int(time.time())
         member["biometricEnabled"] = True
         data_service.save_member(member)
+        _drop_unlinked_fingerprint_templates()
         _audit_event(
             action="Biometric enroll",
             outcome="success",
