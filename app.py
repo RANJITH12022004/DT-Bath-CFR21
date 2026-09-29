@@ -5501,6 +5501,8 @@ def _generate_report_pdf_file(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         pdf_generator.render_html_to_pdf(html, out_path)
         ok = out_path.exists() and out_path.stat().st_size > 0
+        if ok:
+            data_service.preserve_report_file(out_path)
         if ok and write_audit:
             _audit_report_pdf_generated(report_id, report)
         return ok

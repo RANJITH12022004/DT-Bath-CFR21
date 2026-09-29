@@ -1982,8 +1982,16 @@ def save_report_text_files(report_data: Dict[str, Any], report_id: int, reports_
         # Stored text matches preview: no Printed/Exported stamp (stamped at live print/export).
         text_48 = _format_report_text(report_data, width=THERMAL_WIDTH).rstrip("\n") + _thermal_trailing_feed()
         text_80 = format_for_a4_printer(report_data, include_printed_timestamp=False).rstrip() + "\r\n\x0c"
-        (reports_dir / f"report_{report_id}_a4.txt").write_text(text_80, encoding="utf-8")
-        (reports_dir / f"report_{report_id}_thermal.txt").write_text(text_48, encoding="utf-8")
+        a4_path = reports_dir / f"report_{report_id}_a4.txt"
+        thermal_path = reports_dir / f"report_{report_id}_thermal.txt"
+        a4_path.write_text(text_80, encoding="utf-8")
+        thermal_path.write_text(text_48, encoding="utf-8")
+        try:
+            import data_service
+            data_service.preserve_report_file(a4_path)
+            data_service.preserve_report_file(thermal_path)
+        except Exception:
+            pass
     except Exception as e:
         _log.warning("save_report_text_files failed: %s", e)
 

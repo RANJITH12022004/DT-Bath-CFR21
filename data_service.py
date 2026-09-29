@@ -122,6 +122,8 @@ def init(config):
     _reports_dir = pathlib.Path(_config.get("REPORTS_DIR", "./reports"))
     _storage_dir.mkdir(parents=True, exist_ok=True)
     _reports_dir.mkdir(parents=True, exist_ok=True)
+    _restore_critical_json_from_durable()
+    restore_report_files()
     _sync_factory_settings_storage()
 
 
@@ -241,14 +243,28 @@ def _get_storage_path(filename: str) -> pathlib.Path:
 def _load_json_file(filepath: pathlib.Path, default=None):
     if default is None:
         default = []
-    if not filepath.exists():
-        return default
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if data is not None else default
-    except Exception:
-        return default
+    path = pathlib.Path(filepath)
+    if path.name in _DURABLE_JSON_NAMES and path.parent != _DURABLE_DIR:
+        _restore_json_from_durable(path.name)
+        if _is_usb_pending(path.name):
+            mirrored = _json_usable(_DURABLE_DIR / path.name)
+            if mirrored is not None:
+                return mirrored
+    data = _json_usable(path)
+    if data is not None:
+        return data
+    if path.name in _DURABLE_JSON_NAMES and path.parent != _DURABLE_DIR:
+        mirrored = _json_usable(_DURABLE_DIR / path.name)
+        if mirrored is not None:
+            return mirrored
+    return default
+
+
+# members.json lives on the internal VFAT stick. A rename there is not crash-safe:
+# after power loss the directory entry often comes back with size 0, so the
+# fingerprint template id is gone while the sensor still has the finger.
+# Keep a second copy on the ext4 root filesystem and restore it if the stick copy is empty.
+_DURABLE_DIR = pathlib.Path("/var/lib/kiosk/durable")
 
 
 def _fsync_dir(dirpath: pathlib.Path) -> None:
@@ -292,17 +308,23 @@ def _ensure_storage_dirs() -> None:
             pass
 
 
-def _save_json_file(filepath: pathlib.Path, data):
-    """Atomic JSON write with fsync (required on USB for mid-test power-cut recovery).
+def _json_usable(path: pathlib.Path):
+    """Parsed JSON, or None when the file is missing, empty, or corrupt.
 
-    Durability is the same as the power-cut checkpoint work (commit ff2dd5e):
-    write+fsync a temp file in the *same* directory, ``os.replace`` onto the
-    target (atomic on ext4), then fsync the directory.
-
-    Unique temp names + a per-path lock prevent Flask worker threads from
-    sharing ``file.json.tmp`` (ENOENT on replace) and from clobbering
-    in-flight ``test_run.json`` / ``recipes.json`` / ``reports.json`` writes.
+    A 0-byte members.json is what VFAT leaves after a power cut. That must not
+    be treated as a real empty user list.
     """
+    try:
+        if not path.exists() or path.stat().st_size <= 0:
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _atomic_write_json(filepath: pathlib.Path, data) -> None:
+    """Write JSON via temp file + replace + directory fsync."""
     filepath = pathlib.Path(filepath)
     parent = filepath.parent
     lock = _json_write_lock_for(filepath)
@@ -346,7 +368,6 @@ def _save_json_file(filepath: pathlib.Path, data):
                         os.close(fd)
                     except OSError:
                         pass
-                # Never unlink after a successful replace — that would delete the real file.
                 if tmp_path is not None and not replaced:
                     try:
                         tmp_path.unlink()
@@ -355,6 +376,250 @@ def _save_json_file(filepath: pathlib.Path, data):
         if last_err is not None:
             raise last_err
         raise OSError("Failed to write {}".format(filepath))
+
+
+# These files are how reports, in-progress tests, and user links survive a power cut.
+# On VFAT a crashed rename comes back as 0 bytes, so each one also lives on the SD card.
+_DURABLE_JSON_NAMES = (
+    "members.json",
+    "reports.json",
+    "recipes.json",
+    "disabled_recipes.json",
+    "factorySettings.json",
+    "test_run.json",
+    "validation_run.json",
+)
+_PENDING_PATH = _DURABLE_DIR / "usb_pending.json"
+
+
+def _save_durable_json(filename: str, data) -> None:
+    """Copy one storage JSON file onto the SD card (ext4)."""
+    _atomic_write_json(_DURABLE_DIR / filename, data)
+
+
+def _clear_durable_json(filename: str) -> None:
+    path = _DURABLE_DIR / filename
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _json_canon(data) -> str:
+    return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _dir_writable(directory: pathlib.Path) -> bool:
+    """True when a file can be created in this directory (stick is read-write)."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".kiosk_rw_probe"
+        fd = os.open(str(probe), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, b"1")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.unlink(str(probe))
+        return True
+    except OSError:
+        return False
+
+
+def _pending_names() -> set:
+    data = _json_usable(_PENDING_PATH)
+    if isinstance(data, list):
+        return {str(item) for item in data}
+    return set()
+
+
+def _write_pending(names: set) -> None:
+    _atomic_write_json(_PENDING_PATH, sorted(names))
+
+
+def _is_usb_pending(filename: str) -> bool:
+    return filename in _pending_names()
+
+
+def _mark_usb_pending(filename: str) -> None:
+    names = _pending_names()
+    names.add(filename)
+    try:
+        _write_pending(names)
+    except OSError:
+        pass
+
+
+def _clear_usb_pending(filename: str) -> None:
+    names = _pending_names()
+    if filename not in names:
+        return
+    names.discard(filename)
+    try:
+        _write_pending(names)
+    except OSError:
+        pass
+
+
+def _usb_matches(path: pathlib.Path, data) -> bool:
+    got = _json_usable(path)
+    if got is None:
+        return False
+    return _json_canon(got) == _json_canon(data)
+
+
+def _restore_json_from_durable(filename: str) -> None:
+    """Put the SD-card copy onto the stick when the stick copy is empty or unverified.
+
+    The SD-card copy stays. It is the copy that survives a hard power cut.
+    """
+    if _storage_dir is None:
+        return
+    usb = pathlib.Path(_storage_dir) / filename
+    mirror = _DURABLE_DIR / filename
+    usb_data = _json_usable(usb)
+    mirror_data = _json_usable(mirror)
+    pending = _is_usb_pending(filename)
+    if mirror_data is not None and (usb_data is None or pending):
+        if _dir_writable(usb.parent):
+            try:
+                _atomic_write_json(usb, mirror_data)
+                if _usb_matches(usb, mirror_data):
+                    _clear_usb_pending(filename)
+                    return
+            except OSError:
+                pass
+        _mark_usb_pending(filename)
+        return
+    if usb_data is not None and mirror_data is None:
+        try:
+            _save_durable_json(filename, usb_data)
+        except Exception:
+            pass
+
+
+def _restore_critical_json_from_durable() -> None:
+    for name in _DURABLE_JSON_NAMES:
+        _restore_json_from_durable(name)
+
+
+def _copy_file_durable(src: pathlib.Path, dest: pathlib.Path) -> bool:
+    """Copy a file and fsync it. Returns True only when the sizes match."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        with open(src, "rb") as infile, open(tmp, "wb") as outfile:
+            while True:
+                chunk = infile.read(1024 * 1024)
+                if not chunk:
+                    break
+                outfile.write(chunk)
+            outfile.flush()
+            os.fsync(outfile.fileno())
+        os.replace(str(tmp), str(dest))
+        _fsync_dir(dest.parent)
+        return dest.exists() and dest.stat().st_size == src.stat().st_size
+    except OSError:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def preserve_report_file(path: pathlib.Path) -> None:
+    """Keep a report PDF or text file on the SD card as well as on the stick."""
+    src = pathlib.Path(path)
+    try:
+        if not src.is_file() or src.stat().st_size <= 0:
+            return
+    except OSError:
+        return
+    _copy_file_durable(src, _DURABLE_DIR / "reports" / src.name)
+
+
+def restore_report_files() -> None:
+    """Copy SD-card report files onto the stick when the stick file is missing or 0 bytes."""
+    src_dir = _DURABLE_DIR / "reports"
+    if _reports_dir is None or not src_dir.is_dir():
+        return
+    dest_dir = pathlib.Path(_reports_dir)
+    if not _dir_writable(dest_dir):
+        return
+    for item in src_dir.iterdir():
+        if not item.is_file() or item.name.endswith(".tmp"):
+            continue
+        try:
+            if item.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        dest = dest_dir / item.name
+        try:
+            dest_size = dest.stat().st_size if dest.exists() else 0
+        except OSError:
+            dest_size = 0
+        if dest_size == item.stat().st_size and dest_size > 0:
+            continue
+        _copy_file_durable(item, dest)
+
+
+def _save_durable_members(data) -> None:
+    """Copy members.json onto the SD card (ext4), where power loss cannot zero the file."""
+    if not isinstance(data, list):
+        return
+    _save_durable_json("members.json", data)
+
+
+def _restore_members_from_durable() -> None:
+    """If the stick copy is empty or corrupt, put the SD-card copy back."""
+    _restore_json_from_durable("members.json")
+
+
+def _load_members_list() -> List:
+    """Load members, repairing a power-cut 0-byte file from the SD-card copy."""
+    _restore_members_from_durable()
+    path = _get_storage_path("members.json")
+    data = _json_usable(path)
+    if not isinstance(data, list):
+        return []
+    return data
+
+
+def _save_json_file(filepath: pathlib.Path, data):
+    """Atomic JSON write with fsync (required on USB for mid-test power-cut recovery).
+
+    Durability is the same as the power-cut checkpoint work (commit ff2dd5e):
+    write+fsync a temp file in the *same* directory, ``os.replace`` onto the
+    target (atomic on ext4), then fsync the directory.
+
+    Unique temp names + a per-path lock prevent Flask worker threads from
+    sharing ``file.json.tmp`` (ENOENT on replace) and from clobbering
+    in-flight ``test_run.json`` / ``recipes.json`` / ``reports.json`` writes.
+
+    members.json is also written to /var/lib/kiosk/durable first, because a
+    VFAT rename does not survive a hard power cut and comes back as a 0-byte file.
+    """
+    filepath = pathlib.Path(filepath)
+    if filepath.name in _DURABLE_JSON_NAMES and filepath.parent != _DURABLE_DIR:
+        # SD card first. A hard cut cannot zero an ext4 file the way it zeroes VFAT.
+        _save_durable_json(filepath.name, data)
+        if not _dir_writable(filepath.parent):
+            _mark_usb_pending(filepath.name)
+            return
+        try:
+            _atomic_write_json(filepath, data)
+        except OSError:
+            _mark_usb_pending(filepath.name)
+            return
+        if not _usb_matches(filepath, data):
+            _mark_usb_pending(filepath.name)
+            return
+        _clear_usb_pending(filepath.name)
+        return
+    _atomic_write_json(filepath, data)
 
 
 # =================== RECIPE OPERATIONS ==========================
@@ -596,6 +861,7 @@ def enable_disabled_recipe(
 
 def _load_reports_raw():
     """Load every stored report (including pending approval drafts)."""
+    _restore_json_from_durable("reports.json")
     reports_path = _get_storage_path("reports.json")
     reports = _load_json_file(reports_path, default=[])
     if not isinstance(reports, list):
@@ -708,10 +974,7 @@ def delete_report(report_id: int) -> bool:
 
 def list_members():
     """List all members. Excludes hidden factory user. Normalizes status/failedAttempts."""
-    members_path = _get_storage_path("members.json")
-    members = _load_json_file(members_path, default=[])
-    if not isinstance(members, list):
-        members = []
+    members = _load_members_list()
 
     normalized: List[Dict[str, Any]] = []
     for m in members:
@@ -1049,9 +1312,7 @@ def save_member(member_data: Dict[str, Any], acting_user_id: Optional[Any] = Non
     if username == FACTORY_USERNAME.upper():
         raise ValueError("The factory user cannot be created or modified.")
     members_path = _get_storage_path("members.json")
-    members = _load_json_file(members_path, default=[])
-    if not isinstance(members, list):
-        members = []
+    members = _load_members_list()
     key_new = _member_username_key(member_data)
     if not key_new:
         raise ValueError("User ID is required.")
@@ -1152,9 +1413,7 @@ def save_member(member_data: Dict[str, Any], acting_user_id: Optional[Any] = Non
 def delete_member(member_id: int) -> bool:
     """Delete member by ID. Cannot delete factory user."""
     members_path = _get_storage_path("members.json")
-    members = _load_json_file(members_path, default=[])
-    if not isinstance(members, list):
-        members = []
+    members = _load_members_list()
     member_to_delete = next((m for m in members if m.get("id") == member_id), None)
     if member_to_delete and str(member_to_delete.get("username", "")).strip().upper() == FACTORY_USERNAME.upper():
         raise ValueError("The factory user cannot be deleted.")
@@ -1208,10 +1467,7 @@ def get_member_by_username(username: str) -> Optional[Dict[str, Any]]:
     if username_clean.upper() == FACTORY_USERNAME.upper():
         return None
     username_lower = username_clean.lower()
-    members_path = _get_storage_path("members.json")
-    members = _load_json_file(members_path, default=[])
-    if not isinstance(members, list):
-        members = []
+    members = _load_members_list()
     for m in members:
         u = str(m.get("username", "")).strip().lower()
         if u == username_lower:
@@ -1275,9 +1531,7 @@ def get_next_fingerprint_template_id(max_templates: int = 1000) -> int:
 def _save_member_record(updated: Dict[str, Any]) -> None:
     """Internal helper to persist a single member record by id."""
     members_path = _get_storage_path("members.json")
-    members = _load_json_file(members_path, default=[])
-    if not isinstance(members, list):
-        members = []
+    members = _load_members_list()
     _normalize_member_password_fields(updated)
     mid = updated.get("id")
     replaced = False
@@ -1393,7 +1647,7 @@ def factory_reset() -> Dict[str, Any]:
     test_run_path = _get_storage_path("test_run.json")
     recipes = _load_json_file(recipes_path, default=[])
     reports = _load_json_file(reports_path, default=[])
-    members = _load_json_file(members_path, default=[])
+    members = _load_members_list()
     n_recipes = len(recipes) if isinstance(recipes, list) else 0
     n_reports = len(reports) if isinstance(reports, list) else 0
     n_members = len(members) if isinstance(members, list) else 0
@@ -1442,6 +1696,16 @@ def factory_reset() -> Dict[str, Any]:
                 orphan.unlink()
                 n_storage_files += 1
             except Exception:
+                pass
+    _clear_durable_json("test_run.json")
+    _clear_durable_json("validation_run.json")
+    report_mirror = _DURABLE_DIR / "reports"
+    if report_mirror.is_dir():
+        for item in report_mirror.iterdir():
+            try:
+                if item.is_file():
+                    item.unlink()
+            except OSError:
                 pass
     clear_current_user()
     delete_session_power_audit_pending()
@@ -1659,8 +1923,10 @@ def save_test_run_data(test_data: Dict[str, Any]):
 
 def get_test_run_data() -> Dict[str, Any]:
     """Get last test run data."""
+    _restore_json_from_durable("test_run.json")
     test_path = _get_storage_path("test_run.json")
-    return _load_json_file(test_path, default={})
+    data = _load_json_file(test_path, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def clear_test_run_data() -> None:
@@ -1671,6 +1937,7 @@ def clear_test_run_data() -> None:
             test_path.unlink()
         except Exception:
             pass
+    _clear_durable_json("test_run.json")
 
 
 # =================== DT VALIDATION RUN CHECKPOINT ==========================
@@ -1686,8 +1953,10 @@ def save_validation_run_data(payload: Dict[str, Any]) -> None:
 
 def get_validation_run_data() -> Dict[str, Any]:
     """Load validation checkpoint, if any."""
+    _restore_json_from_durable(_VALIDATION_RUN_FILE)
     path = _get_storage_path(_VALIDATION_RUN_FILE)
-    return _load_json_file(path, default={})
+    data = _load_json_file(path, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def clear_validation_run_data() -> None:
@@ -1698,6 +1967,7 @@ def clear_validation_run_data() -> None:
             path.unlink()
         except Exception:
             pass
+    _clear_durable_json(_VALIDATION_RUN_FILE)
 
 
 # =================== DT INSTRUMENT SETTINGS (beakers / baskets) ==========================

@@ -5,7 +5,9 @@ Append-only audit trail: log_event, list_entries with filters.
 """
 
 import json
+import os
 import pathlib
+import shutil
 import sqlite3
 import secrets
 import threading
@@ -87,6 +89,69 @@ def is_hidden_factory_actor(user: Optional[str], role: Optional[str]) -> bool:
     return _is_suppressed_actor(user, role)
 
 
+_DURABLE_AUDIT_DB = pathlib.Path("/var/lib/kiosk/durable/audit_log.db")
+
+
+def _sqlite_file_ok(path: Optional[pathlib.Path]) -> bool:
+    """True when the file is a non-empty SQLite database, not a 0-byte VFAT leftover."""
+    try:
+        if path is None or not path.exists() or path.stat().st_size < 100:
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(16).startswith(b"SQLite format 3")
+    except OSError:
+        return False
+
+
+def _snapshot_audit_db() -> None:
+    """Copy the live audit database onto the SD card as one consistent file."""
+    if not _sqlite_file_ok(_audit_db_path):
+        return
+    try:
+        _DURABLE_AUDIT_DB.parent.mkdir(parents=True, exist_ok=True)
+        src = sqlite3.connect(str(_audit_db_path))
+        dst = sqlite3.connect(str(_DURABLE_AUDIT_DB))
+        try:
+            src.backup(dst)
+            dst.commit()
+        finally:
+            dst.close()
+            src.close()
+    except Exception:
+        pass
+
+
+def _restore_audit_db_if_blank() -> None:
+    """Put the SD-card audit copy back when the stick file is missing or 0 bytes.
+
+    Opening a 0-byte file with SQLite creates a new empty database and the old
+    trail is gone. Restore before that schema create.
+    """
+    if not _audit_db_path:
+        return
+    if _sqlite_file_ok(_audit_db_path):
+        if not _sqlite_file_ok(_DURABLE_AUDIT_DB):
+            _snapshot_audit_db()
+        return
+    if not _sqlite_file_ok(_DURABLE_AUDIT_DB):
+        return
+    try:
+        _audit_db_path.parent.mkdir(parents=True, exist_ok=True)
+        if _audit_db_path.exists():
+            _audit_db_path.unlink()
+        shutil.copy2(str(_DURABLE_AUDIT_DB), str(_audit_db_path))
+    except Exception:
+        pass
+
+
+def _clear_durable_audit_db() -> None:
+    try:
+        if _DURABLE_AUDIT_DB.exists():
+            _DURABLE_AUDIT_DB.unlink()
+    except OSError:
+        pass
+
+
 def init(config):
     """Initialize audit service with config."""
     global _config, _storage_dir, _db_dir, _audit_db_path, _legacy_audit_log_path
@@ -97,16 +162,80 @@ def init(config):
     _db_dir.mkdir(parents=True, exist_ok=True)
     _audit_db_path = _db_dir / "audit_log.db"
     _legacy_audit_log_path = _storage_dir / "audit_log.json"
+    _restore_audit_db_if_blank()
     _ensure_db_schema()
+    _merge_durable_audit_into_usb()
     _migrate_legacy_json_if_needed()
 
 
-def _db_connect():
-    if not _audit_db_path:
+def _dir_writable(directory: pathlib.Path) -> bool:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".kiosk_rw_probe"
+        fd = os.open(str(probe), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+        os.close(fd)
+        os.unlink(str(probe))
+        return True
+    except OSError:
+        return False
+
+
+def _audit_write_path() -> Optional[pathlib.Path]:
+    """Use the stick when it is writable. Otherwise append to the SD-card copy."""
+    if _audit_db_path and _audit_db_path.parent and _dir_writable(_audit_db_path.parent):
+        if _sqlite_file_ok(_audit_db_path) or not _sqlite_file_ok(_DURABLE_AUDIT_DB):
+            return _audit_db_path
+    try:
+        _DURABLE_AUDIT_DB.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return _audit_db_path
+    return _DURABLE_AUDIT_DB
+
+
+def _db_connect(path: Optional[pathlib.Path] = None):
+    target = path or _audit_write_path()
+    if not target:
         return None
-    conn = sqlite3.connect(str(_audit_db_path))
+    conn = sqlite3.connect(str(target))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _merge_durable_audit_into_usb() -> None:
+    """Copy audit rows that were saved on the SD card while the stick was read-only."""
+    if not _audit_db_path or not _dir_writable(_audit_db_path.parent):
+        return
+    if not _sqlite_file_ok(_DURABLE_AUDIT_DB):
+        return
+    if not _sqlite_file_ok(_audit_db_path):
+        return
+    src = sqlite3.connect(str(_DURABLE_AUDIT_DB))
+    dst = sqlite3.connect(str(_audit_db_path))
+    try:
+        src.row_factory = sqlite3.Row
+        cols = [row[1] for row in src.execute("PRAGMA table_info(audit_entries)").fetchall()]
+        if not cols:
+            return
+        placeholders = ",".join("?" for _ in cols)
+        collist = ",".join(cols)
+        have = {row[0] for row in dst.execute("SELECT id FROM audit_entries").fetchall()}
+        inserted = 0
+        for row in src.execute("SELECT * FROM audit_entries").fetchall():
+            if row["id"] in have:
+                continue
+            dst.execute(
+                "INSERT OR IGNORE INTO audit_entries ({}) VALUES ({})".format(collist, placeholders),
+                tuple(row[col] for col in cols),
+            )
+            inserted += 1
+        if inserted:
+            dst.commit()
+    except Exception:
+        return
+    finally:
+        src.close()
+        dst.close()
+    _snapshot_audit_db()
 
 
 def _ensure_db_schema():
@@ -514,8 +643,18 @@ def log_structured_event(
                 ),
             )
             _enforce_cap(conn)
+        wrote_usb = conn.execute("PRAGMA database_list").fetchone()
     except Exception:
         pass
+    else:
+        dbfile = ""
+        try:
+            row = wrote_usb
+            dbfile = str(row[2] or "") if row else ""
+        except Exception:
+            dbfile = ""
+        if _audit_db_path and os.path.abspath(dbfile) == os.path.abspath(str(_audit_db_path)):
+            _snapshot_audit_db()
     finally:
         conn.close()
 
@@ -626,6 +765,7 @@ def _destroy_audit_database() -> None:
 def clear_all_entries() -> int:
     """Delete the entire audit trail (DB + legacy/export files). Used by factory reset."""
     before = entry_count()
+    _clear_durable_audit_db()
     _remove_audit_legacy_files()
 
     if _audit_db_path and _audit_db_path.exists():
