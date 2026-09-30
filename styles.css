@@ -2902,7 +2902,7 @@ body {
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
     flex: 1 1 0;
-    max-width: 20%;
+    max-width: 16%;
     text-align: center;
 }
 
@@ -2933,6 +2933,23 @@ body {
 
 .reports-filter-validation:hover {
     background: #7e22ce;
+}
+
+.reports-filter-calibration {
+    background: #be123c;
+    border-color: #9f1239;
+    color: #ffffff;
+}
+
+.reports-filter-calibration span,
+.reports-filter-calibration svg {
+    color: #ffffff;
+    stroke: #ffffff;
+}
+
+.reports-filter-calibration:hover {
+    background: #9f1239;
+    color: #ffffff;
 }
 
 .reports-filter-audit {
@@ -6925,7 +6942,7 @@ input[type="number"] {
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
     flex: 1 1 0;
-    max-width: 20%;
+    max-width: 16%;
     text-align: center;
 }
 
@@ -6956,6 +6973,23 @@ input[type="number"] {
 
 .reports-filter-validation:hover {
     background: #7e22ce;
+}
+
+.reports-filter-calibration {
+    background: #be123c;
+    border-color: #9f1239;
+    color: #ffffff;
+}
+
+.reports-filter-calibration span,
+.reports-filter-calibration svg {
+    color: #ffffff;
+    stroke: #ffffff;
+}
+
+.reports-filter-calibration:hover {
+    background: #9f1239;
+    color: #ffffff;
 }
 
 .reports-filter-audit {
