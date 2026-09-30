@@ -4532,13 +4532,23 @@ function logTestReportSavedAudit(reportId, payload) {
         .then(function () { refreshAuditTrailIfVisible(); });
 }
 
+function _reportTypeFilter(filterType) {
+    if (filterType === 'test' || filterType === 'validation' || filterType === 'calibration') {
+        return filterType;
+    }
+    return 'all';
+}
+
 function exportFromSelection(type) {
     if (type === 'audit') {
         exportAuditTrails();
         return;
     }
-    var exportFilter = (currentReportFilter === 'test' || currentReportFilter === 'validation')
-        ? currentReportFilter : (lastReportListFilter || 'all');
+    var exportFilter = _reportTypeFilter(
+        (currentReportFilter === 'test' || currentReportFilter === 'validation' || currentReportFilter === 'calibration')
+            ? currentReportFilter
+            : 'all'
+    );
     showLoadingOverlay('Export Reports', 'Loading report list...', { cancellable: false });
     apiRequest(API_BASE + '/api/data/reports?filter=' + encodeURIComponent(exportFilter)).then(function (data) {
         var list = (data && data.reports) ? data.reports : [];
@@ -5588,7 +5598,7 @@ function loadReports(filterType) {
 
     if (bar) bar.style.display = 'none';
     if (theadRow) theadRow.innerHTML = '<th>SL No</th><th>Report Name</th><th>Creation Time</th><th>Action</th>';
-    var filter = (filterType === 'test' || filterType === 'validation') ? filterType : 'all';
+    var filter = _reportTypeFilter(filterType);
     apiRequest(API_BASE + '/api/data/reports?filter=' + encodeURIComponent(filter)).then(function (data) {
         var list = (data && data.reports) ? data.reports : [];
         if (!list.length) {
@@ -5732,7 +5742,7 @@ function initAuditReportsVisibility() {
     // Must show again after a prior non-audit user hid the button in this SPA session.
     auditBtn.style.display = (typeof canViewAuditLog === 'function' && canViewAuditLog()) ? '' : 'none';
     var auditOnly = typeof isAuditOnlyReportsUser === 'function' && isAuditOnlyReportsUser();
-    ['test', 'validation', 'recipes'].forEach(function (kind) {
+    ['test', 'validation', 'calibration', 'recipes'].forEach(function (kind) {
         var btn = document.querySelector('.reports-filter-' + kind);
         if (btn) btn.style.display = auditOnly ? 'none' : '';
     });
@@ -5896,11 +5906,10 @@ function exportAuditTrails() {
 }
 
 function exportFilteredReports() {
-    if (currentReportFilter === 'audit') {
-        exportAuditTrails();
-        return;
-    }
-    var filter = (currentReportFilter === 'test' || currentReportFilter === 'validation') ? currentReportFilter : 'all';
+    // Export Reports never writes the audit-trail PDF. That file has its own button.
+    // Doing both from this button was exporting the audit trail (and a second copy
+    // if the audit button was also triggered) instead of the report list.
+    var filter = _reportTypeFilter(currentReportFilter);
     showLoadingOverlay('Export Reports', 'Loading report list...', { cancellable: false });
     apiRequest(API_BASE + '/api/data/reports?filter=' + encodeURIComponent(filter)).then(function (data) {
         var list = (data && data.reports) ? data.reports : [];

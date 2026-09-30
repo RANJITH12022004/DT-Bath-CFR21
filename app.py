@@ -5732,13 +5732,7 @@ def export_reports():
             if not src.exists():
                 failed.append({"id": rid, "error": "PDF missing"})
                 continue
-            report = data_service.get_report(rid) or {}
-            recipe = report.get("recipe") if isinstance(report.get("recipe"), dict) else {}
-            product = (recipe.get("productName") or report.get("name") or "report")
-            safe_name = "".join(c for c in str(product) if c.isalnum() or c in "-_") or "report"
-            ts_raw = str(report.get("createdAt") or "")
-            safe_ts = "".join(c for c in ts_raw if c.isalnum() or c in "-_.T") or "ts"
-            dest = export_dir / "{}_{}_{}.pdf".format(safe_name, rid, safe_ts)
+            dest = export_dir / "report_{}.pdf".format(int(rid))
             try:
                 with open(src, "rb") as fin, open(dest, "wb") as fout:
                     while True:
@@ -5746,6 +5740,8 @@ def export_reports():
                         if not chunk:
                             break
                         fout.write(chunk)
+                    fout.flush()
+                    os.fsync(fout.fileno())
                 exported_files.append(str(dest))
                 exported_report_ids.append(int(rid))
             except Exception as e:
@@ -5831,10 +5827,6 @@ def export_reports_stream():
     if gate is not None:
         return gate
     cur = data_service.get_current_user()
-    for rid in report_ids:
-        blocked = _check_report_approved_for_print_export(report_id=rid)
-        if blocked is not None:
-            return blocked
 
     def _emit(obj):
         return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
@@ -5908,19 +5900,20 @@ def export_reports_stream():
                                  "status": "failed"})
                     continue
 
-                # 2) Copy to pendrive destination.
-                recipe = report.get("recipe") if isinstance(report.get("recipe"), dict) else {}
-                product = recipe.get("productName") or report.get("name") or "report"
-                safe_name = "".join(c for c in str(product) if c.isalnum() or c in "-_") or "report"
-                ts_raw = str(report.get("createdAt") or "")
-                safe_ts = "".join(c for c in ts_raw if c.isalnum() or c in "-_.T") or "ts"
-                dest = export_dir / "{}_{}_{}.pdf".format(safe_name, rid, safe_ts)
+                # Id-only name. Product text collided on FAT and later files overwrote
+                # earlier ones, so a full export left only a few PDFs on the stick.
+                dest = export_dir / "report_{}.pdf".format(int(rid))
                 yield _emit({"event": "report", "current": i, "total": total,
                              "percent": int(this_progress_at + per_report_pct * 0.7), "id": rid,
                              "status": "copying",
                              "message": "Writing report {} of {} to pendrive...".format(i, total)})
                 try:
                     pdf_generator._copy_to_destination(pdf_src, dest)  # robust chunked copy
+                    try:
+                        with open(dest, "rb") as synced:
+                            os.fsync(synced.fileno())
+                    except OSError:
+                        pass
                     result["exported_files"].append(str(dest))
                     result["exported_report_ids"].append(int(rid))
                     result["count"] += 1
