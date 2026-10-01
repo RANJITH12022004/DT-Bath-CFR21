@@ -928,12 +928,12 @@
       api('/api/data/dt/runs/' + basket + '/stop', {
         method: 'POST',
         body: { aborted: true, reason: 'operator_abort' },
-      }).then(function () {
+      }).then(function (res) {
         finishBasketUi(basket);
         var tEl = document.getElementById('timer' + basket);
         if (tEl) tEl.textContent = '00:00:00';
         toast('Basket ' + basket + ' aborted', 'info');
-        go('home');
+        openPendingTestReport(res || {}, { aborted: true, basket: basket });
       }).catch(function (e) { toast(e.message || 'Abort failed', 'error'); });
       return;
     }
@@ -1765,14 +1765,21 @@
       return;
     }
 
-    if (siblingActive || viewingPending) {
+    if (siblingActive) {
       toast(
-        siblingActive
-          ? ('Basket ' + basket + (aborted ? ' aborted' : ' complete') + ' — report opens when the other running test finishes')
-          : ('Basket ' + basket + (aborted ? ' aborted' : ' complete') + ' — report queued for approval after the current one'),
+        'Basket ' + basket + (aborted ? ' aborted' : ' complete') +
+          ' — report opens when the other running test finishes',
         'info'
       );
-      if (!viewingPending) go('home');
+      return;
+    }
+
+    if (viewingPending) {
+      toast(
+        'Basket ' + basket + (aborted ? ' aborted' : ' complete') +
+          ' — report queued for approval after the current one',
+        'info'
+      );
       return;
     }
 
@@ -1780,7 +1787,18 @@
       toast('Basket ' + basket + ' aborted — report pending approval', 'info');
     }
 
-    // Both idle and nothing on screen: open oldest queued report
+    // Open the report that just finished. Older pending reports stay queued
+    // and open after this one is approved.
+    if (rid != null) {
+      DT.pendingReportQueue = (DT.pendingReportQueue || []).filter(function (id) {
+        return String(id) !== String(rid);
+      });
+      if (typeof openReportPreview === 'function') {
+        openReportPreview(rid, { setGate: true });
+        api('/api/data/dt/runs/' + basket + '/saved-report/ack', { method: 'POST', body: {} }).catch(function () {});
+        return;
+      }
+    }
     if (window.dtOpenNextPendingReport()) return;
     go('home');
     if (typeof loadReports === 'function') {
@@ -1831,10 +1849,13 @@
             if (el2) { el2.classList.add('completed'); el2.disabled = true; }
           });
         }
-        if (run.state === 'COMPLETE' || run.state === 'ABORTED') {
+        var terminal = run.state === 'COMPLETE' || run.state === 'ABORTED' ||
+          (run.state === 'IDLE' && run.savedReport);
+        if (terminal) {
           finishBasketUi(basket);
-          toast(run.status || run.state, run.aborted ? 'error' : 'success');
-          openPendingTestReport(res, { aborted: !!run.aborted, basket: basket });
+          var wasAborted = !!(run.aborted || run.state === 'ABORTED');
+          toast(run.status || run.state, wasAborted ? 'error' : 'success');
+          openPendingTestReport(res, { aborted: wasAborted, basket: basket });
         } else if (run.state === 'IDLE' && DT.running[basket]) {
           // Server cleared the run after auto-save; treat as finished.
           finishBasketUi(basket);

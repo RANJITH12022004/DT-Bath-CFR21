@@ -6540,7 +6540,18 @@ def dt_run_get(basket):
     if gate:
         return gate
     # consume_saved: one-shot handoff of auto-saved report id to the kiosk poller
-    return jsonify({"ok": True, "run": dt_test_service.get_run(basket, consume_saved=True)})
+    return jsonify({"ok": True, "run": dt_test_service.get_run(basket, consume_saved=False)})
+
+
+@app.route("/api/data/dt/runs/<int:basket>/saved-report/ack", methods=["POST"])
+def dt_ack_saved_report(basket):
+    """Client opened the approval screen; drop the one-shot saved-report handoff."""
+    try:
+        dt_test_service.clear_last_saved_report(basket)
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        app.logger.exception("dt ack saved report failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/data/dt/runs/<int:basket>/preheat", methods=["POST"])
