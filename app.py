@@ -3278,6 +3278,149 @@ def enable_member_route(member_id):
         return jsonify({"error": str(e)}), 500
 
 
+# =================== DATA: USER GROUPS ==========================
+
+
+@app.route("/api/data/user-groups", methods=["GET"])
+def get_user_groups():
+    try:
+        err = _require_auth()
+        if err:
+            return err
+        status = (request.args.get("status") or "active").strip().lower()
+        groups = data_service.list_user_groups(status=status)
+        return jsonify({"groups": groups}), 200
+    except Exception as e:
+        app.logger.exception("Error listing user groups")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data/user-groups", methods=["POST"])
+def create_user_group():
+    try:
+        gate = _require_session_internal("user-manage", "Forbidden. You do not have permission to manage user groups.")
+        if gate:
+            return gate
+        payload = request.get_json(force=True, silent=True) or {}
+        group_id = data_service.save_user_group(payload)
+        groups = data_service.list_user_groups(status="all")
+        created = next((g for g in groups if int(g.get("id") or 0) == int(group_id)), None)
+        cur = data_service.get_current_user() or {}
+        _audit_event(
+            action="User group created",
+            outcome="success",
+            entity_type="user_group",
+            entity_id=group_id,
+            entity_name=(created or {}).get("name") or "",
+            details="User group created: {}".format((created or {}).get("name") or group_id),
+            signature={
+                "mode": "session",
+                "username": (cur.get("username") or cur.get("name") or "").strip() or "--",
+                "role": (cur.get("role") or "").strip() or "--",
+            },
+        )
+        return jsonify({"id": group_id, "group": created}), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error creating user group")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data/user-groups/<int:group_id>", methods=["PUT"])
+def update_user_group(group_id):
+    try:
+        gate = _require_session_internal("user-manage", "Forbidden. You do not have permission to manage user groups.")
+        if gate:
+            return gate
+        payload = request.get_json(force=True, silent=True) or {}
+        payload["id"] = group_id
+        data_service.save_user_group(payload)
+        groups = data_service.list_user_groups(status="all")
+        updated = next((g for g in groups if int(g.get("id") or 0) == int(group_id)), None)
+        cur = data_service.get_current_user() or {}
+        _audit_event(
+            action="User group updated",
+            outcome="success",
+            entity_type="user_group",
+            entity_id=group_id,
+            entity_name=(updated or {}).get("name") or "",
+            details="User group updated: {}".format((updated or {}).get("name") or group_id),
+            signature={
+                "mode": "session",
+                "username": (cur.get("username") or cur.get("name") or "").strip() or "--",
+                "role": (cur.get("role") or "").strip() or "--",
+            },
+        )
+        return jsonify({"id": group_id, "group": updated}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error updating user group")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data/user-groups/<int:group_id>", methods=["DELETE"])
+def delete_user_group(group_id):
+    try:
+        gate = _require_session_internal("user-manage", "Forbidden. You do not have permission to manage user groups.")
+        if gate:
+            return gate
+        disabled = data_service.disable_user_group(group_id)
+        cur = data_service.get_current_user() or {}
+        _audit_event(
+            action="User group disabled",
+            outcome="success",
+            entity_type="user_group",
+            entity_id=group_id,
+            entity_name=(disabled or {}).get("name") or "",
+            details="User group disabled: {}".format((disabled or {}).get("name") or group_id),
+            signature={
+                "mode": "session",
+                "username": (cur.get("username") or cur.get("name") or "").strip() or "--",
+                "role": (cur.get("role") or "").strip() or "--",
+            },
+        )
+        return jsonify({"success": True, "group": disabled}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error disabling user group")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data/user-groups/<int:group_id>/enable", methods=["POST"])
+def enable_user_group_route(group_id):
+    try:
+        gate = _require_session_internal("user-manage", "Forbidden. You do not have permission to manage user groups.")
+        if gate:
+            return gate
+        enabled = data_service.enable_user_group(group_id)
+        cur = data_service.get_current_user() or {}
+        _audit_event(
+            action="User group enabled",
+            outcome="success",
+            entity_type="user_group",
+            entity_id=group_id,
+            entity_name=(enabled or {}).get("name") or "",
+            details="User group enabled: {}".format((enabled or {}).get("name") or group_id),
+            signature={
+                "mode": "session",
+                "username": (cur.get("username") or cur.get("name") or "").strip() or "--",
+                "role": (cur.get("role") or "").strip() or "--",
+            },
+        )
+        return jsonify({"success": True, "group": enabled}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Error enabling user group")
+        return jsonify({"error": str(e)}), 500
+
+
+
+
+
 # =================== DATA: FACTORY SETTINGS ==========================
 
 

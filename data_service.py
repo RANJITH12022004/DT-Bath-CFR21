@@ -1722,6 +1722,18 @@ def factory_reset() -> Dict[str, Any]:
         except Exception:
             pass
     _ensure_storage_dirs()
+    
+    ug_path = _get_storage_path("userGroups.json")
+    try:
+        _save_json_file(ug_path, [])
+    except Exception:
+        pass
+    try:
+        ug_bak = ug_path.with_suffix(ug_path.suffix + ".bak")
+        if ug_bak.exists():
+            ug_bak.unlink()
+    except Exception:
+        pass
     return {
         "deleted": {
             "recipes": n_recipes,
@@ -1731,6 +1743,128 @@ def factory_reset() -> Dict[str, Any]:
             "storageFiles": n_storage_files,
         }
     }
+
+
+
+def _load_user_groups_raw() -> list:
+    path = _get_storage_path("userGroups.json")
+    data = _load_json_file(path, default={"groups": []})
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        groups = data.get("groups")
+        return groups if isinstance(groups, list) else []
+    return []
+
+
+def _save_user_groups_raw(groups: list) -> None:
+    path = _get_storage_path("userGroups.json")
+    _save_json_file(path, {"groups": groups if isinstance(groups, list) else []})
+
+
+def list_user_groups(status: str = "active") -> list:
+    groups = _load_user_groups_raw()
+    want = str(status or "active").strip().lower()
+    out = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        st = str(g.get("status") or "active").strip().lower()
+        if want == "all" or st == want:
+            out.append(g)
+    return out
+
+
+def save_user_group(group_data: Dict[str, Any]) -> int:
+    groups = _load_user_groups_raw()
+    name = str((group_data or {}).get("name") or "").strip()
+    if not name:
+        raise ValueError("Group name is required.")
+    allow = (group_data or {}).get("allow") or []
+    if not isinstance(allow, list) or not allow:
+        raise ValueError("Select at least one permission for the group.")
+    allow_clean = [str(k).strip() for k in allow if str(k).strip()]
+    group_id = (group_data or {}).get("id")
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if group_id is not None:
+        for i, g in enumerate(groups):
+            if int(g.get("id") or 0) == int(group_id):
+                updated = dict(g)
+                updated["name"] = name
+                updated["allow"] = allow_clean
+                updated["status"] = str(g.get("status") or "active")
+                updated["updatedAt"] = now
+                groups[i] = updated
+                _save_user_groups_raw(groups)
+                return int(group_id)
+        raise ValueError("Group not found")
+    if group_id is None:
+        active_count = 0
+        for g in groups:
+            if str(g.get("status") or "active").strip().lower() == "active":
+                active_count += 1
+        if active_count >= 10:
+            raise ValueError("Maximum of 10 profile power groups allowed.")
+    next_id = 1
+    for g in groups:
+        try:
+            next_id = max(next_id, int(g.get("id") or 0) + 1)
+        except (TypeError, ValueError):
+            pass
+    groups.append({
+        "id": next_id,
+        "name": name,
+        "allow": allow_clean,
+        "status": "active",
+        "createdAt": now,
+        "updatedAt": now,
+    })
+    _save_user_groups_raw(groups)
+    return next_id
+
+
+def disable_user_group(group_id: int) -> Dict[str, Any]:
+    groups = _load_user_groups_raw()
+    for i, g in enumerate(groups):
+        if int(g.get("id") or 0) == int(group_id):
+            updated = dict(g)
+            updated["status"] = "disabled"
+            updated["updatedAt"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            groups[i] = updated
+            _save_user_groups_raw(groups)
+            return updated
+    raise ValueError("Group not found")
+
+
+def enable_user_group(group_id: int) -> Dict[str, Any]:
+    """Re-enable a disabled user group. Caps active groups at 10."""
+    groups = _load_user_groups_raw()
+    target = None
+    target_idx = None
+    active_count = 0
+    for i, g in enumerate(groups):
+        st = str(g.get("status") or "active").strip().lower()
+        if st == "active":
+            active_count += 1
+        if int(g.get("id") or 0) == int(group_id):
+            target = g
+            target_idx = i
+    if target is None:
+        raise ValueError("Group not found")
+    if str(target.get("status") or "active").strip().lower() == "active":
+        return dict(target)
+    if active_count >= 10:
+        raise ValueError("Maximum of 10 profile power groups allowed.")
+    updated = dict(target)
+    updated["status"] = "active"
+    updated["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+    groups[target_idx] = updated
+    _save_user_groups_raw(groups)
+    return updated
+
+
+
+# =================== REPORT OPERATIONS ==========================
 
 
 # =================== FACTORY SETTINGS ==========================

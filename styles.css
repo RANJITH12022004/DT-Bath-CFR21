@@ -10747,3 +10747,19 @@ body.keyboard-open {
     padding: 12px 18px;
 }
 
+
+.settings-user-groups {
+    background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
+    color: #fff !important;
+}
+.settings-user-groups:hover {
+    background: linear-gradient(135deg, #818cf8, #6366f1) !important;
+}
+.settings-user-groups .settings-icon,
+.settings-user-groups .settings-icon svg,
+.settings-user-groups h3 {
+    color: #fff !important;
+}
+.permission-card.is-locked {
+    cursor: default;
+}

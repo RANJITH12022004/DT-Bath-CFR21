@@ -2058,6 +2058,7 @@ function updateSettingsVisibility() {
     var role = typeof getCurrentRole === 'function' ? getCurrentRole() : '';
     var rl = String(role || '').toLowerCase();
     function showIf(sel, featureKey) {
+    showIf('.settings-user-groups', 'user-manage');
         var el = document.querySelector(sel);
         if (!el) return;
         var ok = u && typeof canAccess === 'function' ? canAccess(u, featureKey) : false;
@@ -5487,31 +5488,307 @@ function unlockMember(id) {
     });
 }
 
-function enableMember(id) {
+var _userGroupsCache = _userGroupsCache || [];
+var _editingUserGroupId = null;
+var _userGroupFeatureOverrides = { allow: [], deny: [] };
+var _pendingEnableMemberDraft = null;
+
+function manageUserGroups() {
+    if (typeof canEditMembers === 'function' && !canEditMembers()) {
+        var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : null);
+        if (show) show('You do not have permission to manage profile powers.', 'Permission');
+        return;
+    }
+    goToPage('manage-user-groups');
+    displayUserGroupsList({ status: 'active' });
+}
+function displayUserGroupsList(opts) {
+    opts = opts || {};
+    var status = String(opts.status || 'active').toLowerCase();
+    if (status !== 'disabled') status = 'active';
+    var isDisabledView = status === 'disabled';
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    apiRequest(API_BASE + '/api/data/user-groups?status=' + encodeURIComponent(status), { method: 'GET' })
+        .then(function (data) {
+            var groups = (data && data.groups && Array.isArray(data.groups)) ? data.groups : [];
+            if (!isDisabledView) _userGroupsCache = groups;
+            var tbody = document.getElementById(isDisabledView ? 'disabled-user-groups-table-body' : 'user-groups-table-body');
+            var table = document.getElementById(isDisabledView ? 'disabled-user-groups-table' : 'user-groups-table');
+            var emptyEl = document.getElementById(isDisabledView ? 'disabled-user-groups-empty-state' : 'user-groups-empty-state');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            if (!groups.length) {
+                if (table) table.style.display = 'none';
+                if (emptyEl) emptyEl.style.display = '';
+                return;
+            }
+            if (table) table.style.display = '';
+            if (emptyEl) emptyEl.style.display = 'none';
+            var catalog = (typeof getPermissionCardCatalog === 'function') ? getPermissionCardCatalog() : [];
+            var labelMap = {};
+            catalog.forEach(function (c) { labelMap[c.key] = c.label; });
+            groups.forEach(function (g) {
+                var tr = document.createElement('tr');
+                var allow = (g.allow || []).map(function (k) { return labelMap[k] || k; }).join(', ');
+                var actions = isDisabledView
+                    ? ('<button class="btn-member-action btn-enable" onclick="enableUserGroup(' + (g.id || 0) + ')">Enable</button>')
+                    : ('<button class="btn-member-action btn-edit" onclick="openEditUserGroup(' + (g.id || 0) + ')">Edit</button>' +
+                       '<button class="btn-member-action btn-disable" onclick="disableUserGroup(' + (g.id || 0) + ')">Disable</button>');
+                tr.innerHTML =
+                    '<td>' + (g.name || '') + '</td>' +
+                    '<td>' + (allow || '—') + '</td>' +
+                    '<td class="member-actions-cell">' + actions + '</td>';
+                tbody.appendChild(tr);
+            });
+        })
+        .catch(function (err) {
+            show('Failed to load user groups: ' + (err && err.message ? err.message : 'Unknown error'), 'User Groups');
+        });
+}
+function enableUserGroup(id) {
     if (!id) return;
-    if (typeof canPerformAction === 'function' && typeof getCurrentRole === 'function') {
-        var role = getCurrentRole();
-        if (!canPerformAction(role, 'user-enable', 'change')) {
-            showAppModal('You do not have permission to enable accounts.', 'Permission');
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    showConfirmModal('Enable this profile power group?', 'Enable Group').then(function (ok) {
+        if (!ok) return;
+        return apiRequest(API_BASE + '/api/data/user-groups/' + id + '/enable', { method: 'POST' }).then(function () {
+            show('Profile power enabled.', 'User Groups');
+            displayUserGroupsList({ status: 'disabled' });
+        });
+    }).catch(function (err) {
+        show('Failed to enable group: ' + (err && err.message ? err.message : 'Unknown error'), 'User Groups');
+    });
+}
+function startUserGroupCreation() {
+    _editingUserGroupId = null;
+    _userGroupFeatureOverrides = { allow: [], deny: [] };
+    var nameEl = document.getElementById('user-group-name');
+    var titleEl = document.getElementById('user-group-page-title');
+    if (nameEl) nameEl.value = '';
+    if (titleEl) titleEl.textContent = 'Create Profile Power';
+    if (typeof renderUserGroupPermissionCards === 'function') renderUserGroupPermissionCards();
+    goToPage('edit-user-group');
+}
+function openEditUserGroup(id) {
+    if (!id) return;
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    apiRequest(API_BASE + '/api/data/user-groups?status=all', { method: 'GET' })
+        .then(function (data) {
+            var groups = (data && data.groups && Array.isArray(data.groups)) ? data.groups : [];
+            var g = groups.find(function (x) { return Number(x.id) === Number(id); });
+            if (!g) throw new Error('Group not found');
+            _editingUserGroupId = g.id;
+            _userGroupFeatureOverrides = { allow: (g.allow || []).slice(), deny: [] };
+            var nameEl = document.getElementById('user-group-name');
+            var titleEl = document.getElementById('user-group-page-title');
+            if (nameEl) nameEl.value = g.name || '';
+            if (titleEl) titleEl.textContent = 'Edit Profile Power';
+            if (typeof renderUserGroupPermissionCards === 'function') renderUserGroupPermissionCards();
+            goToPage('edit-user-group');
+        })
+        .catch(function (err) {
+            show('Failed to load group: ' + (err && err.message ? err.message : 'Unknown error'), 'User Groups');
+        });
+}
+function renderUserGroupPermissionCards() {
+    var grid = document.getElementById('user-group-permission-cards-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    var catalog = (typeof getPermissionCardCatalog === 'function')
+        ? getPermissionCardCatalog()
+        : ((typeof getFeatureCatalog === 'function') ? getFeatureCatalog() : []);
+    if (!_userGroupFeatureOverrides) _userGroupFeatureOverrides = { allow: [], deny: [] };
+    _userGroupFeatureOverrides.deny = [];
+    catalog.forEach(function (feature) {
+        var key = feature.key;
+        if (key === 'dashboard' || key === 'factory-settings' || key === 'factory-reset') return;
+        var selected = _userGroupFeatureOverrides.allow.indexOf(key) !== -1;
+        var accent = feature.accent != null ? feature.accent : 0;
+        var card = document.createElement('div');
+        card.className = 'permission-card' + (selected ? ' is-selected permission-card--accent-' + accent : '');
+        card.setAttribute('data-feature-key', key);
+        card.innerHTML =
+            '<div class="permission-card-title">' + feature.label + '</div>' +
+            '<div class="permission-card-desc">' + (feature.description || '') + '</div>';
+        card.addEventListener('click', function () {
+            var i = _userGroupFeatureOverrides.allow.indexOf(key);
+            if (i === -1) _userGroupFeatureOverrides.allow.push(key);
+            else _userGroupFeatureOverrides.allow.splice(i, 1);
+            renderUserGroupPermissionCards();
+        });
+        grid.appendChild(card);
+    });
+}
+function saveUserGroupForm() {
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    var nameEl = document.getElementById('user-group-name');
+    var name = nameEl && nameEl.value ? nameEl.value.trim() : '';
+    var allow = (_userGroupFeatureOverrides && _userGroupFeatureOverrides.allow) ? _userGroupFeatureOverrides.allow.slice() : [];
+    if (!name) {
+        show('Group name is required.', 'User Groups');
+        return;
+    }
+    if (!allow.length) {
+        show('Select at least one permission for the group.', 'User Groups');
+        return;
+    }
+    if (_editingUserGroupId == null) {
+        var activeCount = (_userGroupsCache || []).filter(function (g) {
+            return g && String(g.status || 'active').toLowerCase() !== 'disabled';
+        }).length;
+        if (activeCount >= 10) {
+            show('Maximum of 10 profile power groups allowed.', 'User Groups');
             return;
         }
     }
-    showConfirmModal('Enable this account?', 'Enable Account').then(function (ok) {
-        if (!ok) return;
-        var headers = { 'Content-Type': 'application/json' };
-        if (window.currentUser && window.currentUser.role) headers['X-User-Role'] = window.currentUser.role;
-        fetch((API_BASE || '') + '/api/data/members/' + id + '/enable', { method: 'POST', headers: headers })
-            .then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
-            .then(function (res) {
-                if (!res.ok) throw new Error((res.body && res.body.error) ? res.body.error : ('HTTP ' + res.status));
-                loadMembersAndRender();
-                showAppModal('Account enabled.', 'Enable');
-            })
-            .catch(function (err) {
-                showAppModal('Failed to enable: ' + (err && err.message ? err.message : 'Unknown error'), 'Enable');
-            });
+    var payload = { name: name, allow: allow };
+    var req;
+    if (_editingUserGroupId != null) {
+        payload.id = _editingUserGroupId;
+        req = apiRequest(API_BASE + '/api/data/user-groups/' + _editingUserGroupId, { method: 'PUT', body: payload });
+    } else {
+        req = apiRequest(API_BASE + '/api/data/user-groups', { method: 'POST', body: payload });
+    }
+    req.then(function () {
+        _editingUserGroupId = null;
+        show('User group saved.', 'User Groups');
+        goToPage('manage-user-groups');
+        displayUserGroupsList({ status: 'active' });
+    }).catch(function (err) {
+        show('Failed to save group: ' + (err && err.message ? err.message : 'Unknown error'), 'User Groups');
     });
 }
+function disableUserGroup(id) {
+    if (!id) return;
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    showConfirmModal('Disable this user group?', 'Disable Group').then(function (ok) {
+        if (!ok) return;
+        return apiRequest(API_BASE + '/api/data/user-groups/' + id, { method: 'DELETE' }).then(function () {
+            show('User group disabled.', 'User Groups');
+            displayUserGroupsList({ status: 'active' });
+        });
+    }).catch(function (err) {
+        show('Failed to disable group: ' + (err && err.message ? err.message : 'Unknown error'), 'User Groups');
+    });
+}
+function applySelectedUserGroupToMemberForm() {
+    var sel = document.getElementById('add-member-user-group');
+    var panel = document.getElementById('add-member-permissions-panel');
+    if (!sel || !sel.value) {
+        if (typeof _addMemberFeatureOverrides !== 'undefined') {
+            _addMemberFeatureOverrides = { allow: [], deny: [] };
+        }
+        if (panel) {
+            panel.classList.add('is-hidden');
+            panel.setAttribute('aria-hidden', 'true');
+        }
+        if (typeof renderAddMemberPermissionCards === 'function') renderAddMemberPermissionCards({ locked: true });
+        var roleHidden = document.getElementById('selected-role');
+        if (roleHidden) roleHidden.value = '';
+        return;
+    }
+    var g = (_userGroupsCache || []).find(function (x) { return String(x.id) === String(sel.value); });
+    if (!g) return;
+    var roleHidden = document.getElementById('selected-role');
+    if (roleHidden) roleHidden.value = g.name || '';
+    if (typeof _addMemberFeatureOverrides !== 'undefined') {
+        _addMemberFeatureOverrides = { allow: (g.allow || []).slice(), deny: [] };
+    }
+    if (typeof renderAddMemberPermissionCards === 'function') renderAddMemberPermissionCards({ locked: true });
+    if (panel) {
+        panel.classList.remove('is-hidden');
+        panel.setAttribute('aria-hidden', 'false');
+    }
+}
+function _loadUserGroupsIntoMemberForm(preferredId) {
+    var sel = document.getElementById('add-member-user-group');
+    if (!sel) return Promise.resolve();
+    return apiRequest(API_BASE + '/api/data/user-groups?status=active', { method: 'GET' })
+        .then(function (data) {
+            _userGroupsCache = (data && data.groups && Array.isArray(data.groups)) ? data.groups : [];
+            sel.innerHTML = '<option value="">— Select profile power —</option>';
+            _userGroupsCache.forEach(function (g) {
+                var opt = document.createElement('option');
+                opt.value = String(g.id);
+                opt.textContent = g.name || ('Group ' + g.id);
+                sel.appendChild(opt);
+            });
+            if (preferredId != null && preferredId !== '') {
+                sel.value = String(preferredId);
+            } else if (typeof editingMemberId !== 'undefined' && editingMemberId != null) {
+                // leave blank until caller sets; do not restore stale create selection
+                sel.value = '';
+            } else {
+                sel.value = '';
+            }
+            if (typeof applySelectedUserGroupToMemberForm === 'function') {
+                applySelectedUserGroupToMemberForm();
+            }
+        })
+        .catch(function () { /* non-fatal */ });
+}
+function discardPendingEnableMemberDraft() {
+    _pendingEnableMemberDraft = null;
+    window._pendingEnableMemberDraft = null;
+}
+function commitPendingEnableMemberDraft() {
+    var draft = _pendingEnableMemberDraft || window._pendingEnableMemberDraft;
+    if (!draft || draft.memberId == null) return Promise.resolve(null);
+    var id = draft.memberId;
+    return apiRequest(API_BASE + '/api/data/members/' + id + '/enable', { method: 'POST' }).then(function (data) {
+        discardPendingEnableMemberDraft();
+        return data;
+    });
+}
+
+function enableMember(id) {
+    if (!id) return;
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    var confirmFn = (typeof showConfirmModal === 'function') ? showConfirmModal : (typeof showConfirmModalCompat === 'function' ? showConfirmModalCompat : null);
+    if (typeof canPerformAction === 'function') {
+        var who = (typeof getCurrentRole === 'function' ? getCurrentRole() : null) || window.currentUser;
+        if (!canPerformAction(who, 'user-enable', 'change')) {
+            show('You do not have permission to enable accounts.', 'Permission');
+            return;
+        }
+    }
+    function proceed(ok) {
+        if (!ok) return;
+        var member = null;
+        var rows = Array.isArray(membersCache) ? membersCache : [];
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i] && Number(rows[i].id) === Number(id)) { member = rows[i]; break; }
+        }
+        var username = member ? String(member.username || member.name || '').trim() : '';
+        var name = member ? (member.name || username) : username;
+        var role = member ? (member.role || '') : '';
+        var bioOn = (typeof biometricEnabledSetting === 'undefined') ? true : !!biometricEnabledSetting;
+        if (!bioOn) {
+            return apiRequest(API_BASE + '/api/data/members/' + id + '/enable', { method: 'POST' }).then(function () {
+                if (typeof loadMembersAndRender === 'function') loadMembersAndRender();
+                show('Account enabled.', 'Enable');
+            }).catch(function (err) {
+                show('Failed to enable: ' + (err && err.message ? err.message : 'Unknown error'), 'Enable');
+            });
+        }
+        _pendingEnableMemberDraft = { memberId: id, username: username, name: name, role: role };
+        window._pendingEnableMemberDraft = _pendingEnableMemberDraft;
+        window._biometricEnrollReturnPage = 'manage-members';
+        window._biometricEnrollSuccessTitle = 'Enable';
+        window._biometricEnrollSuccessMessage = 'Account enabled.';
+        if (typeof _addMemberLastSavedId !== 'undefined') _addMemberLastSavedId = id;
+        window._addMemberLastSavedId = id;
+        if (typeof _populateMemberBiometricSummary === 'function') {
+            _populateMemberBiometricSummary({ id: id, username: username, name: name, role: role });
+        }
+        goToPage('member-biometric');
+    }
+    if (confirmFn) {
+        confirmFn('Enable this account? You will Add or Skip biometric before the account becomes active.', 'Enable Account').then(proceed);
+    } else {
+        proceed(true);
+    }
+}
+
 
 // ----- Reports and audit from API -----
 var _auditLogViewLoggedForSession = false;
@@ -10023,7 +10300,8 @@ function openEditMember(id) {
             }
             if (!isSelf) _loadMemberOverridesIntoPanel(member.featureOverrides);
             _setAddMemberPageMode(true, isSelf);
-            goToPage('add-member');
+            if (typeof _loadUserGroupsIntoMemberForm === 'function') _loadUserGroupsIntoMemberForm();
+    goToPage('add-member');
             setTimeout(function () {
                 if (typeof ensureAddMemberPageScroll === 'function') ensureAddMemberPageScroll();
             }, 60);
@@ -10053,7 +10331,9 @@ function _refreshAddMemberPermissionsPanelVisibility() {
     }
 }
 
-function renderAddMemberPermissionCards() {
+function renderAddMemberPermissionCards(opts) {
+    opts = opts || {};
+    var locked = !!opts.locked;
     var grid = document.getElementById('permission-cards-grid');
     if (!grid) return;
     grid.innerHTML = '';
@@ -10074,10 +10354,18 @@ function renderAddMemberPermissionCards() {
         card.innerHTML =
             '<div class="permission-card-title">' + feature.label + '</div>' +
             '<div class="permission-card-desc">' + (feature.description || '') + '</div>';
-        card.addEventListener('click', function () { togglePermissionCardAllow(key); });
+        if (locked) {
+            card.classList.add('is-locked');
+            card.style.pointerEvents = 'none';
+            card.style.opacity = selected ? '1' : '0.45';
+            card.setAttribute('title', selected ? 'Granted by profile power' : 'Not in selected profile power');
+        } else {
+            card.addEventListener('click', function () { togglePermissionCardAllow(key); });
+        }
         grid.appendChild(card);
     });
 }
+
 
 function togglePermissionCardAllow(featureKey) {
     if (!featureKey || _isProtectedFeatureKey(featureKey)) return;
@@ -10170,9 +10458,34 @@ function _populateMemberBiometricSummary(member) {
 }
 
 function skipMemberBiometricEnrollment() {
-    _addMemberLastSavedId = null;
-    goToPage('user-profile');
+    var returnPage = window._biometricEnrollReturnPage || window._biometricReturnPage || 'user-profile';
+    var isEdit = !!(!((typeof _pendingNewMemberDraft !== 'undefined' && _pendingNewMemberDraft) || window._pendingNewMemberDraft)
+        && ((typeof _pendingEditMemberDraft !== 'undefined' && _pendingEditMemberDraft) || window._pendingEditMemberDraft));
+    var isEnable = !!(window._pendingEnableMemberDraft);
+    var show = (typeof showAppModal === 'function') ? showAppModal : (typeof showModalCompat === 'function' ? showModalCompat : function () {});
+    var commit = Promise.resolve(null);
+    if (isEnable && typeof commitPendingEnableMemberDraft === 'function') {
+        commit = commitPendingEnableMemberDraft();
+    } else if (typeof commitAllPendingMemberDrafts === 'function') {
+        commit = commitAllPendingMemberDrafts(null);
+    } else if (typeof commitPendingNewMemberDraft === 'function') {
+        commit = commitPendingNewMemberDraft();
+    }
+    commit.then(function () {
+        if (typeof _addMemberLastSavedId !== 'undefined') _addMemberLastSavedId = null;
+        window._addMemberLastSavedId = null;
+        window._biometricEnrollReturnPage = null;
+        window._biometricReturnPage = null;
+        if (typeof loadMembersAndRender === 'function') loadMembersAndRender();
+        var title = isEnable ? 'Enable' : (isEdit ? 'Edit Profile' : 'Add Member');
+        var msg = isEnable ? 'Account enabled.' : (isEdit ? 'Profile updated successfully.' : 'Member saved successfully.');
+        show(msg, title);
+        goToPage(returnPage);
+    }).catch(function (err) {
+        show('Failed to save member: ' + (err && err.message ? err.message : 'Network error'), 'Add Member');
+    });
 }
+
 
 function backToMemberAfterBiometric() {
     _addMemberLastSavedId = null;
